@@ -61,47 +61,47 @@ print_startup_banner(void)
  *
  * Returns: true if permissions are granted, false otherwise
  */
-static bool
-check_accessibility_permissions(void)
-{
-    /* Create a test AX reference to check permissions */
-    AXUIElementRef system_wide = AXUIElementCreateSystemWide();
-    AXUIElementRef focused_app = NULL;
+// static bool
+// check_accessibility_permissions(void)
+// {
+//     /* Create a test AX reference to check permissions */
+//     AXUIElementRef system_wide = AXUIElementCreateSystemWide();
+//     AXUIElementRef focused_app = NULL;
     
-    if (!system_wide) {
-        return false;
-    }
+//     if (!system_wide) {
+//         return false;
+//     }
     
-    AXError err = AXUIElementCopyAttributeValue(system_wide,
-                                               kAXFocusedApplicationAttribute,
-                                               (CFTypeRef*)&focused_app);
+//     AXError err = AXUIElementCopyAttributeValue(system_wide,
+//                                                kAXFocusedApplicationAttribute,
+//                                                (CFTypeRef*)&focused_app);
     
-    bool has_permissions = (err == kAXErrorSuccess);
+//     bool has_permissions = (err == kAXErrorSuccess);
     
-    if (focused_app) {
-        CFRelease(focused_app);
-    }
-    CFRelease(system_wide);
+//     if (focused_app) {
+//         CFRelease(focused_app);
+//     }
+//     CFRelease(system_wide);
     
-    return has_permissions;
-}
+//     return has_permissions;
+// }
 
 /*
  * print_permission_help - Print help for granting Accessibility permissions
  */
-static void
-print_permission_help(void)
-{
-    printf("\nAccessibility Permission Required:\n");
-    printf("pengwm needs Accessibility permission to control windows.\n\n");
-    printf("To grant permission:\n");
-    printf("1. Open System Settings (or System Preferences)\n");
-    printf("2. Go to Privacy & Security -> Accessibility\n");
-    printf("3. Click the '+' button and add pengwm\n");
-    printf("4. Make sure the checkbox next to pengwm is enabled\n");
-    printf("5. Restart pengwm\n\n");
-    printf("Note: You may need to restart pengwm after granting permission.\n");
-}
+// static void
+// print_permission_help(void)
+// {
+//     printf("\nAccessibility Permission Required:\n");
+//     printf("pengwm needs Accessibility permission to control windows.\n\n");
+//     printf("To grant permission:\n");
+//     printf("1. Open System Settings (or System Preferences)\n");
+//     printf("2. Go to Privacy & Security -> Accessibility\n");
+//     printf("3. Click the '+' button and add pengwm\n");
+//     printf("4. Make sure the checkbox next to pengwm is enabled\n");
+//     printf("5. Restart pengwm\n\n");
+//     printf("Note: You may need to restart pengwm after granting permission.\n");
+// }
 
 /*
  * interactive_mode - Run pengwm in interactive mode
@@ -197,11 +197,11 @@ main(int argc, char **argv)
     }
 
     /* Check for Accessibility permissions */
-    if (!check_accessibility_permissions()) {
-        printf("Error: pengwm does not have Accessibility permissions.\n");
-        print_permission_help();
-        return 1;
-    }
+    // if (!check_accessibility_permissions()) {
+    //     printf("Error: pengwm does not have Accessibility permissions.\n");
+    //     print_permission_help();
+    //     return 1;
+    // }
 
     /* Initialize configuration system */
     if (!config_init()) {
