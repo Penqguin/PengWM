@@ -11,8 +11,9 @@
 
 /* Global workspace management */
 static BSPWorkspace *g_workspaces = NULL;
-static size_t g_workspace_count = 0;
 static bool g_wm_initialized = false;
+size_t g_workspace_count = 0;
+
 
 /*
  * wm_init - Initialize the window manager

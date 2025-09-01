@@ -421,7 +421,7 @@ bsp_find_down_neighbor(BSPNode *node)
 BSPNode*
 bsp_find_leftmost_leaf(BSPNode *node)
 {
-    while (!node->is_leaf) {
+    while (node && !node->is_leaf) {
         node = node->first;
     }
     return node;
@@ -433,7 +433,7 @@ bsp_find_leftmost_leaf(BSPNode *node)
 BSPNode*
 bsp_find_rightmost_leaf(BSPNode *node)
 {
-    while (!node->is_leaf) {
+    while (node && !node->is_leaf) {
         node = node->second;
     }
     return node;
@@ -445,7 +445,7 @@ bsp_find_rightmost_leaf(BSPNode *node)
 BSPNode*
 bsp_find_topmost_leaf(BSPNode *node)
 {
-    while (!node->is_leaf) {
+    while (node && !node->is_leaf) {
         node = node->first;   /* For horizontal splits, first is top */
     }
     return node;
@@ -457,8 +457,53 @@ bsp_find_topmost_leaf(BSPNode *node)
 BSPNode*
 bsp_find_bottommost_leaf(BSPNode *node)
 {
-    while (!node->is_leaf) {
+    while (node && !node->is_leaf) {
         node = node->second;  /* For horizontal splits, second is bottom */
     }
     return node;
+}
+
+/*
+ * bsp_free - Recursively free a BSP tree
+ *
+ * node: Root of the tree or subtree to free
+ */
+void 
+bsp_free(BSPNode *node) 
+{
+    if (node == NULL) {
+        return;
+    }
+
+    /* Recursively free children first (post-order traversal) */
+    bsp_free(node->first);
+    bsp_free(node->second);
+
+    /* Free the node itself */
+    free(node);
+}
+
+/*
+ * bsp_traverse - Traverse the BSP tree and apply a callback to leaves
+ *
+ * node: Node to start traversal from
+ * callback: Function to call for each leaf node with a window
+ */
+void 
+bsp_traverse(BSPNode *node, void (*callback)(BSPNode*)) 
+{
+    if (node == NULL || callback == NULL) {
+        return;
+    }
+
+    if (node->is_leaf) {
+        /* If it's a leaf node, call the callback function.
+         * The callback is responsible for checking if there is a window.
+         */
+        callback(node);
+    } else {
+        /* If it's an internal node, traverse its children */
+        bsp_traverse(node->first, callback);
+        bsp_traverse(node->second, callback);
+    }
 }
