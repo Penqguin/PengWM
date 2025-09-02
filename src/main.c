@@ -18,8 +18,7 @@ static volatile sig_atomic_t g_shutdown_requested = 0;
  *
  * signum: Signal number received
  */
-static void
-signal_handler(int signum)
+static void signal_handler(int signum)
 {
     (void)signum;  /* Unused parameter */
     g_shutdown_requested = 1;
@@ -28,8 +27,7 @@ signal_handler(int signum)
 /*
  * setup_signal_handlers - Install signal handlers for clean shutdown
  */
-static void
-setup_signal_handlers(void)
+static void setup_signal_handlers(void)
 {
     signal(SIGINT, signal_handler);   /* Ctrl+C */
     signal(SIGTERM, signal_handler);  /* Termination request */
@@ -39,8 +37,7 @@ setup_signal_handlers(void)
 /*
  * print_version - Print version information
  */
-static void
-print_version(void)
+static void print_version(void)
 {
     printf("pengwm 1.0.0 - Binary Space Partitioning Window Manager for macOS\n");
     printf("Built with Accessibility API support\n");
@@ -49,8 +46,7 @@ print_version(void)
 /*
  * print_startup_banner - Print startup information
  */
-static void
-print_startup_banner(void)
+static void print_startup_banner(void)
 {
     printf("pengwm - BSP Window Manager starting...\n");
     printf("Initializing window management...\n");
@@ -61,8 +57,7 @@ print_startup_banner(void)
  *
  * Returns: true if permissions are granted, false otherwise
  */
-// static bool
-// check_accessibility_permissions(void)
+// static bool check_accessibility_permissions(void)
 // {
 //     /* Create a test AX reference to check permissions */
 //     AXUIElementRef system_wide = AXUIElementCreateSystemWide();
@@ -108,8 +103,7 @@ print_startup_banner(void)
  *
  * Returns: Exit code
  */
-static int
-interactive_mode(void)
+static int interactive_mode(void)
 {
     printf("Starting pengwm interactive mode...\n");
     printf("Type 'help' for commands, 'quit' to exit\n");
@@ -122,8 +116,7 @@ interactive_mode(void)
  *
  * Returns: Exit code
  */
-static int
-daemon_mode(void)
+static int daemon_mode(void)
 {
     printf("Starting pengwm in daemon mode...\n");
     printf("Press Ctrl+C to exit\n");
@@ -151,8 +144,7 @@ daemon_mode(void)
  *
  * Returns: Exit code (0 for success, non-zero for error)
  */
-int
-main(int argc, char **argv)
+int main(int argc, char **argv)
 {
     bool daemon_flag = false;
     bool version_flag = false;

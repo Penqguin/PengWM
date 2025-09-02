@@ -30,8 +30,7 @@ typedef enum {
  *
  * Returns: Command enum value
  */
-static Command
-parse_command(const char *cmd)
+static Command parse_command(const char *cmd)
 {
     if (!cmd) {
         return CMD_UNKNOWN;
@@ -80,8 +79,7 @@ parse_command(const char *cmd)
  *
  * Returns: true if direction is valid
  */
-static bool
-validate_direction(const char *direction)
+static bool validate_direction(const char *direction)
 {
     if (!direction) {
         return false;
@@ -106,8 +104,7 @@ validate_direction(const char *direction)
  *
  * program_name: Name of the program
  */
-static void
-print_usage(const char *program_name)
+static void print_usage(const char *program_name)
 {
     printf("Usage: %s <command> [args]\n\n", program_name);
     printf("Commands:\n");
@@ -125,8 +122,7 @@ print_usage(const char *program_name)
 /*
  * print_help - Print detailed help information
  */
-static void
-print_help(void)
+static void print_help(void)
 {
     printf("pengwm - Binary Space Partitioning Window Manager for macOS\n\n");
     
@@ -158,8 +154,7 @@ print_help(void)
  *
  * Returns: 0 on success, 1 on error
  */
-static int
-handle_focus_command(int argc, char **argv)
+static int handle_focus_command(int argc, char **argv)
 {
     if (argc < 3) {
         printf("Error: focus command requires direction argument\n");
@@ -185,8 +180,7 @@ handle_focus_command(int argc, char **argv)
  *
  * Returns: 0 on success, 1 on error
  */
-static int
-handle_add_command(int argc, char **argv)
+static int handle_add_command(int argc, char **argv)
 {
     int pid;
     char *endptr;
@@ -215,8 +209,7 @@ handle_add_command(int argc, char **argv)
  *
  * Returns: 0 on success, 1 on error
  */
-static int
-handle_remove_command(int argc, char **argv)
+static int handle_remove_command(int argc, char **argv)
 {
     int pid;
     char *endptr;
@@ -245,8 +238,7 @@ handle_remove_command(int argc, char **argv)
  *
  * Returns: 0 on success, 1 on error
  */
-static int
-handle_config_command(int argc, char **argv)
+static int handle_config_command(int argc, char **argv)
 {
     if (argc >= 3 && strcmp(argv[2], "reload") == 0) {
         if (config_reload()) {
@@ -266,8 +258,7 @@ handle_config_command(int argc, char **argv)
  *
  * Returns: 0 always
  */
-static int
-handle_status_command(void)
+static int handle_status_command(void)
 {
     extern size_t g_managed_count;
     extern BSPWorkspace *g_workspaces;
@@ -290,8 +281,7 @@ handle_status_command(void)
  *
  * Returns: 0 on success, 1 on error, 2 for quit command
  */
-int
-cli_handle_command(int argc, char **argv)
+int cli_handle_command(int argc, char **argv)
 {
     Command cmd;
     
@@ -350,8 +340,7 @@ cli_handle_command(int argc, char **argv)
  *
  * Returns: 0 on normal exit
  */
-int
-cli_interactive_mode(void)
+int cli_interactive_mode(void)
 {
     char input[256];
     char *argv[16];

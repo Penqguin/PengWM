@@ -24,8 +24,7 @@ static int s_next_window_id = 1000;
  * Returns: Array of ManagedWindow structures
  * count: Output parameter for number of windows found
  */
-ManagedWindow*
-get_manageable_windows(size_t *count)
+ManagedWindow* get_manageable_windows(size_t *count)
 {
     CFArrayRef window_list;
     CFIndex window_count;
@@ -116,8 +115,7 @@ get_manageable_windows(size_t *count)
  *
  * Returns: true if window should be managed, false otherwise
  */
-bool
-should_manage_window(const char *app_name, CGRect bounds, int pid)
+bool should_manage_window(const char *app_name, CGRect bounds, int pid)
 {
     (void)pid; /* Unused parameter */
 
@@ -146,8 +144,7 @@ should_manage_window(const char *app_name, CGRect bounds, int pid)
  *
  * Returns: AXUIElementRef for the matching window, or NULL if not found
  */
-AXUIElementRef
-get_ax_window_for_pid_and_bounds(int pid, CGRect target_bounds)
+AXUIElementRef get_ax_window_for_pid_and_bounds(int pid, CGRect target_bounds)
 {
     AXUIElementRef app_ref = AXUIElementCreateApplication(pid);
     CFArrayRef window_list = NULL;

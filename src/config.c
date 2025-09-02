@@ -52,8 +52,7 @@ static const int s_default_keybind_count =
  *
  * Returns: Home directory path, or NULL on error
  */
-static const char*
-config_get_home_path(void)
+static const char* config_get_home_path(void)
 {
     const char *home = getenv("HOME");
     return home ? home : "/tmp";
@@ -66,8 +65,7 @@ config_get_home_path(void)
  *
  * Returns: true on success or if directory already exists
  */
-static bool
-config_create_directory(const char *dir_path)
+static bool config_create_directory(const char *dir_path)
 {
     struct stat st;
     
@@ -83,8 +81,7 @@ config_create_directory(const char *dir_path)
  *
  * Returns: true on success, false on failure
  */
-bool
-config_init(void)
+bool config_init(void)
 {
     const char *home;
     char config_dir[CONFIG_MAX_PATH];
@@ -252,8 +249,7 @@ static bool config_parse_line(const char *line, int line_number)
  *
  * Returns: true on success, false on parse error
  */
-static bool
-config_parse_keybind_line(const char *value)
+static bool config_parse_keybind_line(const char *value)
 {
     char key_combo[CONFIG_MAX_KEYBIND];
     char action_str[64];
@@ -278,8 +274,7 @@ config_parse_keybind_line(const char *value)
  *
  * Returns: true on success, false on parse error
  */
-static bool
-config_parse_rule_line(const char *value)
+static bool config_parse_rule_line(const char *value)
 {
     char app_name[CONFIG_MAX_APP_NAME];
     char rule_str[32];
@@ -317,8 +312,7 @@ config_parse_rule_line(const char *value)
  *
  * Returns: true on success, false on parse error
  */
-static bool
-config_parse_setting_line(const char *key, const char *value)
+static bool config_parse_setting_line(const char *key, const char *value)
 {
     if (strcmp(key, "auto_tile") == 0) {
         g_config.auto_tile = (strcmp(value, "true") == 0);
@@ -345,8 +339,7 @@ config_parse_setting_line(const char *key, const char *value)
  *
  * Returns: true on success, false if no space available
  */
-bool
-config_add_keybind(const char *key_combo, KeyAction action)
+bool config_add_keybind(const char *key_combo, KeyAction action)
 {
     Keybind *keybind;
     
@@ -374,8 +367,7 @@ config_add_keybind(const char *key_combo, KeyAction action)
  * keycode: Output parameter for keycode
  * modifiers: Output parameter for modifiers
  */
-static void
-config_parse_key_combination(const char *key_combo, int *keycode, KeyModifier *modifiers)
+static void config_parse_key_combination(const char *key_combo, int *keycode, KeyModifier *modifiers)
 {
     char combo_copy[CONFIG_MAX_KEYBIND];
     char *token, *key_part = NULL;
@@ -415,8 +407,7 @@ config_parse_key_combination(const char *key_combo, int *keycode, KeyModifier *m
  *
  * Returns: Keycode value, or 0 if unknown
  */
-int
-config_parse_keycode(const char *key_str)
+int config_parse_keycode(const char *key_str)
 {
     if (!key_str) {
         return 0;
@@ -445,8 +436,7 @@ config_parse_keycode(const char *key_str)
  *
  * Returns: KeyAction enum value, or ACTION_UNKNOWN if not recognized
  */
-KeyAction
-config_parse_action(const char *action_str)
+KeyAction config_parse_action(const char *action_str)
 {
     if (!action_str) return ACTION_UNKNOWN;
     
@@ -489,8 +479,7 @@ config_parse_action(const char *action_str)
  *
  * Returns: true on success, false on failure
  */
-bool
-config_write_default(const char *filename)
+bool config_write_default(const char *filename)
 {
     FILE *file;
     int i;
@@ -532,8 +521,7 @@ config_write_default(const char *filename)
  *
  * Returns: String representation of action
  */
-const char*
-config_action_to_string(KeyAction action)
+const char* config_action_to_string(KeyAction action)
 {
     switch (action) {
         case ACTION_FOCUS_LEFT: return "focus_left";
@@ -564,8 +552,7 @@ config_action_to_string(KeyAction action)
  *
  * Returns: true on success, false if no space available
  */
-bool
-config_add_app_rule(const char *app_name, WindowRule rule)
+bool config_add_app_rule(const char *app_name, WindowRule rule)
 {
     AppRule *app_rule;
     
@@ -590,8 +577,7 @@ config_add_app_rule(const char *app_name, WindowRule rule)
  *
  * Returns: WindowRule for the application, or RULE_TILE as default
  */
-WindowRule
-config_get_window_rule(const char *app_name)
+WindowRule config_get_window_rule(const char *app_name)
 {
     int i;
     
@@ -616,8 +602,7 @@ config_get_window_rule(const char *app_name)
  *
  * Returns: String representation of rule
  */
-const char*
-config_rule_to_string(WindowRule rule)
+const char* config_rule_to_string(WindowRule rule)
 {
     switch (rule) {
         case RULE_TILE: return "tile";
@@ -635,8 +620,7 @@ config_rule_to_string(WindowRule rule)
  *
  * Returns: Matching keybind, or NULL if not found
  */
-Keybind*
-config_find_keybind(int keycode, KeyModifier modifiers)
+Keybind* config_find_keybind(int keycode, KeyModifier modifiers)
 {
     int i;
     
@@ -656,8 +640,7 @@ config_find_keybind(int keycode, KeyModifier modifiers)
  *
  * Returns: true on success, false on failure
  */
-bool
-config_reload(void)
+bool config_reload(void)
 {
     return config_load(g_config.config_path);
 }
@@ -667,8 +650,7 @@ config_reload(void)
  *
  * Returns: Configuration file path
  */
-const char*
-config_get_path(void)
+const char* config_get_path(void)
 {
     return g_config.config_path;
 }
@@ -676,8 +658,7 @@ config_get_path(void)
 /*
  * config_print - Print current configuration to stdout
  */
-void
-config_print(void)
+void config_print(void)
 {
     int i;
     
@@ -715,8 +696,7 @@ config_print(void)
 /*
  * config_cleanup - Clean up configuration resources
  */
-void
-config_cleanup(void)
+void config_cleanup(void)
 {
     /* Reset configuration structure */
     memset(&g_config, 0, sizeof(g_config));

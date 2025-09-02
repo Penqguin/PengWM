@@ -20,8 +20,7 @@ size_t g_workspace_count = 0;
  *
  * Returns: true on success, false on failure
  */
-bool
-wm_init(void)
+bool wm_init(void)
 {
     size_t managed_count;
 
@@ -53,8 +52,7 @@ wm_init(void)
 /*
  * wm_organize_existing_windows - Organize existing windows into BSP trees
  */
-void
-wm_organize_existing_windows(void)
+void wm_organize_existing_windows(void)
 {
     size_t i;
 
@@ -73,8 +71,7 @@ wm_organize_existing_windows(void)
  *
  * Returns: Workspace containing the window, or primary workspace if none found
  */
-BSPWorkspace*
-wm_find_workspace_for_window(ManagedWindow *window)
+BSPWorkspace* wm_find_workspace_for_window(ManagedWindow *window)
 {
     size_t i;
     CGPoint center;
@@ -97,8 +94,7 @@ wm_find_workspace_for_window(ManagedWindow *window)
 /*
  * wm_list_windows - List all managed windows
  */
-void
-wm_list_windows(void)
+void wm_list_windows(void)
 {
     size_t i;
 
@@ -127,8 +123,7 @@ wm_list_windows(void)
 /*
  * wm_tile - Apply BSP tiling to all workspaces
  */
-void
-wm_tile(void)
+void wm_tile(void)
 {
     size_t ws_idx;
 
@@ -156,8 +151,7 @@ wm_tile(void)
  *
  * leaf: BSP leaf node containing window layout information
  */
-void
-wm_apply_layout_to_leaf(BSPNode *leaf)
+void wm_apply_layout_to_leaf(BSPNode *leaf)
 {
     ManagedWindow *window;
 
@@ -189,8 +183,7 @@ wm_apply_layout_to_leaf(BSPNode *leaf)
  *
  * Returns: Managed window structure, or NULL if not found
  */
-ManagedWindow*
-wm_find_managed_window(int window_id)
+ManagedWindow* wm_find_managed_window(int window_id)
 {
     size_t i;
 
@@ -207,8 +200,7 @@ wm_find_managed_window(int window_id)
  *
  * direction: Direction to focus (left, right, up, down)
  */
-void
-wm_focus(const char *direction)
+void wm_focus(const char *direction)
 {
     ManagedWindow *focused_window;
     BSPNode *focused_node, *target_node;
@@ -260,8 +252,7 @@ wm_focus(const char *direction)
  *
  * Returns: BSP node containing the window, or NULL if not found
  */
-BSPNode*
-wm_find_bsp_node_for_window(int window_id)
+BSPNode* wm_find_bsp_node_for_window(int window_id)
 {
     size_t ws_idx;
     BSPNode *node;
@@ -280,8 +271,7 @@ wm_find_bsp_node_for_window(int window_id)
  *
  * pid: Process ID of application whose windows to add
  */
-void
-wm_add_window(int pid)
+void wm_add_window(int pid)
 {
     AXUIElementRef app_ref;
     CFArrayRef window_list = NULL;
@@ -364,8 +354,7 @@ wm_add_window(int pid)
  *
  * Returns: true if window is already managed
  */
-bool
-wm_is_window_managed(AXUIElementRef window_ref)
+bool wm_is_window_managed(AXUIElementRef window_ref)
 {
     size_t i;
 
@@ -382,8 +371,7 @@ wm_is_window_managed(AXUIElementRef window_ref)
  *
  * pid: Process ID of application whose windows to remove
  */
-void
-wm_close_window(int pid)
+void wm_close_window(int pid)
 {
     size_t i;
     int windows_removed = 0;
@@ -423,8 +411,7 @@ wm_close_window(int pid)
  *
  * window_id: ID of window to remove
  */
-void
-wm_remove_from_bsp_tree(int window_id)
+void wm_remove_from_bsp_tree(int window_id)
 {
     size_t ws_idx;
 
@@ -438,8 +425,7 @@ wm_remove_from_bsp_tree(int window_id)
 /*
  * wm_cleanup - Clean up window manager resources
  */
-void
-wm_cleanup(void)
+void wm_cleanup(void)
 {
     size_t i;
 

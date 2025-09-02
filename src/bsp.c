@@ -15,8 +15,7 @@
  *
  * Returns: Array of BSPWorkspace structures
  */
-BSPWorkspace*
-init_workspaces(size_t *out_count)
+BSPWorkspace* init_workspaces(size_t *out_count)
 {
     uint32_t display_count = 0;
     CGDirectDisplayID *displays;
@@ -78,8 +77,7 @@ init_workspaces(size_t *out_count)
  *
  * Returns: Root BSP node
  */
-BSPNode*
-bsp_create_root(CGRect screen_rect)
+BSPNode* bsp_create_root(CGRect screen_rect)
 {
     BSPNode *root = calloc(1, sizeof(BSPNode));
     
@@ -104,8 +102,7 @@ bsp_create_root(CGRect screen_rect)
  * leaf: Leaf node to split
  * new_window_id: ID of the new window to place in split
  */
-void
-bsp_split_leaf(BSPNode *leaf, int new_window_id)
+void bsp_split_leaf(BSPNode *leaf, int new_window_id)
 {
     bool split_vertical;
     CGRect r1, r2;
@@ -171,8 +168,7 @@ bsp_split_leaf(BSPNode *leaf, int new_window_id)
  * node: Node to insert into
  * window_id: ID of window to insert
  */
-void
-bsp_insert(BSPNode *node, int window_id)
+void bsp_insert(BSPNode *node, int window_id)
 {
     if (!node) {
         return;
@@ -204,8 +200,7 @@ bsp_insert(BSPNode *node, int window_id)
  *
  * Returns: true if window was found and removed
  */
-bool
-bsp_remove_window(BSPNode *node, int window_id)
+bool bsp_remove_window(BSPNode *node, int window_id)
 {
     if (!node) {
         return false;
@@ -235,8 +230,7 @@ bsp_remove_window(BSPNode *node, int window_id)
  *
  * node: Node to check for collapsing
  */
-void
-bsp_collapse_empty_branches(BSPNode *node)
+void bsp_collapse_empty_branches(BSPNode *node)
 {
     bool first_empty, second_empty;
     BSPNode *replacement;
@@ -289,8 +283,7 @@ bsp_collapse_empty_branches(BSPNode *node)
  *
  * Returns: BSP node containing the window, or NULL if not found
  */
-BSPNode*
-bsp_find_node_for_window(BSPNode *node, int window_id)
+BSPNode* bsp_find_node_for_window(BSPNode *node, int window_id)
 {
     BSPNode *found;
 
@@ -318,8 +311,7 @@ bsp_find_node_for_window(BSPNode *node, int window_id)
  *
  * Returns: Neighboring node, or NULL if none found
  */
-BSPNode*
-bsp_find_neighbor(BSPNode *node, const char *direction)
+BSPNode* bsp_find_neighbor(BSPNode *node, const char *direction)
 {
     if (!node || !direction) {
         return NULL;
@@ -342,8 +334,7 @@ bsp_find_neighbor(BSPNode *node, const char *direction)
 /*
  * bsp_find_left_neighbor - Find left neighbor of a node
  */
-BSPNode*
-bsp_find_left_neighbor(BSPNode *node)
+BSPNode* bsp_find_left_neighbor(BSPNode *node)
 {
     BSPNode *current = node;
     
@@ -361,8 +352,7 @@ bsp_find_left_neighbor(BSPNode *node)
 /*
  * bsp_find_right_neighbor - Find right neighbor of a node
  */
-BSPNode*
-bsp_find_right_neighbor(BSPNode *node)
+BSPNode* bsp_find_right_neighbor(BSPNode *node)
 {
     BSPNode *current = node;
     
@@ -380,8 +370,7 @@ bsp_find_right_neighbor(BSPNode *node)
 /*
  * bsp_find_up_neighbor - Find up neighbor of a node
  */
-BSPNode*
-bsp_find_up_neighbor(BSPNode *node)
+BSPNode* bsp_find_up_neighbor(BSPNode *node)
 {
     BSPNode *current = node;
     
@@ -399,8 +388,7 @@ bsp_find_up_neighbor(BSPNode *node)
 /*
  * bsp_find_down_neighbor - Find down neighbor of a node
  */
-BSPNode*
-bsp_find_down_neighbor(BSPNode *node)
+BSPNode* bsp_find_down_neighbor(BSPNode *node)
 {
     BSPNode *current = node;
     
@@ -418,8 +406,7 @@ bsp_find_down_neighbor(BSPNode *node)
 /*
  * bsp_find_leftmost_leaf - Find leftmost leaf in subtree
  */
-BSPNode*
-bsp_find_leftmost_leaf(BSPNode *node)
+BSPNode* bsp_find_leftmost_leaf(BSPNode *node)
 {
     while (node && !node->is_leaf) {
         node = node->first;
@@ -430,8 +417,7 @@ bsp_find_leftmost_leaf(BSPNode *node)
 /*
  * bsp_find_rightmost_leaf - Find rightmost leaf in subtree
  */
-BSPNode*
-bsp_find_rightmost_leaf(BSPNode *node)
+BSPNode* bsp_find_rightmost_leaf(BSPNode *node)
 {
     while (node && !node->is_leaf) {
         node = node->second;
@@ -442,8 +428,7 @@ bsp_find_rightmost_leaf(BSPNode *node)
 /*
  * bsp_find_topmost_leaf - Find topmost leaf in subtree
  */
-BSPNode*
-bsp_find_topmost_leaf(BSPNode *node)
+BSPNode* bsp_find_topmost_leaf(BSPNode *node)
 {
     while (node && !node->is_leaf) {
         node = node->first;   /* For horizontal splits, first is top */
@@ -454,8 +439,7 @@ bsp_find_topmost_leaf(BSPNode *node)
 /*
  * bsp_find_bottommost_leaf - Find bottommost leaf in subtree
  */
-BSPNode*
-bsp_find_bottommost_leaf(BSPNode *node)
+BSPNode* bsp_find_bottommost_leaf(BSPNode *node)
 {
     while (node && !node->is_leaf) {
         node = node->second;  /* For horizontal splits, second is bottom */
@@ -468,8 +452,7 @@ bsp_find_bottommost_leaf(BSPNode *node)
  *
  * node: Root of the tree or subtree to free
  */
-void 
-bsp_free(BSPNode *node) 
+void bsp_free(BSPNode *node) 
 {
     if (node == NULL) {
         return;
@@ -489,8 +472,7 @@ bsp_free(BSPNode *node)
  * node: Node to start traversal from
  * callback: Function to call for each leaf node with a window
  */
-void 
-bsp_traverse(BSPNode *node, void (*callback)(BSPNode*)) 
+void bsp_traverse(BSPNode *node, void (*callback)(BSPNode*)) 
 {
     if (node == NULL || callback == NULL) {
         return;
