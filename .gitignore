@@ -1,5 +1,27 @@
-.vscode/*
-!.vscode/extensions.json
-*.o
-*.d
+# Rust
+/target
+Cargo.lock
+
+# Tauri
+/src-tauri/target
+/src-tauri/gen
+/dist
+/.tauri
+
+# Node.js
+/pengwm-ui/node_modules
+/node_modules
+/.pnpm-debug.log
+/package-lock.json
+/pnpm-lock.yaml
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Misc
+.env
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json

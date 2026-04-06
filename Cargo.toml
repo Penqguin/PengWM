@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "pengwm-daemon",
+    "pengwm-ui/src-tauri",
+]
+resolver = "2"

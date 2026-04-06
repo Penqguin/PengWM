@@ -1,0 +1,24 @@
+{
+  "productName": "pengwm",
+  "version": "0.1.0",
+  "identifier": "com.pengwm.app",
+  "bundle": {
+    "active": true,
+    "icon": []
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "pengwm Config",
+        "width": 800,
+        "height": 600
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  }
+}
