@@ -1,5 +1,4 @@
 use euclid::{default::Rect as EuclidRect, default::Point2D, default::Size2D};
-use serde::{Serialize, Deserialize};
 
 pub type Rect = EuclidRect<i32>;
 pub type Point = Point2D<i32>;

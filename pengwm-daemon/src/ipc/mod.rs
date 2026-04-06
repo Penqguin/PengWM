@@ -1,5 +1,4 @@
 use serde::{Serialize, Deserialize};
-use crate::core::types::WindowId;
 use interprocess::local_socket::LocalSocketListener;
 use std::io::{BufRead, BufReader, Write};
 use tokio::task;

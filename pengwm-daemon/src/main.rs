@@ -4,7 +4,6 @@ mod ipc;
 mod config;
 
 use crate::platform::WindowManagerBackend;
-use crate::platform::windows::WindowsBackend;
 use crate::platform::macos::MacOsBackend;
 use crate::core::manager::WindowManager;
 use crate::config::Config;

@@ -1,11 +1,10 @@
 use crate::core::bsp::BspTree;
-use crate::core::types::{SystemEvent, WindowId};
+use crate::core::types::SystemEvent;
 use crate::core::geometry::Rect;
 use crate::platform::WindowManagerBackend;
 use crate::config::Config;
 use tokio::sync::mpsc::Receiver;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 pub struct WindowManager {
     tree: BspTree,
