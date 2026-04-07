@@ -15,8 +15,12 @@ pub trait WindowManagerBackend {
     /// Check if a window should be managed (is it a normal app window?)
     fn is_manageable(&self, window: WindowId) -> bool;
 
-    /// Get the current focused window
+    /// Get the current focused window.
     fn get_focused_window(&self) -> Result<WindowId>;
+
+    /// Release any resources associated with a window ID.
+    /// On macOS, this releases the retained AXUIElementRef.
+    fn release_window(&self, window: WindowId);
 }
 
 pub mod windows;

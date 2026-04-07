@@ -1,0 +1,10 @@
+# PengWM Configuration File
+
+# The maximum number of windows per workspace before they start to stack
+max_tiles = 4
+
+# The outer gap between windows and the screen edge (in pixels)
+gap_outer = 10
+
+# The inner gap between adjacent windows (in pixels)
+gap_inner = 5

@@ -4,13 +4,18 @@ use crate::core::geometry::Rect;
 use crate::core::types::{WindowId, SystemEvent};
 use tokio::sync::mpsc::Sender;
 use anyhow::Result;
-// use std::thread; // thread is used when target_os = "windows"
+
+#[cfg(target_os = "windows")]
+use std::thread;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{GetMessageW, DispatchMessageW, TranslateMessage, MSG, SetWindowPos, SWP_NOZORDER, SWP_NOACTIVATE},
-    UI::Accessibility::SetWinEventHook,
+    Foundation::{HWND, RECT},
+    UI::WindowsAndMessaging::{
+        GetMessageW, DispatchMessageW, TranslateMessage, MSG, SetWindowPos, 
+        SWP_NOZORDER, SWP_NOACTIVATE, GetWindowLongW, GWL_STYLE, WS_VISIBLE, 
+        GWL_EXSTYLE, WS_EX_TOOLWINDOW, GetWindowTextW, GetWindowRect
+    },
 };
 
 pub struct WindowsBackend;
@@ -20,9 +25,6 @@ impl WindowManagerBackend for WindowsBackend {
     async fn subscribe(&self, _event_sender: Sender<SystemEvent>) {
         #[cfg(target_os = "windows")]
         thread::spawn(move || {
-            // TODO: Initialize SetWinEventHook
-            // let _hook = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, ...);
-            
             log::info!("Windows event hook started (stub)");
             let mut msg = MSG::default();
             unsafe {
@@ -37,19 +39,67 @@ impl WindowManagerBackend for WindowsBackend {
     fn set_window_rect(&self, window: WindowId, rect: Rect) -> Result<()> {
         #[cfg(target_os = "windows")]
         unsafe {
-            // SetWindowPos(HWND(window.0 as isize), HWND(0), rect.min_x(), rect.min_y(), rect.width(), rect.height(), SWP_NOZORDER | SWP_NOACTIVATE)?;
+            let hwnd = HWND(window.0 as isize);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND(0),
+                rect.min_x(),
+                rect.min_y(),
+                rect.width() as i32,
+                rect.height() as i32,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
         log::info!("Windows: Moving window {:?} to {:?}", window, rect);
         Ok(())
     }
 
-    fn is_manageable(&self, _window: WindowId) -> bool {
-        // TODO: Check WS_VISIBLE and DWMWA_CLOAKED
-        true
+    fn is_manageable(&self, window: WindowId) -> bool {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            let hwnd = HWND(window.0 as isize);
+            
+            // 1. Must be visible
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            if (style as u32 & WS_VISIBLE.0) == 0 {
+                return false;
+            }
+
+            // 2. Must not be a tool window
+            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            if (ex_style as u32 & WS_EX_TOOLWINDOW.0) != 0 {
+                return false;
+            }
+
+            // 3. Must have a title (simple heuristic)
+            let mut title = [0u16; 256];
+            let len = GetWindowTextW(hwnd, &mut title);
+            if len == 0 {
+                return false;
+            }
+
+            // 4. Must not be tiny (e.g. 0x0)
+            let mut rect = RECT::default();
+            if GetWindowRect(hwnd, &mut rect).is_ok() {
+                if rect.right - rect.left < 50 || rect.bottom - rect.top < 50 {
+                    return false;
+                }
+            }
+
+            true
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = window;
+            true
+        }
     }
 
     fn get_focused_window(&self) -> Result<WindowId> {
-        // let hwnd = unsafe { GetForegroundWindow() };
         Ok(WindowId(0))
+    }
+
+    fn release_window(&self, _window: WindowId) {
+        // Windows HWNDs don't need explicit releasing like AXUIElementRef.
     }
 }

@@ -1,14 +1,42 @@
 <script lang="ts">
-  import { PaneGroup, Pane, PaneResizer } from "paneforge";
+  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { Layout, Settings, Keyboard, Monitor } from "lucide-svelte";
 
-  let name = $state('');
-  let greeting = $state('');
+  interface WindowInfo {
+    id: number;
+    title: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
+
+  interface UiState {
+    windows: WindowInfo[];
+    focused_window: number | null;
+  }
+
+  interface UiEvent {
+    type: "StateChanged";
+    data: UiState;
+  }
+
+  let windows = $state<WindowInfo[]>([]);
   let maxTiles = $state(4);
 
-  async function greet() {
-    greeting = `Hello, ${name}! (Mocked greeting)`;
-  }
+  onMount(() => {
+    const unlisten = listen<UiEvent>("state-changed", (event) => {
+      console.log("Received state update:", event.payload);
+      if (event.payload.type === "StateChanged") {
+        windows = event.payload.data.windows;
+      }
+    });
+
+    return () => {
+      unlisten.then(f => f());
+    };
+  });
 </script>
 
 <main class="container">
@@ -28,29 +56,33 @@
     <header>
       <h1>Visual Layout Designer</h1>
       <div class="controls">
-        <label>Max Tiles:</label>
-        <input type="number" bind:value={maxTiles} min="1" max="10" />
+        <label>
+          Max Tiles:
+          <input type="number" bind:value={maxTiles} min="1" max="10" />
+        </label>
       </div>
     </header>
 
     <div class="layout-preview">
-      <PaneGroup direction="horizontal">
-        <Pane defaultSize={50} class="tile">
-          <div class="tile-content">Window 1</div>
-        </Pane>
-        <PaneResizer class="resizer" />
-        <Pane defaultSize={50}>
-          <PaneGroup direction="vertical">
-            <Pane defaultSize={50} class="tile">
-              <div class="tile-content">Window 2</div>
-            </Pane>
-            <PaneResizer class="resizer" />
-            <Pane defaultSize={50} class="tile">
-              <div class="tile-content">Window 3</div>
-            </Pane>
-          </PaneGroup>
-        </Pane>
-      </PaneGroup>
+      {#if windows.length === 0}
+        <div class="empty-state">
+          No windows managed. Open some apps!
+        </div>
+      {:else}
+        <div class="window-grid">
+          {#each windows as win}
+            <div class="window-tile" style="
+              left: {win.x / 10}px;
+              top: {win.y / 10}px;
+              width: {win.width / 10}px;
+              height: {win.height / 10}px;
+            ">
+              <span class="window-label">{win.title}</span>
+              <span class="window-id">#{win.id}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
   </section>
 </main>
@@ -126,31 +158,54 @@
     flex: 1;
     background-color: #222;
     border-radius: 8px;
+    position: relative;
     overflow: hidden;
     border: 1px solid #444;
   }
 
-  :global(.tile) {
-    background-color: #2a2a2a;
+  .empty-state {
     display: flex;
+    height: 100%;
     align-items: center;
     justify-content: center;
+    color: #666;
+    font-style: italic;
   }
 
-  .tile-content {
-    font-size: 1.2rem;
+  .window-grid {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+
+  .window-tile {
+    position: absolute;
+    background-color: #2a2a2a;
+    border: 1px solid #ff3e00;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: all 0.2s ease-out;
+  }
+
+  .window-label {
+    font-size: 0.9rem;
     font-weight: bold;
+    color: #eee;
+    text-align: center;
+    padding: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 90%;
+  }
+
+  .window-id {
+    font-size: 0.7rem;
     color: #888;
-  }
-
-  :global(.resizer) {
-    width: 4px;
-    background-color: #444;
-    transition: background-color 0.2s;
-  }
-
-  :global(.resizer:hover) {
-    background-color: #ff3e00;
   }
 
   .controls {
