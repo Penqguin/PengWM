@@ -1,9 +1,13 @@
 //! Main entry point for the pengwm-daemon.
 //! Initializes the window manager backend, configuration, and IPC server.
 
+/// Core window management logic and types.
 mod core;
+/// Platform-specific windowing system integrations.
 mod platform;
+/// Inter-process communication for the UI.
 mod ipc;
+/// Configuration management and file watching.
 mod config;
 
 use crate::platform::WindowManagerBackend;

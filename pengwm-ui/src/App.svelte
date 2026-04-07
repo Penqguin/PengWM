@@ -1,31 +1,53 @@
 <script lang="ts">
+  /**
+   * Main application component for the PengWM Visual Layout Designer.
+   * This component manages the UI state, listens for window manager events via Tauri IPC,
+   * and renders a preview of the current window layout.
+   */
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { Layout, Settings, Keyboard, Monitor } from "lucide-svelte";
 
+  /** Information about a single managed window. */
   interface WindowInfo {
+    /** Unique identifier for the window (pointer address from the daemon). */
     id: number;
+    /** The display title of the window. */
     title: string;
+    /** X coordinate of the window's top-left corner. */
     x: number;
+    /** Y coordinate of the window's top-left corner. */
     y: number;
+    /** Width of the window in pixels. */
     width: number;
+    /** Height of the window in pixels. */
     height: number;
   }
 
+  /** The complete UI state received from the window manager daemon. */
   interface UiState {
+    /** Array of all currently managed windows. */
     windows: WindowInfo[];
+    /** The ID of the currently focused window, if any. */
     focused_window: number | null;
   }
 
+  /** Wrapper for events received via the Tauri event system. */
   interface UiEvent {
     type: "StateChanged";
     data: UiState;
   }
 
+  /** Reactive list of windows currently managed by the daemon. */
   let windows = $state<WindowInfo[]>([]);
+  /** The maximum number of tiles allowed before stacking occurs. */
   let maxTiles = $state(4);
 
   onMount(() => {
+    /**
+     * Subscribe to 'state-changed' events from the Rust daemon.
+     * This ensures the UI stays in sync with the actual window layout.
+     */
     const unlisten = listen<UiEvent>("state-changed", (event) => {
       console.log("Received state update:", event.payload);
       if (event.payload.type === "StateChanged") {
@@ -33,6 +55,7 @@
       }
     });
 
+    // Cleanup the event listener when the component is unmounted.
     return () => {
       unlisten.then(f => f());
     };

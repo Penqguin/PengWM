@@ -1,9 +1,18 @@
+//! Platform abstraction layer for window management.
+//!
+//! This module defines the `WindowManagerBackend` trait, which provides a unified
+//! interface for interacting with different operating system windowing systems.
+
 use async_trait::async_trait;
 use crate::core::geometry::Rect;
 use crate::core::types::{WindowId, SystemEvent};
 use tokio::sync::mpsc::Sender;
 use anyhow::Result;
 
+/// A trait that abstracts the underlying platform's windowing system.
+///
+/// Implementations for macOS and Windows use this trait to provide a common
+/// interface for window manipulation and event monitoring.
 #[async_trait]
 pub trait WindowManagerBackend {
     /// Subscribe to system events (creation, destruction, focus)
@@ -23,5 +32,7 @@ pub trait WindowManagerBackend {
     fn release_window(&self, window: WindowId);
 }
 
+/// Windows-specific backend implementation.
 pub mod windows;
+/// macOS-specific backend implementation.
 pub mod macos;

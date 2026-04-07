@@ -89,6 +89,9 @@ impl WindowManager {
     }
 
     /// Calculates the rectangles for all windows in the tree and applies them via the backend.
+    /// 
+    /// # Arguments
+    /// * `monitor_rect` - The display area available for tiling.
     async fn apply_layout(&self, monitor_rect: Rect) {
         let layouts = self.tree.calculate_layout(
             monitor_rect,
@@ -105,6 +108,9 @@ impl WindowManager {
     }
 
     /// Synchronizes the current window manager state with all connected UI clients.
+    /// 
+    /// This converts the internal BSP tree state into a `UiState` and broadcasts it
+    /// via the `IpcServer`.
     fn sync_ui(&self) {
         // Use a default monitor size for coordinate normalization in the UI.
         let monitor_rect = Rect::new(

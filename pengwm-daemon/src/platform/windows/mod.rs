@@ -1,3 +1,6 @@
+//! Windows implementation of the WindowManagerBackend trait.
+//! Uses Win32 APIs (User32) to observe and control windows.
+
 use async_trait::async_trait;
 use crate::platform::WindowManagerBackend;
 use crate::core::geometry::Rect;
@@ -18,16 +21,19 @@ use windows::Win32::{
     },
 };
 
+/// Windows-specific window manager backend.
 pub struct WindowsBackend;
 
 #[async_trait]
 impl WindowManagerBackend for WindowsBackend {
+    /// Subscribes to window system events (stub implementation).
     async fn subscribe(&self, _event_sender: Sender<SystemEvent>) {
         #[cfg(target_os = "windows")]
         thread::spawn(move || {
             log::info!("Windows event hook started (stub)");
             let mut msg = MSG::default();
             unsafe {
+                // Main Win32 message loop to receive system-wide window events.
                 while GetMessageW(&mut msg, HWND(0), 0, 0).as_bool() {
                     TranslateMessage(&msg);
                     DispatchMessageW(&msg);
@@ -36,6 +42,7 @@ impl WindowManagerBackend for WindowsBackend {
         });
     }
 
+    /// Moves and resizes a window to the specified rectangle using `SetWindowPos`.
     fn set_window_rect(&self, window: WindowId, rect: Rect) -> Result<()> {
         #[cfg(target_os = "windows")]
         unsafe {
@@ -54,6 +61,8 @@ impl WindowManagerBackend for WindowsBackend {
         Ok(())
     }
 
+    /// Determines if a window should be managed by the window manager.
+    /// Filters out tooltips, popups, and other non-standard windows based on styles.
     fn is_manageable(&self, window: WindowId) -> bool {
         #[cfg(target_os = "windows")]
         unsafe {
@@ -95,10 +104,12 @@ impl WindowManagerBackend for WindowsBackend {
         }
     }
 
+    /// Returns the currently focused window (not implemented).
     fn get_focused_window(&self) -> Result<WindowId> {
         Ok(WindowId(0))
     }
 
+    /// No-op on Windows.
     fn release_window(&self, _window: WindowId) {
         // Windows HWNDs don't need explicit releasing like AXUIElementRef.
     }

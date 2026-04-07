@@ -52,24 +52,31 @@ impl BspTree {
     }
 
     /// Checks if a window is already managed by this tree.
-    pub fn contains_window(&self, window: WindowId) -> bool {
-        if let Some(root) = self.root {
-            root.descendants(&self.arena).any(|id| {
-                if let Some(node) = self.arena.get(id) {
-                    match node.get() {
-                        NodeData::Leaf { visible_window, stack } => {
-                            visible_window == &Some(window) || stack.contains(&window)
-                        }
-                        _ => false,
-                    }
-                } else {
-                    false
-                }
-            })
+    fn any_descendants_satisfy<F>(&self, node_id: NodeId, condition: F) -> bool
+    where
+        F: Fn(&NodeData) -> bool,
+    {
+        if let Some(node) = self.arena.get(node_id) {
+            condition(&node.get())
         } else {
             false
         }
     }
+
+    pub fn contains_window(&self, window: WindowId) -> bool {
+        self.root.as_ref().map_or(false, |root| {
+            root.descendants(&self.arena).any(|id| {
+                self.any_descendants_satisfy(id, |node| {
+                    if let NodeData::Leaf { visible_window, stack } = node {
+                        visible_window == &Some(window) || stack.contains(&window)
+                    } else {
+                        false
+                    }
+                })
+            })
+        })
+    }
+
 
     /// Count the number of active leaf nodes in the tree.
     pub fn count_leaves(&self) -> usize {

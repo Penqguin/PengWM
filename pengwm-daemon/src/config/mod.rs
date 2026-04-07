@@ -5,6 +5,7 @@ use serde::{Serialize, Deserialize};
 use std::fs;
 use std::path::Path;
 
+/// File system watcher for automatic configuration reloading.
 pub mod watcher;
 
 /// Global configuration for the window manager.
@@ -44,6 +45,7 @@ impl Config {
 }
 
 impl Default for Config {
+    /// Returns the default configuration for PengWM.
     fn default() -> Self {
         Self {
             max_tiles: 4,
