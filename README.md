@@ -1,6 +1,6 @@
 # PengWM 🐧
 
-PengWM is a workspace-oriented, tiling window manager for macOS and Windows. It uses a Binary Space Partitioning (BSP) algorithm to manage windows and provides a modern UI built with Tauri and Svelte.
+PengWM is a workspace-oriented, tiling window manager for macOS. It uses a Binary Space Partitioning (BSP) algorithm to manage windows and provides a modern UI built with Tauri and Svelte.
 
 ## Features
 
