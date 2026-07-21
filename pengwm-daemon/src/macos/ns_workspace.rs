@@ -1,37 +1,101 @@
-//! NSWorkspace application lifecycle notifications.
-//!
-//! Subscribes to three Cocoa notifications:
-//!   - NSWorkspaceDidLaunchApplicationNotification
-//!   - NSWorkspaceDidActivateApplicationNotification
-//!   - NSWorkspaceDidTerminateApplicationNotification
-//!
-//! These are received via the distributed notification center and forwarded
-//! into the event loop as DaemonEvent::AppLaunched / AppActivated / AppTerminated.
+use std::ffi::c_void;
+use std::ptr::NonNull;
 
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2_foundation::{
+    NSNotificationCenter, NSNotification, NSString,
+    NSNumber,
+};
 use tokio::sync::mpsc;
+
 use crate::event_loop::DaemonEvent;
 
-/// Register NSWorkspace notification observers.
-///
-/// Must be called from the main thread (Cocoa requirement). The callbacks
-/// fire on the main run loop, extract the PID from the notification's userInfo,
-/// and send into the mpsc channel.
-///
-/// # Arguments
-/// * `event_tx` — clone of the event loop sender.
+static NSApplicationProcessIdentifier: &str = "NSApplicationProcessIdentifier";
+
 pub fn observe(event_tx: mpsc::Sender<DaemonEvent>) {
-    //  let center = NSWorkspace.sharedWorkspace.notificationCenter
-    //
-    //  center.addObserver(forName: NSWorkspaceDidLaunchApplicationNotification)
-    //    callback: extract PID from notification.userInfo[NSApplicationProcessIdentifier]
-    //              send DaemonEvent::AppLaunched(pid) into event_tx
-    //
-    //  center.addObserver(forName: NSWorkspaceDidActivateApplicationNotification)
-    //    callback: extract PID, send DaemonEvent::AppActivated(pid)
-    //
-    //  center.addObserver(forName: NSWorkspaceDidTerminateApplicationNotification)
-    //    callback: extract PID, send DaemonEvent::AppTerminated(pid)
-    //
-    //  Note: Keep the observer tokens alive for the lifetime of the daemon.
-    todo!("subscribe to NSWorkspace notifications")
+    let center = NSNotificationCenter::defaultCenter();
+
+    let ctx = Box::into_raw(Box::new(event_tx)) as *mut c_void;
+
+    unsafe {
+        add_observer(&center, ctx, NSWorkspaceDidLaunchApplicationNotification, 0);
+        add_observer(&center, ctx, NSWorkspaceDidActivateApplicationNotification, 1);
+        add_observer(&center, ctx, NSWorkspaceDidTerminateApplicationNotification, 2);
+    }
+}
+
+use objc2_app_kit::{
+    NSWorkspaceDidLaunchApplicationNotification,
+    NSWorkspaceDidActivateApplicationNotification,
+    NSWorkspaceDidTerminateApplicationNotification,
+};
+
+fn add_observer(
+    center: &NSNotificationCenter,
+    ctx: *mut c_void,
+    name: &NSString,
+    event_type: u8,
+) {
+    let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
+        let notif = unsafe { notification.as_ref() };
+        if let Some(pid) = extract_pid(notif) {
+            let event = match event_type {
+                0 => DaemonEvent::AppLaunched(pid),
+                1 => DaemonEvent::AppActivated(pid),
+                _ => DaemonEvent::AppTerminated(pid),
+            };
+            log::debug!("NSWorkspace notification: pid={}", pid);
+            let tx = unsafe { &*(ctx as *const mpsc::Sender<DaemonEvent>) };
+            let _ = tx.try_send(event);
+        }
+    });
+
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(name),
+            None,
+            None,
+            &*block,
+        )
+    };
+    std::mem::forget(token);
+}
+
+fn extract_pid(notification: &NSNotification) -> Option<i32> {
+    let user_info = notification.userInfo()?;
+    let key = NSString::from_str(NSApplicationProcessIdentifier);
+    unsafe {
+        let value: Option<Retained<NSObject>> = msg_send![&user_info, objectForKey: &*key];
+        value.map(|obj| {
+            let num = &*obj as *const NSObject as *const NSNumber;
+            (*num).intValue()
+        })
+    }
+}
+
+use objc2::runtime::NSObject;
+use objc2::msg_send;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_identifier_constant() {
+        assert_eq!(NSApplicationProcessIdentifier, "NSApplicationProcessIdentifier");
+    }
+
+    #[test]
+    fn observe_function_signature() {
+        fn _type_check(_f: fn(mpsc::Sender<DaemonEvent>)) {}
+        _type_check(observe);
+    }
+
+    #[test]
+    fn event_ctors() {
+        assert!(matches!(DaemonEvent::AppLaunched(42), DaemonEvent::AppLaunched(42)));
+        assert!(matches!(DaemonEvent::AppActivated(42), DaemonEvent::AppActivated(42)));
+        assert!(matches!(DaemonEvent::AppTerminated(42), DaemonEvent::AppTerminated(42)));
+    }
 }

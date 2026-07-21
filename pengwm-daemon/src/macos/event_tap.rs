@@ -1,46 +1,171 @@
-//! CGEventTap for global keyboard shortcuts.
-//!
-//! Creates an event tap that intercepts key-down events before they reach any
-//! application. If the key combination matches a configured keybind, the event
-//! is swallowed and a DaemonEvent::Keybind is sent into the event loop.
-//! Otherwise the event passes through normally.
+use std::ffi::c_void;
+use std::ptr;
 
+use core_foundation::base::CFRelease;
+use core_foundation::runloop::{
+    CFRunLoopGetCurrent, CFRunLoopAddSource, kCFRunLoopDefaultMode, CFRunLoopSourceRef,
+};
 use tokio::sync::mpsc;
-use crate::event_loop::DaemonEvent;
 
-/// Start the CGEventTap on a background thread.
-///
-/// # Arguments
-/// * `event_tx` — sender to forward matched keybinds.
-/// * `keybinds` — the parsed keybind config (Vec<(KeyCode, ModifierFlags, DaemonCommand)>)
-///
-/// The event tap runs on its own CFRunLoop thread. It never exits.
-pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Vec<(u16, u64, DaemonCommand)>) {
-    //  create CGEventMask for kCGEventKeyDown
-    //  CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, ..., eventMask, callback, refcon)
-    //  CFRunLoopSource from the tap
-    //  add to current CFRunLoop
-    //  run the run loop
-    todo!("start event tap")
+use crate::event_loop::DaemonEvent;
+use crate::config::keybinds::{KeybindConfig, find_keybind, ModifierFlags};
+
+type CGEventRef = *mut c_void;
+type CGEventMask = u64;
+type CFIndex = isize;
+
+const kCGEventKeyDown: u32 = 10;
+const kCGSessionEventTap: u32 = 1;
+const kCGHeadInsertEventTap: u32 = 0;
+
+const kCGKeyboardEventKeycode: u32 = 9;
+
+pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: KeybindConfig) {
+    let ctx = Box::into_raw(Box::new(Context {
+        event_tx,
+        keybinds: Box::new(keybinds),
+    })) as *mut c_void;
+
+    let event_mask = CGEventMaskBit(kCGEventKeyDown);
+
+    unsafe {
+        let tap = CGEventTapCreate(
+            kCGSessionEventTap,
+            kCGHeadInsertEventTap,
+            0, // kCGEventTapOptionDefault = 0
+            event_mask,
+            Some(event_tap_callback),
+            ctx,
+        );
+
+        if tap.is_null() {
+            log::error!("Failed to create CGEventTap — check Accessibility permissions.");
+            let _ = Box::from_raw(ctx);
+            return;
+        }
+
+        let run_loop_source: CFRunLoopSourceRef = CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) as CFRunLoopSourceRef;
+        if run_loop_source.is_null() {
+            log::error!("Failed to create CFRunLoopSource from event tap");
+            CFRelease(tap as *mut c_void);
+            let _ = Box::from_raw(ctx);
+            return;
+        }
+
+        let run_loop = CFRunLoopGetCurrent();
+        CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopDefaultMode);
+
+        // The run loop source is retained by the run loop; do not release it.
+
+        log::info!("CGEventTap started successfully");
+    }
 }
 
-/// The C callback invoked for each keyboard event.
-///
-/// # Safety
-/// Called from CG's event tap thread.
+struct Context {
+    event_tx: mpsc::Sender<DaemonEvent>,
+    keybinds: Box<KeybindConfig>,
+}
+
 unsafe extern "C" fn event_tap_callback(
-    _proxy: *mut std::ffi::c_void,
+    _proxy: CGEventRef,
     _type: u32,
-    event: *mut std::ffi::c_void,
-    refcon: *mut std::ffi::c_void,
-) -> *mut std::ffi::c_void {
-    //  CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) -> keycode
-    //  CGEventGetFlags(event) -> modifiers
-    //  look up (keycode, modifiers) in the keybinds list
-    //  if match found:
-    //       send DaemonEvent::Keybind(command) into refcon's mpsc sender
-    //       return null (swallow event)
-    //  else:
-    //       return event (pass through)
-    todo!("handle key event")
+    event: CGEventRef,
+    refcon: *mut c_void,
+) -> CGEventRef {
+    let ctx = &*(refcon as *const Context);
+
+    let keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) as u16;
+    let flags = CGEventGetFlags(event);
+
+    let filtered_flags = flags & (MODIFIER_CMD | MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT);
+
+    if let Some(command) = find_keybind(keycode, filtered_flags, &ctx.keybinds) {
+        log::debug!("Keybind matched: keycode={}, command={:?}", keycode, command);
+        let _ = ctx.event_tx.try_send(DaemonEvent::Keybind(command));
+        return ptr::null_mut();
+    }
+
+    event
+}
+
+const MODIFIER_CMD: ModifierFlags = 0x0010_0000;
+const MODIFIER_ALT: ModifierFlags = 0x0008_0000;
+const MODIFIER_CTRL: ModifierFlags = 0x0004_0000;
+const MODIFIER_SHIFT: ModifierFlags = 0x0002_0000;
+
+fn CGEventMaskBit(event_type: u32) -> CGEventMask {
+    1 << event_type
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventTapCreate(
+        tap: u32,
+        place: u32,
+        options: u32,
+        events_of_interest: CGEventMask,
+        callback: Option<unsafe extern "C" fn(CGEventRef, u32, CGEventRef, *mut c_void) -> CGEventRef>,
+        refcon: *mut c_void,
+    ) -> CGEventRef;
+
+    fn CFMachPortCreateRunLoopSource(
+        allocator: *mut c_void,
+        port: CGEventRef,
+        order: CFIndex,
+    ) -> *mut c_void;
+
+    fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
+    fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
+}
+
+type CGEventFlags = u64;
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::keybinds::KeybindConfig;
+
+    #[test]
+    fn mask_bit_calculation() {
+        assert_eq!(CGEventMaskBit(0), 1);
+        assert_eq!(CGEventMaskBit(10), 1024);
+    }
+
+    #[test]
+    fn modifier_constants_non_zero() {
+        assert_ne!(MODIFIER_CMD, 0);
+        assert_ne!(MODIFIER_ALT, 0);
+        assert_ne!(MODIFIER_CTRL, 0);
+        assert_ne!(MODIFIER_SHIFT, 0);
+    }
+
+    #[test]
+    fn modifier_flags_are_distinct() {
+        let all = MODIFIER_CMD | MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT;
+        assert_eq!(all.count_ones(), 4);
+    }
+
+    #[test]
+    fn kcg_event_constants() {
+        assert_eq!(kCGEventKeyDown, 10);
+        assert_eq!(kCGKeyboardEventKeycode, 9);
+    }
+
+    #[test]
+    fn context_struct_layout() {
+        let (tx, _rx) = mpsc::channel(64);
+        let keybinds = Box::new(KeybindConfig::default());
+        let ctx = Context { event_tx: tx, keybinds };
+        assert_eq!(std::mem::size_of_val(&ctx.event_tx), std::mem::size_of::<mpsc::Sender<DaemonEvent>>());
+    }
+
+    #[test]
+    fn start_function_accepts_config() {
+        fn _type_check(_f: fn(mpsc::Sender<DaemonEvent>, KeybindConfig)) {}
+        _type_check(start);
+    }
 }

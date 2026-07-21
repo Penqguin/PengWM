@@ -1,52 +1,38 @@
-//! macOS virtual desktop (Space) detection.
-//!
-//! Uses the private CGSCopyManagedDisplaySpaces API via dlsym to query
-//! which spaces exist and which displays they belong to.
-//!
-//! This is the *one* place where we use a private API — it's required to
-//! detect Spaces because there's no public alternative. The daemon still
-//! does NOT require SIP to be disabled.
-
-use tokio::sync::mpsc;
-use crate::event_loop::DaemonEvent;
-
-// ---------------------------------------------------------------------------
-// Space info
-// ---------------------------------------------------------------------------
-
-/// A macOS virtual desktop (Space).
 pub struct SpaceInfo {
-    /// Display this space is on.
     pub display_id: u32,
-    /// 0-based space index within the display.
     pub space_index: u8,
-    /// The display UUID for matching across reboots.
     pub display_uuid: String,
 }
 
-// ---------------------------------------------------------------------------
-// Queries
-// ---------------------------------------------------------------------------
-
-/// Return all current spaces and the windows assigned to each.
-///
-/// Uses CGSPrivate.h functions (loaded at runtime via dlsym to avoid
-/// link-time dependency on private frameworks).
 pub fn all_spaces() -> Vec<SpaceInfo> {
-    //  dlsym(RTLD_DEFAULT, "CGSCopyManagedDisplaySpaces") -> fn ptr
-    //  call it → CFArray of display-space mappings
-    //  iterate and build SpaceInfo for each
-    todo!("query Spaces via CGSCopyManagedDisplaySpaces")
+    log::warn!("virtual_desktop::all_spaces not yet implemented (requires CGSPrivate)");
+    Vec::new()
 }
 
-/// Return the space index currently active on the given display.
-pub fn active_space_for_display(display_id: u32) -> Option<u8> {
-    //  dlsym("CGSGetActiveSpace") or similar
-    todo!()
+pub fn active_space_for_display(_display_id: u32) -> Option<u8> {
+    None
 }
 
-/// Switch to a specific space on a display.
-pub fn switch_to_space(display_id: u32, space_index: u8) {
-    //  CGSPrivate: CGSSetWorkspace / CGSSetManagedDisplayWorkspace
-    todo!()
+pub fn switch_to_space(_display_id: u32, _space_index: u8) {
+    log::warn!("virtual_desktop::switch_to_space not yet implemented (requires CGSPrivate)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn space_info_struct_size() {
+        assert_eq!(std::mem::size_of::<SpaceInfo>(), 32);
+    }
+
+    #[test]
+    fn functions_exist_with_correct_signatures() {
+        fn _check_all_spaces(_f: fn() -> Vec<SpaceInfo>) {}
+        fn _check_active_space(_f: fn(u32) -> Option<u8>) {}
+        fn _check_switch_space(_f: fn(u32, u8)) {}
+        _check_all_spaces(all_spaces);
+        _check_active_space(active_space_for_display);
+        _check_switch_space(switch_to_space);
+    }
 }

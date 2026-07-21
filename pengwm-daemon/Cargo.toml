@@ -3,6 +3,14 @@ name = "pengwm-daemon"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "pengwm_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pengwm-daemon"
+path = "src/main.rs"
+
 [dependencies]
 pengwm-core = { path = "../pengwm-core" }
 tokio = { version = "1", features = ["full"] }
@@ -13,10 +21,13 @@ log = "0.4"
 env_logger = "0.10"
 anyhow = "1"
 thiserror = "1"
+toml = "0.8"
+block2 = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSNotification", "NSRunLoop"] }
+objc2 = { version = "0.6", features = ["alloc"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSNotification", "NSRunLoop", "NSDictionary", "NSValue", "block2"] }
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
 core-foundation = "0.9"
 accessibility-sys = "0.2"
+core-graphics = "0.21"

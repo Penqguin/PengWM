@@ -11,7 +11,7 @@ use crate::tree::WindowId;
 // ---------------------------------------------------------------------------
 
 /// Every message the CLI can send to the daemon.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonCommand {
     // -- Focus movement --
     FocusLeft,

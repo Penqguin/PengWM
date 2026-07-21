@@ -1,72 +1,287 @@
-//! Low-level wrappers around AXUIElement calls.
-//!
-//! These are used by StateManager to apply the computed layout.
-//! Each function takes raw types (WindowId, Rect) — no macOS types leak out.
+use std::ffi::c_void;
+use std::ptr;
+
+use accessibility_sys::*;
+use core_foundation::base::{CFRelease, CFRetain, CFTypeRef, TCFType};
+use core_foundation::boolean::kCFBooleanTrue;
+use core_foundation::string::{CFString, CFStringRef};
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::number::CFNumber;
+use core_foundation::array::{CFArrayRef, CFArrayGetCount, CFArrayGetValueAtIndex};
 
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
-// ---------------------------------------------------------------------------
-// Window attributes
-// ---------------------------------------------------------------------------
-
-/// Set the window's position and size on screen.
-///
-/// # Arguments
-/// * `window_id` — the CGWindowID (cast from AXUIElementRef).
-/// * `rect`      — global-coordinate rectangle to apply.
-pub fn set_window_rect(window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
-    //  cast window_id to AXUIElementRef
-    //  AXValueCreate(kAXValueTypeCGPoint, &CGPoint { x, y })
-    //  AXUIElementSetAttributeValue(element, CFSTR("AXPosition"), value)
-    //  AXValueCreate(kAXValueTypeCGSize, &CGSize { w, h })
-    //  AXUIElementSetAttributeValue(element, CFSTR("AXSize"), value)
-    //  CFRelease intermediate values
-    todo!()
+pub fn is_process_trusted() -> bool {
+    unsafe { AXIsProcessTrusted() }
 }
 
-/// Return the window's current position and size.
-pub fn get_window_rect(window_id: WindowId) -> Option<Rect> {
-    //  AXUIElementCopyAttributeValue(element, "AXPosition")
-    //  AXUIElementCopyAttributeValue(element, "AXSize")
-    //  combine into Rect
-    todo!()
+pub fn is_process_trusted_with_prompt() -> bool {
+    unsafe {
+        let key = CFString::new("AXTrustedCheckOptionPrompt");
+        let val = CFNumber::from(1i32);
+        let dict = CFDictionary::from_CFType_pairs(
+            &[(key, val)],
+        );
+        AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef())
+    }
 }
 
-/// Bring the window to the front and give it focus.
-pub fn focus_window(window_id: WindowId) {
-    //  AXUIElementPerformAction(element, "AXRaise")
-    //  AXUIElementSetAttributeValue(element, "AXFocused", kCFBooleanTrue)
-    todo!()
+pub unsafe fn ax_window_id_from_element(element: AXUIElementRef) -> Option<WindowId> {
+    let name = CFString::new(kAXWindowAttribute);
+    let mut value: CFTypeRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value);
+    if err == kAXErrorSuccess && !value.is_null() {
+        let window_id = value as u64;
+        CFRelease(value);
+        Some(window_id)
+    } else {
+        None
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Window filtering
-// ---------------------------------------------------------------------------
+pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Result<()> {
+    let pos_name = CFString::new(kAXPositionAttribute);
+    let size_name = CFString::new(kAXSizeAttribute);
 
-/// Check whether a window is a standard manageable window (role = AXWindow,
-/// subrole = AXStandardWindow). Filters out tooltips, popups, menus.
-pub fn is_manageable(window_id: WindowId) -> bool {
-    //  get "AXRole"        → must be "AXWindow"
-    //  get "AXSubrole"     → must be "AXStandardWindow"
-    //  get "AXFocused"     (optional, for filtering floating windows)
-    todo!()
+    let mut point = CGPoint { x: rect.x, y: rect.y };
+    let pos_value = AXValueCreate(kAXValueTypeCGPoint, &mut point as *mut _ as *mut c_void);
+    if pos_value.is_null() {
+        anyhow::bail!("AXValueCreate failed for position");
+    }
+    let err = AXUIElementSetAttributeValue(
+        element,
+        pos_name.as_concrete_TypeRef(),
+        pos_value as CFTypeRef,
+    );
+    CFRelease(pos_value as CFTypeRef);
+    if err != kAXErrorSuccess {
+        anyhow::bail!("AXUIElementSetAttributeValue position error: {}", error_string(err));
+    }
+
+    let mut size = CGSize { width: rect.width, height: rect.height };
+    let size_value = AXValueCreate(kAXValueTypeCGSize, &mut size as *mut _ as *mut c_void);
+    if size_value.is_null() {
+        anyhow::bail!("AXValueCreate failed for size");
+    }
+    let err = AXUIElementSetAttributeValue(
+        element,
+        size_name.as_concrete_TypeRef(),
+        size_value as CFTypeRef,
+    );
+    CFRelease(size_value as CFTypeRef);
+    if err != kAXErrorSuccess {
+        anyhow::bail!("AXUIElementSetAttributeValue size error: {}", error_string(err));
+    }
+
+    Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// App-level queries
-// ---------------------------------------------------------------------------
+pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
+    let pos_name = CFString::new(kAXPositionAttribute);
+    let size_name = CFString::new(kAXSizeAttribute);
 
-/// Return the PID of the frontmost (key) application.
+    let mut pos_val: CFTypeRef = ptr::null();
+    let err_pos = AXUIElementCopyAttributeValue(element, pos_name.as_concrete_TypeRef(), &mut pos_val);
+    if err_pos != kAXErrorSuccess || pos_val.is_null() {
+        return None;
+    }
+
+    let mut size_val: CFTypeRef = ptr::null();
+    let err_size = AXUIElementCopyAttributeValue(element, size_name.as_concrete_TypeRef(), &mut size_val);
+    if err_size != kAXErrorSuccess || size_val.is_null() {
+        CFRelease(pos_val);
+        return None;
+    }
+
+    let mut point = CGPoint { x: 0.0, y: 0.0 };
+    let mut size = CGSize { width: 0.0, height: 0.0 };
+    AXValueGetValue(pos_val as AXValueRef, kAXValueTypeCGPoint, &mut point as *mut _ as *mut c_void);
+    AXValueGetValue(size_val as AXValueRef, kAXValueTypeCGSize, &mut size as *mut _ as *mut c_void);
+
+    CFRelease(pos_val);
+    CFRelease(size_val);
+
+    Some(Rect { x: point.x, y: point.y, width: size.width, height: size.height })
+}
+
+pub unsafe fn focus_window(element: AXUIElementRef) {
+    let raise_name = CFString::new(kAXRaiseAction);
+    AXUIElementPerformAction(element, raise_name.as_concrete_TypeRef());
+
+    let focused_name = CFString::new(kAXFocusedAttribute);
+    AXUIElementSetAttributeValue(
+        element,
+        focused_name.as_concrete_TypeRef(),
+        kCFBooleanTrue as CFTypeRef,
+    );
+}
+
+pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
+    let role_name = CFString::new(kAXRoleAttribute);
+    let mut role_val: CFTypeRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(element, role_name.as_concrete_TypeRef(), &mut role_val);
+    if err != kAXErrorSuccess || role_val.is_null() {
+        return false;
+    }
+    let role_str = CFString::wrap_under_create_rule(role_val as CFStringRef);
+    if role_str.to_string() != kAXWindowRole {
+        return false;
+    }
+
+    let subrole_name = CFString::new(kAXSubroleAttribute);
+    let mut subrole_val: CFTypeRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(element, subrole_name.as_concrete_TypeRef(), &mut subrole_val);
+    if err != kAXErrorSuccess || subrole_val.is_null() {
+        return false;
+    }
+    let subrole_str = CFString::wrap_under_create_rule(subrole_val as CFStringRef);
+    subrole_str.to_string() == kAXStandardWindowSubrole
+}
+
 pub fn frontmost_pid() -> Option<i32> {
-    //  NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier
-    todo!()
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWorkspace;
+        let ws = NSWorkspace::sharedWorkspace();
+        ws.frontmostApplication().map(|app| app.processIdentifier())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
-/// Return all WindowIds for a given PID.
-pub fn windows_for_pid(pid: i32) -> Vec<WindowId> {
-    //  AXUIElementCreateApplication(pid)
-    //  AXUIElementCopyAttributeValue("AXWindows")
-    //  collect WindowIds from the CFArray
-    todo!()
+pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
+    let app = AXUIElementCreateApplication(pid);
+    if app.is_null() {
+        return Vec::new();
+    }
+
+    let windows_attr = CFString::new(kAXWindowsAttribute);
+    let mut windows_array: CFArrayRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(
+        app,
+        windows_attr.as_concrete_TypeRef(),
+        &mut windows_array as *mut _ as *mut CFTypeRef,
+    );
+
+    if err != kAXErrorSuccess || windows_array.is_null() {
+        CFRelease(app as CFTypeRef);
+        return Vec::new();
+    }
+
+    let count = CFArrayGetCount(windows_array);
+    let mut result = Vec::new();
+
+    for i in 0..count {
+        let elem = CFArrayGetValueAtIndex(windows_array, i) as AXUIElementRef;
+        if elem.is_null() {
+            continue;
+        }
+        if !is_manageable(elem) {
+            continue;
+        }
+        if let Some(window_id) = ax_window_id_from_element(elem) {
+            CFRetain(elem as CFTypeRef);
+            result.push((elem, window_id));
+        }
+    }
+
+    CFRelease(windows_array as CFTypeRef);
+    CFRelease(app as CFTypeRef);
+
+    result
+}
+
+pub unsafe fn find_element(pid: i32, window_id: WindowId) -> Option<AXUIElementRef> {
+    let windows = windows_for_pid(pid);
+    for (elem, wid) in &windows {
+        if *wid == window_id {
+            return Some(*elem);
+        }
+    }
+    None
+}
+
+#[repr(C)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[repr(C)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rect_creation() {
+        let r = Rect::new(10.0, 20.0, 100.0, 50.0);
+        assert_eq!(r.x, 10.0);
+        assert_eq!(r.y, 20.0);
+        assert_eq!(r.width, 100.0);
+        assert_eq!(r.height, 50.0);
+    }
+
+    #[test]
+    fn window_id_type_is_compatible() {
+        let id: WindowId = 42;
+        let _cg_id: u32 = id as u32;
+        assert_eq!(_cg_id, 42u32);
+    }
+
+    #[test]
+    fn axui_element_ref_is_pointer_sized() {
+        assert_eq!(std::mem::size_of::<AXUIElementRef>(), std::mem::size_of::<*mut c_void>());
+    }
+
+    #[test]
+    fn axtype_ref_is_pointer_sized() {
+        assert_eq!(std::mem::size_of::<AXValueRef>(), std::mem::size_of::<*mut c_void>());
+    }
+
+    #[test]
+    fn error_constants_are_negative() {
+        assert!(kAXErrorSuccess >= 0);
+        assert!(kAXErrorFailure < 0);
+        assert!(kAXErrorCannotComplete < 0);
+        assert!(kAXErrorAttributeUnsupported < 0);
+    }
+
+    #[test]
+    fn role_constants_match_expected_strings() {
+        assert_eq!(kAXWindowRole, "AXWindow");
+        assert_eq!(kAXStandardWindowSubrole, "AXStandardWindow");
+        assert_eq!(kAXApplicationRole, "AXApplication");
+    }
+
+    #[test]
+    fn attribute_constants_match() {
+        assert_eq!(kAXPositionAttribute, "AXPosition");
+        assert_eq!(kAXSizeAttribute, "AXSize");
+        assert_eq!(kAXRoleAttribute, "AXRole");
+        assert_eq!(kAXSubroleAttribute, "AXSubrole");
+        assert_eq!(kAXFocusedAttribute, "AXFocused");
+        assert_eq!(kAXWindowAttribute, "AXWindow");
+        assert_eq!(kAXWindowsAttribute, "AXWindows");
+        assert_eq!(kAXFocusedWindowAttribute, "AXFocusedWindow");
+    }
+
+    #[test]
+    fn action_constants_match() {
+        assert_eq!(kAXRaiseAction, "AXRaise");
+    }
+
+    #[test]
+    fn axvalue_types_match() {
+        assert_eq!(kAXValueTypeCGPoint, 1);
+        assert_eq!(kAXValueTypeCGSize, 2);
+        assert_eq!(kAXValueTypeCGRect, 3);
+    }
 }
