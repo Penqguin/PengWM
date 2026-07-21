@@ -1,0 +1,3 @@
+[workspace]
+resolver = "2"
+members = ["pengwm-core", "pengwm-daemon", "pengwm-cli"]
