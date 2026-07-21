@@ -1,17 +1,8 @@
-//! Pure layout engine — no FFI, no macOS types.
-//!
-//! All math uses local coordinate space (origin at 0,0).
-//! The daemon applies monitor offsets just before calling AXUIElement.
-
 use serde::{Serialize, Deserialize};
-use crate::tree::{Arena, NodeData, NodeId, WindowId};
+use crate::tree::{Arena, NodeData, NodeId, SplitDirection, WindowId};
+use std::collections::HashMap;
 
-// ---------------------------------------------------------------------------
-// Rect
-// ---------------------------------------------------------------------------
-
-/// A 2D axis-aligned rectangle in local screen coordinates.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,
@@ -25,69 +16,382 @@ impl Rect {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Layout algorithm
-// ---------------------------------------------------------------------------
-
-/// Recursively compute the position and size of every window leaf in the tree.
-///
-/// # Arguments
-/// * `node_id`    — starting node (pass the workspace root)
-/// * `bounding`   — the rectangle this node is constrained to
-/// * `arena`      — the workspace's node storage
-/// * `output`     — accumulator: maps WindowId → final Rect
-/// * `gap_size`   — inner + outer gap in points
-///
-//  Pseudocode:
-//  - Look up node in arena.
-//  - If NodeData::Window:
-//       inset bounding by gap_size on all sides
-//       insert (window_id → inset_rect) into output
-//  - If NodeData::Split:
-//       for each child, in order:
-//           compute child's proportional sub-rectangle based on direction + ratios
-//           subtract half the gap between adjacent children
-//           recurse with calculate_layout(child_id, sub_rect, ...)
 pub fn calculate_layout(
     node_id: NodeId,
     bounding: Rect,
     arena: &Arena,
-    output: &mut std::collections::HashMap<WindowId, Rect>,
+    output: &mut HashMap<WindowId, Rect>,
     gap_size: f64,
 ) {
-    todo!("recursive layout math")
+    let node = match arena.get(node_id) {
+        Some(n) => n,
+        None => return,
+    };
+
+    match &node.data {
+        NodeData::Window { window_id, .. } => {
+            output.insert(*window_id, bounding);
+        }
+        NodeData::Split {
+            direction,
+            ratios,
+        } => {
+            let child_rects = match direction {
+                SplitDirection::Horizontal => {
+                    split_horizontal_n(bounding, ratios, gap_size)
+                }
+                SplitDirection::Vertical => {
+                    split_vertical_n(bounding, ratios, gap_size)
+                }
+            };
+            for (&child_id, rect) in node.children.iter().zip(child_rects.iter()) {
+                calculate_layout(child_id, *rect, arena, output, gap_size);
+            }
+        }
+    }
 }
 
-/// Convert a local-coordinate rect to global by adding the monitor's origin offset.
-///
-/// This is the last transform before calling AXUIElementSetAttributeValue.
-pub fn screen_local_to_global(
-    local: Rect,
-    monitor_origin: (i32, i32),
-) -> Rect {
-    todo!("add monitor_origin.0 to x, monitor_origin.1 to y")
+pub fn screen_local_to_global(local: Rect, monitor_origin: (i32, i32)) -> Rect {
+    Rect {
+        x: local.x + monitor_origin.0 as f64,
+        y: local.y + monitor_origin.1 as f64,
+        width: local.width,
+        height: local.height,
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers (optional, used internally by calculate_layout)
-// ---------------------------------------------------------------------------
-
-/// Split a rectangle horizontally, returning (left_rect, right_rect).
-fn split_horizontal(bounding: Rect, ratio: f32, gap: f64) -> (Rect, Rect) {
-    todo!("compute left and right child rects with gap between them")
+pub fn inset_rect(rect: Rect, gap: f64) -> Rect {
+    let double = gap * 2.0;
+    Rect {
+        x: rect.x + gap,
+        y: rect.y + gap,
+        width: (rect.width - double).max(0.0),
+        height: (rect.height - double).max(0.0),
+    }
 }
 
-/// Split a rectangle vertically, returning (top_rect, bottom_rect).
-fn split_vertical(bounding: Rect, ratio: f32, gap: f64) -> (Rect, Rect) {
-    todo!("compute top and bottom child rects with gap between them")
+fn split_horizontal_n(bounding: Rect, ratios: &[f32], gap_size: f64) -> Vec<Rect> {
+    let n = ratios.len();
+    if n == 0 {
+        return vec![];
+    }
+    if n == 1 {
+        return vec![bounding];
+    }
+
+    let total_gap = (n - 1) as f64 * gap_size;
+    let available_height = (bounding.height - total_gap).max(0.0);
+
+    let ratio_sum: f64 = ratios.iter().map(|&r| r as f64).sum();
+    let ratio_sum = if ratio_sum == 0.0 { 1.0 } else { ratio_sum };
+
+    let mut rects = Vec::with_capacity(n);
+    let mut y_offset = bounding.y;
+
+    for (i, &ratio) in ratios.iter().enumerate() {
+        let height = if i == n - 1 {
+            (bounding.y + bounding.height - y_offset).max(0.0)
+        } else {
+            (available_height * ratio as f64 / ratio_sum).max(0.0)
+        };
+        rects.push(Rect::new(bounding.x, y_offset, bounding.width, height));
+        y_offset += height + gap_size;
+    }
+
+    rects
+}
+
+fn split_vertical_n(bounding: Rect, ratios: &[f32], gap_size: f64) -> Vec<Rect> {
+    let n = ratios.len();
+    if n == 0 {
+        return vec![];
+    }
+    if n == 1 {
+        return vec![bounding];
+    }
+
+    let total_gap = (n - 1) as f64 * gap_size;
+    let available_width = (bounding.width - total_gap).max(0.0);
+
+    let ratio_sum: f64 = ratios.iter().map(|&r| r as f64).sum();
+    let ratio_sum = if ratio_sum == 0.0 { 1.0 } else { ratio_sum };
+
+    let mut rects = Vec::with_capacity(n);
+    let mut x_offset = bounding.x;
+
+    for (i, &ratio) in ratios.iter().enumerate() {
+        let width = if i == n - 1 {
+            (bounding.x + bounding.width - x_offset).max(0.0)
+        } else {
+            (available_width * ratio as f64 / ratio_sum).max(0.0)
+        };
+        rects.push(Rect::new(x_offset, bounding.y, width, bounding.height));
+        x_offset += width + gap_size;
+    }
+
+    rects
 }
 
 #[cfg(test)]
 mod tests {
-    // TODO: test calculate_layout with:
-    //   - single root leaf
-    //   - one horizontal split with two windows
-    //   - nested horizontal + vertical splits
-    //   - gap_size = 0
-    //   - non-uniform ratios
+    use super::*;
+    use crate::tree::{Arena, NodeData};
+
+    fn single_window_arena() -> (Arena, NodeId) {
+        let mut arena = Arena::new();
+        let id = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: true,
+        });
+        (arena, id)
+    }
+
+    fn two_window_arena() -> (Arena, NodeId) {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let split = arena.alloc(NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ratios: vec![0.5, 0.5],
+        });
+        arena.get_mut(a).unwrap().parent = Some(split);
+        arena.get_mut(b).unwrap().parent = Some(split);
+        arena.get_mut(split).unwrap().children = vec![a, b];
+        (arena, split)
+    }
+
+    fn three_window_flattened_arena() -> (Arena, NodeId) {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let c = arena.alloc(NodeData::Window {
+            window_id: 3,
+            is_focused: false,
+        });
+        let split = arena.alloc(NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ratios: vec![1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
+        });
+        arena.get_mut(a).unwrap().parent = Some(split);
+        arena.get_mut(b).unwrap().parent = Some(split);
+        arena.get_mut(c).unwrap().parent = Some(split);
+        arena.get_mut(split).unwrap().children = vec![a, b, c];
+        (arena, split)
+    }
+
+    #[test]
+    fn layout_single_window() {
+        let (arena, root) = single_window_arena();
+        let mut output = HashMap::new();
+        let bounding = inset_rect(Rect::new(0.0, 0.0, 1920.0, 1080.0), 10.0);
+
+        calculate_layout(root, bounding, &arena, &mut output, 10.0);
+
+        assert_eq!(output.len(), 1);
+        let r = output[&1];
+        assert_eq!(r.x, 10.0);
+        assert_eq!(r.y, 10.0);
+        assert_eq!(r.width, 1900.0);
+        assert_eq!(r.height, 1060.0);
+    }
+
+    #[test]
+    fn layout_single_window_zero_gap() {
+        let (arena, root) = single_window_arena();
+        let mut output = HashMap::new();
+        let bounding = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        calculate_layout(root, bounding, &arena, &mut output, 0.0);
+
+        assert_eq!(output[&1], Rect::new(0.0, 0.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn layout_two_vertical_no_gap() {
+        let (arena, root) = two_window_arena();
+        let mut output = HashMap::new();
+        let bounding = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        calculate_layout(root, bounding, &arena, &mut output, 0.0);
+
+        assert_eq!(output[&1], Rect::new(0.0, 0.0, 50.0, 100.0));
+        assert_eq!(output[&2], Rect::new(50.0, 0.0, 50.0, 100.0));
+    }
+
+    #[test]
+    fn layout_two_vertical_with_gap() {
+        let (arena, root) = two_window_arena();
+        let mut output = HashMap::new();
+        let bounding = inset_rect(Rect::new(0.0, 0.0, 200.0, 100.0), 10.0);
+
+        calculate_layout(root, bounding, &arena, &mut output, 10.0);
+
+        let r1 = output[&1];
+        let r2 = output[&2];
+        assert!((r1.x - 10.0).abs() < 1e-6);
+        assert!((r1.width - 85.0).abs() < 1e-4);
+        assert!((r2.x - 105.0).abs() < 1e-4);
+        assert!((r2.width - 85.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn layout_two_horizontal() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let split = arena.alloc(NodeData::Split {
+            direction: SplitDirection::Horizontal,
+            ratios: vec![0.5, 0.5],
+        });
+        arena.get_mut(a).unwrap().parent = Some(split);
+        arena.get_mut(b).unwrap().parent = Some(split);
+        arena.get_mut(split).unwrap().children = vec![a, b];
+
+        let mut output = HashMap::new();
+        calculate_layout(split, Rect::new(0.0, 0.0, 100.0, 100.0), &arena, &mut output, 0.0);
+
+        assert_eq!(output[&1], Rect::new(0.0, 0.0, 100.0, 50.0));
+        assert_eq!(output[&2], Rect::new(0.0, 50.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn layout_three_vertical_equal() {
+        let (arena, root) = three_window_flattened_arena();
+        let mut output = HashMap::new();
+        let bounding = Rect::new(0.0, 0.0, 300.0, 100.0);
+
+        calculate_layout(root, bounding, &arena, &mut output, 0.0);
+
+        assert!((output[&1].width - 100.0).abs() < 1e-4);
+        assert!((output[&2].width - 100.0).abs() < 1e-4);
+        assert!((output[&3].width - 100.0).abs() < 1e-4);
+        assert_eq!(output[&1].x, 0.0);
+        assert_eq!(output[&2].x, output[&1].x + output[&1].width);
+        assert_eq!(output[&3].x, output[&2].x + output[&2].width);
+    }
+
+    #[test]
+    fn layout_three_vertical_with_gap() {
+        let (arena, root) = three_window_flattened_arena();
+        let mut output = HashMap::new();
+        let bounding = inset_rect(Rect::new(0.0, 0.0, 320.0, 100.0), 10.0);
+
+        calculate_layout(root, bounding, &arena, &mut output, 10.0);
+
+        let r1 = output[&1];
+        let r2 = output[&2];
+        let r3 = output[&3];
+        assert_eq!(r1.x, 10.0);
+        let expected_width = (300.0 - 20.0) / 3.0;
+        assert!((r1.width - expected_width).abs() < 1e-4,
+            "window 1 width should be ~{}, got {}", expected_width, r1.width);
+        assert_eq!(r2.x, r1.x + r1.width + 10.0,
+            "expected 10px gap after window 1");
+        assert!((r2.width - expected_width).abs() < 1e-4,
+            "window 2 width should be ~{}, got {}", expected_width, r2.width);
+        assert_eq!(r3.x, r2.x + r2.width + 10.0,
+            "expected 10px gap after window 2");
+        assert_eq!(r3.x + r3.width, 310.0,
+            "right edge should end at 310 (320 - 10 outer gap)");
+    }
+
+    #[test]
+    fn layout_non_uniform_ratios() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let split = arena.alloc(NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ratios: vec![0.7, 0.3],
+        });
+        arena.get_mut(a).unwrap().parent = Some(split);
+        arena.get_mut(b).unwrap().parent = Some(split);
+        arena.get_mut(split).unwrap().children = vec![a, b];
+
+        let mut output = HashMap::new();
+        calculate_layout(
+            split,
+            Rect::new(0.0, 0.0, 200.0, 100.0),
+            &arena,
+            &mut output,
+            0.0,
+        );
+
+        assert!((output[&1].width - 140.0).abs() < 1e-4,
+            "window 1 width: expected ~140, got {}", output[&1].width);
+        assert!((output[&2].width - 60.0).abs() < 1e-4,
+            "window 2 width: expected ~60, got {}", output[&2].width);
+        assert_eq!(output[&1].x, 0.0);
+        assert_eq!(output[&2].x, output[&1].x + output[&1].width);
+    }
+
+    #[test]
+    fn layout_nested() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let c = arena.alloc(NodeData::Window {
+            window_id: 3,
+            is_focused: false,
+        });
+        let inner = arena.alloc(NodeData::Split {
+            direction: SplitDirection::Horizontal,
+            ratios: vec![0.5, 0.5],
+        });
+        let outer = arena.alloc(NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ratios: vec![0.5, 0.5],
+        });
+
+        arena.get_mut(a).unwrap().parent = Some(inner);
+        arena.get_mut(b).unwrap().parent = Some(inner);
+        arena.get_mut(c).unwrap().parent = Some(outer);
+        arena.get_mut(inner).unwrap().parent = Some(outer);
+        arena.get_mut(inner).unwrap().children = vec![a, b];
+        arena.get_mut(outer).unwrap().children = vec![inner, c];
+
+        let mut output = HashMap::new();
+        calculate_layout(outer, Rect::new(0.0, 0.0, 200.0, 100.0), &arena, &mut output, 0.0);
+
+        assert_eq!(output[&1], Rect::new(0.0, 0.0, 100.0, 50.0));
+        assert_eq!(output[&2], Rect::new(0.0, 50.0, 100.0, 50.0));
+        assert_eq!(output[&3], Rect::new(100.0, 0.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn screen_local_to_global_offsets() {
+        let local = Rect::new(10.0, 20.0, 100.0, 50.0);
+        let global = screen_local_to_global(local, (1440, 0));
+        assert_eq!(global, Rect::new(1450.0, 20.0, 100.0, 50.0));
+    }
 }
