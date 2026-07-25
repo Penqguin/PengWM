@@ -57,6 +57,12 @@ pub struct Arena {
     next_id: NodeId,
 }
 
+impl Default for Arena {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Arena {
     pub fn new() -> Self {
         Self {
@@ -111,7 +117,7 @@ impl Arena {
     pub fn is_leaf(&self, id: NodeId) -> bool {
         self.nodes
             .get(&id)
-            .map_or(false, |n| matches!(n.data, NodeData::Window { .. }))
+            .is_some_and(|n| matches!(n.data, NodeData::Window { .. }))
     }
 
     pub fn remove(&mut self, id: NodeId) -> Option<Node> {

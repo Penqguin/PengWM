@@ -1,21 +1,18 @@
 #![cfg(target_os = "macos")]
 
 use std::ffi::c_void;
-use std::ptr;
-use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use pengwm_daemon::event_loop::{DaemonEvent, EventLoop};
+use pengwm_daemon::event_loop::EventLoop;
 use pengwm_daemon::macos::ax_element;
 use pengwm_daemon::macos::cg_display;
-use pengwm_daemon::macos::ns_workspace;
 use pengwm_daemon::macos::ax_observer::ObserverRegistry;
 
 #[test]
 #[ignore = "requires Accessibility permissions and a GUI environment"]
 fn macos_ffi_integration() {
-    let (_event_loop, tx) = EventLoop::new();
+    let (_event_loop, _tx) = EventLoop::new();
 
     // 1. Query active displays
     let displays = cg_display::active_displays();
@@ -35,7 +32,7 @@ fn macos_ffi_integration() {
     // Don't assert on this - the app might not have windows
 
     // 5. If there are windows, try get_window_rect and set_window_rect
-    if let Some(&(element, window_id)) = windows.first() {
+    if let Some(&(element, _window_id)) = windows.first() {
         let original_rect = unsafe { ax_element::get_window_rect(element) };
         assert!(original_rect.is_some(), "should be able to get window rect");
 

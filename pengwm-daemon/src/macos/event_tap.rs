@@ -14,10 +14,14 @@ type CGEventRef = *mut c_void;
 type CGEventMask = u64;
 type CFIndex = isize;
 
+#[allow(non_upper_case_globals)]
 const kCGEventKeyDown: u32 = 10;
+#[allow(non_upper_case_globals)]
 const kCGSessionEventTap: u32 = 1;
+#[allow(non_upper_case_globals)]
 const kCGHeadInsertEventTap: u32 = 0;
 
+#[allow(non_upper_case_globals)]
 const kCGKeyboardEventKeycode: u32 = 9;
 
 pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: KeybindConfig) {
@@ -40,15 +44,15 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: KeybindConfig) {
 
         if tap.is_null() {
             log::error!("Failed to create CGEventTap — check Accessibility permissions.");
-            let _ = Box::from_raw(ctx);
+            let _ = Box::from_raw(ctx as *mut Context);
             return;
         }
 
         let run_loop_source: CFRunLoopSourceRef = CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) as CFRunLoopSourceRef;
         if run_loop_source.is_null() {
             log::error!("Failed to create CFRunLoopSource from event tap");
-            CFRelease(tap as *mut c_void);
-            let _ = Box::from_raw(ctx);
+            CFRelease(tap);
+            let _ = Box::from_raw(ctx as *mut Context);
             return;
         }
 
@@ -93,6 +97,7 @@ const MODIFIER_ALT: ModifierFlags = 0x0008_0000;
 const MODIFIER_CTRL: ModifierFlags = 0x0004_0000;
 const MODIFIER_SHIFT: ModifierFlags = 0x0002_0000;
 
+#[allow(non_snake_case)]
 fn CGEventMaskBit(event_type: u32) -> CGEventMask {
     1 << event_type
 }

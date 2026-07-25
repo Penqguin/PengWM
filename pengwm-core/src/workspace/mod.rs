@@ -56,7 +56,7 @@ impl Workspace {
             .get(focused)
             .and_then(|n| n.parent)
             .and_then(|pid| self.arena.get(pid))
-            .map_or(false, |p| {
+            .is_some_and(|p| {
                 matches!(&p.data, NodeData::Split { direction: d, .. } if *d == dir)
             });
 
@@ -188,7 +188,7 @@ impl Workspace {
 
     pub fn all_windows(&self) -> Vec<WindowId> {
         let mut result = Vec::new();
-        for (_, node) in &self.arena.nodes {
+        for node in self.arena.nodes.values() {
             if let NodeData::Window {
                 window_id: wid, ..
             } = &node.data
@@ -384,12 +384,10 @@ impl Workspace {
 
         let target_pos = if is_forward {
             (pos + 1) % n_children
+          } else if pos == 0 {
+            n_children - 1
         } else {
-            if pos == 0 {
-                n_children - 1
-            } else {
-                pos - 1
-            }
+            pos - 1
         };
 
         let target_branch = split.children[target_pos];

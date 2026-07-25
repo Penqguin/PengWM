@@ -1,8 +1,7 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use core_foundation::base::CFTypeRef;
-use core_graphics::display::{CGDirectDisplayID, CGDisplay, CGError};
+use core_graphics::display::{CGDirectDisplayID, CGDisplay};
 use tokio::sync::mpsc;
 
 use crate::event_loop::DaemonEvent;
@@ -44,8 +43,11 @@ type CGDisplayReconfigurationCallBack = unsafe extern "C" fn(
 
 type CGDisplayChangeFlags = u32;
 
+#[allow(non_upper_case_globals)]
 const kCGDisplayAddFlag: CGDisplayChangeFlags = 1 << 0;
+#[allow(non_upper_case_globals)]
 const kCGDisplayRemoveFlag: CGDisplayChangeFlags = 1 << 1;
+#[allow(non_upper_case_globals)]
 const kCGDisplaySetModeFlag: CGDisplayChangeFlags = 1 << 3;
 
 use std::sync::atomic::AtomicPtr;

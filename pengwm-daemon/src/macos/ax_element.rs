@@ -27,6 +27,10 @@ pub fn is_process_trusted_with_prompt() -> bool {
     }
 }
 
+/// # Safety
+///
+/// `element` must be a valid, retained `AXUIElementRef`. The caller is responsible for
+/// ensuring the element remains valid for the duration of the call.
 pub unsafe fn ax_window_id_from_element(element: AXUIElementRef) -> Option<WindowId> {
     let name = CFString::new(kAXWindowAttribute);
     let mut value: CFTypeRef = ptr::null();
@@ -40,6 +44,10 @@ pub unsafe fn ax_window_id_from_element(element: AXUIElementRef) -> Option<Windo
     }
 }
 
+/// # Safety
+///
+/// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
+/// element is valid and that the Accessibility API can be called safely.
 pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Result<()> {
     let pos_name = CFString::new(kAXPositionAttribute);
     let size_name = CFString::new(kAXSizeAttribute);
@@ -77,6 +85,10 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
     Ok(())
 }
 
+/// # Safety
+///
+/// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
+/// element remains valid for the duration of the call.
 pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
     let pos_name = CFString::new(kAXPositionAttribute);
     let size_name = CFString::new(kAXSizeAttribute);
@@ -105,6 +117,10 @@ pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
     Some(Rect { x: point.x, y: point.y, width: size.width, height: size.height })
 }
 
+/// # Safety
+///
+/// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
+/// element is valid for the duration of the call.
 pub unsafe fn focus_window(element: AXUIElementRef) {
     let raise_name = CFString::new(kAXRaiseAction);
     AXUIElementPerformAction(element, raise_name.as_concrete_TypeRef());
@@ -117,6 +133,10 @@ pub unsafe fn focus_window(element: AXUIElementRef) {
     );
 }
 
+/// # Safety
+///
+/// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
+/// element is valid and that the Accessibility API can be called safely.
 pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
     let role_name = CFString::new(kAXRoleAttribute);
     let mut role_val: CFTypeRef = ptr::null();
@@ -125,7 +145,7 @@ pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
         return false;
     }
     let role_str = CFString::wrap_under_create_rule(role_val as CFStringRef);
-    if role_str.to_string() != kAXWindowRole {
+    if role_str != kAXWindowRole {
         return false;
     }
 
@@ -136,7 +156,27 @@ pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
         return false;
     }
     let subrole_str = CFString::wrap_under_create_rule(subrole_val as CFStringRef);
-    subrole_str.to_string() == kAXStandardWindowSubrole
+    subrole_str == kAXStandardWindowSubrole
+}
+
+/// # Safety
+///
+/// `pid` must reference a valid running process with Accessibility permissions.
+pub unsafe fn focused_window_for_pid(pid: i32) -> Option<WindowId> {
+    let app = AXUIElementCreateApplication(pid);
+    if app.is_null() {
+        return None;
+    }
+    let attr = CFString::new(kAXFocusedWindowAttribute);
+    let mut value: CFTypeRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(app, attr.as_concrete_TypeRef(), &mut value);
+    CFRelease(app as CFTypeRef);
+    if err != kAXErrorSuccess || value.is_null() {
+        return None;
+    }
+    let window_id = value as u64;
+    CFRelease(value);
+    Some(window_id)
 }
 
 pub fn frontmost_pid() -> Option<i32> {
@@ -152,6 +192,10 @@ pub fn frontmost_pid() -> Option<i32> {
     }
 }
 
+/// # Safety
+///
+/// The caller must ensure that `pid` references a valid running process and that
+/// the Accessibility API is called from a trusted process with the necessary permissions.
 pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
     let app = AXUIElementCreateApplication(pid);
     if app.is_null() {
@@ -194,6 +238,10 @@ pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
     result
 }
 
+/// # Safety
+///
+/// The caller must ensure that `pid` references a valid running process and that
+/// the Accessibility API is called from a trusted process with the necessary permissions.
 pub unsafe fn find_element(pid: i32, window_id: WindowId) -> Option<AXUIElementRef> {
     let windows = windows_for_pid(pid);
     for (elem, wid) in &windows {
@@ -248,10 +296,10 @@ mod tests {
 
     #[test]
     fn error_constants_are_negative() {
-        assert!(kAXErrorSuccess >= 0);
-        assert!(kAXErrorFailure < 0);
-        assert!(kAXErrorCannotComplete < 0);
-        assert!(kAXErrorAttributeUnsupported < 0);
+        const { assert!(kAXErrorSuccess >= 0); }
+        const { assert!(kAXErrorFailure < 0); }
+        const { assert!(kAXErrorCannotComplete < 0); }
+        const { assert!(kAXErrorAttributeUnsupported < 0); }
     }
 
     #[test]

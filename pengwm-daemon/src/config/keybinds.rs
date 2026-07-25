@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 pub use pengwm_core::command::DaemonCommand;
 
 pub type ModifierFlags = u64;
@@ -24,46 +22,47 @@ pub struct KeybindConfig {
 
 impl Default for KeybindConfig {
     fn default() -> Self {
-        let mut bindings = Vec::new();
-        // Focus movement: cmd-h/j/k/l (vim-style)
-        bindings.push(Keybind { keycode: 0x04, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusLeft });  // h
-        bindings.push(Keybind { keycode: 0x26, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusDown });  // j
-        bindings.push(Keybind { keycode: 0x28, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusUp });    // k
-        bindings.push(Keybind { keycode: 0x25, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusRight }); // l
-        // Arrow keys as alternative
-        bindings.push(Keybind { keycode: 0x7B, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusLeft });  // left
-        bindings.push(Keybind { keycode: 0x7D, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusDown });  // down
-        bindings.push(Keybind { keycode: 0x7E, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusUp });    // up
-        bindings.push(Keybind { keycode: 0x7C, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusRight }); // right
-        // Swap: cmd-shift-h/j/k/l
-        bindings.push(Keybind { keycode: 0x04, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapLeft });
-        bindings.push(Keybind { keycode: 0x26, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapDown });
-        bindings.push(Keybind { keycode: 0x28, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapUp });
-        bindings.push(Keybind { keycode: 0x25, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapRight });
-        // Workspace switching: cmd-1..9
-        bindings.push(Keybind { keycode: 0x12, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(1) }); // 1
-        bindings.push(Keybind { keycode: 0x13, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(2) }); // 2
-        bindings.push(Keybind { keycode: 0x14, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(3) }); // 3
-        bindings.push(Keybind { keycode: 0x15, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(4) }); // 4
-        bindings.push(Keybind { keycode: 0x17, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(5) }); // 5
-        bindings.push(Keybind { keycode: 0x16, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(6) }); // 6
-        bindings.push(Keybind { keycode: 0x1A, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(7) }); // 7
-        bindings.push(Keybind { keycode: 0x1B, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(8) }); // 8
-        bindings.push(Keybind { keycode: 0x19, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(9) }); // 9
-        // Move window to workspace: cmd-shift-1..9
-        bindings.push(Keybind { keycode: 0x12, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(1) });
-        bindings.push(Keybind { keycode: 0x13, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(2) });
-        bindings.push(Keybind { keycode: 0x14, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(3) });
-        bindings.push(Keybind { keycode: 0x15, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(4) });
-        bindings.push(Keybind { keycode: 0x17, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(5) });
-        bindings.push(Keybind { keycode: 0x16, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(6) });
-        bindings.push(Keybind { keycode: 0x1A, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(7) });
-        bindings.push(Keybind { keycode: 0x1B, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(8) });
-        bindings.push(Keybind { keycode: 0x19, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(9) });
-        // Toggle layout: cmd-f
-        bindings.push(Keybind { keycode: 0x03, modifiers: MODIFIER_CMD,  action: DaemonCommand::ToggleLayout }); // f
-        // Reload config: cmd-shift-r
-        bindings.push(Keybind { keycode: 0x0F, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::ReloadConfig }); // r
+        let bindings = vec![
+            // Focus movement: cmd-h/j/k/l (vim-style)
+            Keybind { keycode: 0x04, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusLeft },  // h
+            Keybind { keycode: 0x26, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusDown },  // j
+            Keybind { keycode: 0x28, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusUp },    // k
+            Keybind { keycode: 0x25, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusRight }, // l
+            // Arrow keys as alternative
+            Keybind { keycode: 0x7B, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusLeft },  // left
+            Keybind { keycode: 0x7D, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusDown },  // down
+            Keybind { keycode: 0x7E, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusUp },    // up
+            Keybind { keycode: 0x7C, modifiers: MODIFIER_CMD,  action: DaemonCommand::FocusRight }, // right
+            // Swap: cmd-shift-h/j/k/l
+            Keybind { keycode: 0x04, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapLeft },
+            Keybind { keycode: 0x26, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapDown },
+            Keybind { keycode: 0x28, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapUp },
+            Keybind { keycode: 0x25, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::SwapRight },
+            // Workspace switching: cmd-1..9
+            Keybind { keycode: 0x12, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(1) }, // 1
+            Keybind { keycode: 0x13, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(2) }, // 2
+            Keybind { keycode: 0x14, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(3) }, // 3
+            Keybind { keycode: 0x15, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(4) }, // 4
+            Keybind { keycode: 0x17, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(5) }, // 5
+            Keybind { keycode: 0x16, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(6) }, // 6
+            Keybind { keycode: 0x1A, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(7) }, // 7
+            Keybind { keycode: 0x1B, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(8) }, // 8
+            Keybind { keycode: 0x19, modifiers: MODIFIER_CMD,  action: DaemonCommand::SwitchWorkspace(9) }, // 9
+            // Move window to workspace: cmd-shift-1..9
+            Keybind { keycode: 0x12, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(1) },
+            Keybind { keycode: 0x13, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(2) },
+            Keybind { keycode: 0x14, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(3) },
+            Keybind { keycode: 0x15, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(4) },
+            Keybind { keycode: 0x17, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(5) },
+            Keybind { keycode: 0x16, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(6) },
+            Keybind { keycode: 0x1A, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(7) },
+            Keybind { keycode: 0x1B, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(8) },
+            Keybind { keycode: 0x19, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::MoveWindowToWorkspace(9) },
+            // Toggle layout: cmd-f
+            Keybind { keycode: 0x03, modifiers: MODIFIER_CMD,  action: DaemonCommand::ToggleLayout }, // f
+            // Reload config: cmd-shift-r
+            Keybind { keycode: 0x0F, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: DaemonCommand::ReloadConfig }, // r
+        ];
         KeybindConfig { bindings }
     }
 }
@@ -145,14 +144,14 @@ pub fn parse_action(s: &str) -> Option<DaemonCommand> {
         _ => {
             if let Some(n) = s.strip_prefix("workspace-") {
                 if let Ok(n) = n.parse::<u8>() {
-                    if n >= 1 && n <= 9 {
+                    if (1..=9).contains(&n) {
                         return Some(DaemonCommand::SwitchWorkspace(n));
                     }
                 }
             }
             if let Some(n) = s.strip_prefix("move-to-workspace-") {
                 if let Ok(n) = n.parse::<u8>() {
-                    if n >= 1 && n <= 9 {
+                    if (1..=9).contains(&n) {
                         return Some(DaemonCommand::MoveWindowToWorkspace(n));
                     }
                 }

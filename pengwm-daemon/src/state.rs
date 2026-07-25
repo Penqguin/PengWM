@@ -8,11 +8,11 @@ use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
 use crate::macos::ax_observer::ObserverRegistry;
 use crate::macos::cg_display;
-use crate::macos::virtual_desktop;
 
 pub struct StateManager {
     workspaces: Vec<Workspace>,
     active_workspace: usize,
+    frontmost_pid: Option<i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
     window_pids: HashMap<WindowId, i32>,
     observer_registry: ObserverRegistry,
@@ -23,9 +23,11 @@ pub struct StateManager {
 
 impl StateManager {
     pub fn new(event_tx: mpsc::Sender<DaemonEvent>) -> Self {
-        let observer_registry = ObserverRegistry::new(event_tx.clone());
+        let mut observer_registry = ObserverRegistry::new(event_tx.clone());
         let displays = cg_display::active_displays();
         let mut workspaces = Vec::new();
+        let mut pid_to_windows: HashMap<i32, Vec<WindowId>> = HashMap::new();
+        let mut window_pids: HashMap<WindowId, i32> = HashMap::new();
 
         for (i, display) in displays.iter().enumerate() {
             let ws = Workspace::new(
@@ -46,11 +48,25 @@ impl StateManager {
             ));
         }
 
+        let frontmost_pid = ax_element::frontmost_pid();
+
+        #[cfg(target_os = "macos")]
+        for pid in crate::macos::ns_workspace::running_app_pids() {
+            observer_registry.attach(pid);
+            let windows = unsafe { ax_element::windows_for_pid(pid) };
+            for (_element, window_id) in windows {
+                window_pids.insert(window_id, pid);
+                pid_to_windows.entry(pid).or_default().push(window_id);
+                let _ = event_tx.try_send(DaemonEvent::WindowCreated(window_id));
+            }
+        }
+
         Self {
             workspaces,
             active_workspace: 0,
-            pid_to_windows: HashMap::new(),
-            window_pids: HashMap::new(),
+            frontmost_pid,
+            pid_to_windows,
+            window_pids,
             observer_registry,
             event_tx,
             gap_outer: 10.0,
@@ -119,6 +135,10 @@ impl StateManager {
 
     pub fn on_app_activated(&mut self, pid: i32) {
         log::debug!("App activated: pid={}", pid);
+        self.frontmost_pid = Some(pid);
+        if let Some(window_id) = unsafe { ax_element::focused_window_for_pid(pid) } {
+            self.on_window_focused(window_id);
+        }
     }
 
     pub fn on_monitor_added(&mut self, display_id: u32) {

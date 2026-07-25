@@ -174,6 +174,7 @@ unsafe extern "C" fn observer_callback(
         }
     };
 
+    #[allow(non_upper_case_globals)]
     match notif_str.as_str() {
         kAXWindowCreatedNotification => {
             log::debug!("WindowCreated: {}", window_id);

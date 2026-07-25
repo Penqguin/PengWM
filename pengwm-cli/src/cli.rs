@@ -46,6 +46,7 @@ pub enum CliCommand {
 
 impl CliCommand {
     /// Convert the CLI command into a DaemonCommand for sending over the socket.
+    #[allow(dead_code)]
     pub fn to_daemon_command(&self) -> pengwm_core::command::DaemonCommand {
         //  match self and construct the appropriate DaemonCommand variant
         todo!()

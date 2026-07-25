@@ -31,7 +31,7 @@ fn main() {
 
     #[cfg(target_os = "macos")]
     unsafe {
-        let run_loop = core_foundation::runloop::CFRunLoopGetCurrent();
+        let _run_loop = core_foundation::runloop::CFRunLoopGetCurrent();
         core_foundation::runloop::CFRunLoopRun();
     }
 

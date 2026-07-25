@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::event_loop::DaemonEvent;
 
+#[allow(non_upper_case_globals)]
 static NSApplicationProcessIdentifier: &str = "NSApplicationProcessIdentifier";
 
 pub fn observe(event_tx: mpsc::Sender<DaemonEvent>) {
@@ -26,10 +27,20 @@ pub fn observe(event_tx: mpsc::Sender<DaemonEvent>) {
 }
 
 use objc2_app_kit::{
+    NSWorkspace,
     NSWorkspaceDidLaunchApplicationNotification,
     NSWorkspaceDidActivateApplicationNotification,
     NSWorkspaceDidTerminateApplicationNotification,
 };
+
+pub fn running_app_pids() -> Vec<i32> {
+    let ws = NSWorkspace::sharedWorkspace();
+    ws.runningApplications()
+        .into_iter()
+        .filter(|app| app.activationPolicy() == objc2_app_kit::NSApplicationActivationPolicy::Regular)
+        .map(|app| app.processIdentifier())
+        .collect()
+}
 
 fn add_observer(
     center: &NSNotificationCenter,
@@ -56,7 +67,7 @@ fn add_observer(
             Some(name),
             None,
             None,
-            &*block,
+            &block,
         )
     };
     std::mem::forget(token);
