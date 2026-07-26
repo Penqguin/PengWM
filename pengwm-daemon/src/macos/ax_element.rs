@@ -27,6 +27,12 @@ pub fn is_process_trusted_with_prompt() -> bool {
     }
 }
 
+/// Show the system Accessibility permission prompt dialog.
+/// macOS will open System Settings so the user can grant access.
+pub fn request_trusted_access() {
+    let _ = is_process_trusted_with_prompt();
+}
+
 /// # Safety
 ///
 /// `element` must be a valid, retained `AXUIElementRef`. The caller is responsible for
@@ -236,6 +242,22 @@ pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
     CFRelease(app as CFTypeRef);
 
     result
+}
+
+/// # Safety
+///
+/// `element` must be a valid, retained `AXUIElementRef` representing a window.
+pub unsafe fn close_window(element: AXUIElementRef) {
+    let attr = CFString::new("AXCloseButton");
+    let mut close_button: CFTypeRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut close_button);
+    if err != kAXErrorSuccess || close_button.is_null() {
+        log::warn!("close_window: no close button found (err={})", err);
+        return;
+    }
+    let press = CFString::new("AXPress");
+    AXUIElementPerformAction(close_button as AXUIElementRef, press.as_concrete_TypeRef());
+    CFRelease(close_button);
 }
 
 /// # Safety

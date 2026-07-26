@@ -1,17 +1,19 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use pengwm_core::tree::WindowId;
+use pengwm_core::tree::{WindowId, NodeData};
 use pengwm_core::workspace::Workspace;
 use pengwm_core::layout::{self, Rect};
-use pengwm_core::command::{DaemonCommand, DaemonResponse};
+use pengwm_core::command::{Command, DaemonResponse};
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
 use crate::macos::ax_observer::ObserverRegistry;
 use crate::macos::cg_display;
+use crate::config::keybinds::KeybindConfig;
 
 pub struct StateManager {
     workspaces: Vec<Workspace>,
-    active_workspace: usize,
+    active_workspaces: HashMap<u32, usize>,
     frontmost_pid: Option<i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
     window_pids: HashMap<WindowId, i32>,
@@ -19,17 +21,22 @@ pub struct StateManager {
     event_tx: mpsc::Sender<DaemonEvent>,
     gap_outer: f64,
     gap_inner: f64,
+    keybinds: Arc<Mutex<KeybindConfig>>,
 }
 
+const OFFSCREEN: Rect = Rect { x: -9999.0, y: 0.0, width: 1.0, height: 1.0 };
+
 impl StateManager {
-    pub fn new(event_tx: mpsc::Sender<DaemonEvent>) -> Self {
+    pub fn new(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindConfig>>) -> Self {
         let mut observer_registry = ObserverRegistry::new(event_tx.clone());
         let displays = cg_display::active_displays();
         let mut workspaces = Vec::new();
         let mut pid_to_windows: HashMap<i32, Vec<WindowId>> = HashMap::new();
         let mut window_pids: HashMap<WindowId, i32> = HashMap::new();
+        let mut active_workspaces = HashMap::new();
 
         for (i, display) in displays.iter().enumerate() {
+            active_workspaces.insert(display.id, i);
             let ws = Workspace::new(
                 format!("ws-{}", i + 1),
                 display.id,
@@ -57,13 +64,13 @@ impl StateManager {
             for (_element, window_id) in windows {
                 window_pids.insert(window_id, pid);
                 pid_to_windows.entry(pid).or_default().push(window_id);
-                let _ = event_tx.try_send(DaemonEvent::WindowCreated(window_id));
+                let _ = event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
             }
         }
 
-        Self {
+        let state = Self {
             workspaces,
-            active_workspace: 0,
+            active_workspaces,
             frontmost_pid,
             pid_to_windows,
             window_pids,
@@ -71,11 +78,43 @@ impl StateManager {
             event_tx,
             gap_outer: 10.0,
             gap_inner: 5.0,
+            keybinds,
+        };
+
+        for i in 0..state.workspaces.len() {
+            if i != 0 {
+                state.hide_workspace(i);
+            }
         }
+
+        state
     }
 
-    pub fn on_window_created(&mut self, window_id: WindowId) {
-        let target = self.active_workspace;
+    fn active_workspace_idx(&self) -> usize {
+        if let Some(pid) = self.frontmost_pid {
+            if let Some(windows) = self.pid_to_windows.get(&pid) {
+                for &window_id in windows {
+                    for ws in &self.workspaces {
+                        if ws.find_window(window_id).is_some() {
+                            if let Some(&idx) = self.active_workspaces.get(&ws.monitor_id) {
+                                if idx < self.workspaces.len() {
+                                    return idx;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.active_workspaces.values().next().copied().unwrap_or(0)
+    }
+
+    pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
+        if !self.window_pids.contains_key(&window_id) {
+            self.window_pids.insert(window_id, pid);
+            self.pid_to_windows.entry(pid).or_default().push(window_id);
+        }
+        let target = self.active_workspace_idx();
         let ws = &mut self.workspaces[target];
         if ws.find_window(window_id).is_some() {
             return;
@@ -105,7 +144,13 @@ impl StateManager {
         for i in 0..self.workspaces.len() {
             if self.workspaces[i].find_window(window_id).is_some() {
                 self.workspaces[i].focus_window(window_id);
-                self.active_workspace = i;
+                let mon_id = self.workspaces[i].monitor_id;
+                let prev = self.active_workspaces.insert(mon_id, i);
+                if let Some(prev_idx) = prev {
+                    if prev_idx != i {
+                        self.hide_workspace(prev_idx);
+                    }
+                }
                 return;
             }
         }
@@ -118,7 +163,7 @@ impl StateManager {
         for (_element, window_id) in windows {
             self.window_pids.insert(window_id, pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
-            let _ = self.event_tx.try_send(DaemonEvent::WindowCreated(window_id));
+            let _ = self.event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
         }
     }
 
@@ -151,6 +196,8 @@ impl StateManager {
         };
         let name = format!("ws-{}", self.workspaces.len() + 1);
         let ws = Workspace::new(name, display_id, origin, size);
+        let idx = self.workspaces.len();
+        self.active_workspaces.insert(display_id, idx);
         self.workspaces.push(ws);
     }
 
@@ -178,8 +225,9 @@ impl StateManager {
                 (1920, 1080),
             ));
         }
-        if self.active_workspace >= self.workspaces.len() {
-            self.active_workspace = 0;
+        self.active_workspaces.retain(|_, idx| *idx < self.workspaces.len());
+        if self.active_workspaces.is_empty() {
+            self.active_workspaces.insert(self.workspaces[0].monitor_id, 0);
         }
     }
 
@@ -199,44 +247,84 @@ impl StateManager {
 
     pub fn on_command(
         &mut self,
-        cmd: DaemonCommand,
+        cmd: Command,
         tx: mpsc::Sender<DaemonResponse>,
     ) {
         match cmd {
-            DaemonCommand::FocusLeft => self.focus_command(Direction::Left),
-            DaemonCommand::FocusRight => self.focus_command(Direction::Right),
-            DaemonCommand::FocusUp => self.focus_command(Direction::Up),
-            DaemonCommand::FocusDown => self.focus_command(Direction::Down),
-            DaemonCommand::SwapLeft => self.swap_command(Direction::Left),
-            DaemonCommand::SwapRight => self.swap_command(Direction::Right),
-            DaemonCommand::SwapUp => self.swap_command(Direction::Up),
-            DaemonCommand::SwapDown => self.swap_command(Direction::Down),
-            DaemonCommand::SwitchWorkspace(n) => {
+            Command::Focus { direction } => self.focus_command(direction),
+            Command::MoveWindow { direction } => self.swap_command(direction),
+            Command::Split { direction } => {
+                let idx = self.active_workspace_idx();
+                let ws = &mut self.workspaces[idx];
+                if let Some(node_id) = ws.focused_node {
+                    if ws.arena.get(node_id).is_some_and(|n| matches!(n.data, NodeData::Window { .. })) {
+                        ws.pending_split = Some(direction);
+                    } else if let NodeData::Split { direction: ref mut dir, .. } = &mut ws.arena.get_mut(node_id).unwrap().data {
+                        *dir = direction;
+                        ws.flatten_split_if_redundant(node_id);
+                    }
+                }
+                self.apply_layout(idx);
+            }
+            Command::Workspace { id } => {
+                let n = id;
                 if n > 0 && (n as usize) <= self.workspaces.len() {
-                    self.active_workspace = (n - 1) as usize;
-                    self.apply_layout(self.active_workspace);
+                    let new_idx = (n - 1) as usize;
+                    let current = self.active_workspace_idx();
+                    if new_idx != current {
+                        self.hide_workspace(current);
+                        let mon_id = self.workspaces[current].monitor_id;
+                        self.active_workspaces.insert(mon_id, new_idx);
+                        self.apply_layout(new_idx);
+                    }
                 }
             }
-            DaemonCommand::MoveWindowToWorkspace(n) => {
+            Command::MoveWindowToWorkspace { id } => {
+                let n = id;
                 if n > 0 && (n as usize) <= self.workspaces.len() {
                     self.move_focused_to_workspace((n - 1) as usize);
                 }
             }
-            DaemonCommand::ToggleLayout => {
-                log::info!("ToggleLayout not yet implemented");
+            Command::Close => {
+                let idx = self.active_workspace_idx();
+                let window_id = {
+                    let ws = &self.workspaces[idx];
+                    ws.focused_node.and_then(|nid| {
+                        if let NodeData::Window { window_id, .. } = &ws.arena.get(nid)?.data {
+                            Some(*window_id)
+                        } else {
+                            None
+                        }
+                    })
+                };
+                if let Some(wid) = window_id {
+                    if let Some(&pid) = self.window_pids.get(&wid) {
+                        unsafe {
+                            if let Some(element) = ax_element::find_element(pid, wid) {
+                                ax_element::close_window(element);
+                            }
+                        }
+                    }
+                }
             }
-            DaemonCommand::SetGapOuter(val) => {
-                self.gap_outer = val.max(0) as f64;
-                self.apply_layout(self.active_workspace);
+            Command::ToggleLayout => {
+                let idx = self.active_workspace_idx();
+                let ws = &mut self.workspaces[idx];
+                ws.toggle_monocle();
+                self.apply_layout(idx);
             }
-            DaemonCommand::SetGapInner(val) => {
-                self.gap_inner = val.max(0) as f64;
-                self.apply_layout(self.active_workspace);
+            Command::SetGapOuter { pixels } => {
+                self.gap_outer = pixels.max(0) as f64;
+                self.apply_layout(self.active_workspace_idx());
             }
-            DaemonCommand::ReloadConfig => {
-                log::info!("ReloadConfig not yet implemented");
+            Command::SetGapInner { pixels } => {
+                self.gap_inner = pixels.max(0) as f64;
+                self.apply_layout(self.active_workspace_idx());
             }
-            DaemonCommand::QueryState => {
+            Command::ReloadConfig => {
+                self.reload_config();
+            }
+            Command::QueryState => {
                 let info = self.workspaces.iter().map(|ws| {
                     pengwm_core::command::WorkspaceInfo {
                         name: ws.name.clone(),
@@ -259,22 +347,25 @@ impl StateManager {
     }
 
     fn focus_command(&mut self, direction: Direction) {
-        let ws = &mut self.workspaces[self.active_workspace];
+        let idx = self.active_workspace_idx();
+        let ws = &mut self.workspaces[idx];
         ws.focus_neighbor(direction);
     }
 
     fn swap_command(&mut self, direction: Direction) {
-        let ws = &mut self.workspaces[self.active_workspace];
+        let idx = self.active_workspace_idx();
+        let ws = &mut self.workspaces[idx];
         ws.swap_window(direction);
-        self.apply_layout(self.active_workspace);
+        self.apply_layout(idx);
     }
 
     fn move_focused_to_workspace(&mut self, target: usize) {
-        if target == self.active_workspace {
+        let current = self.active_workspace_idx();
+        if target == current {
             return;
         }
         let window_id = {
-            let ws = &self.workspaces[self.active_workspace];
+            let ws = &self.workspaces[current];
             ws.focused_node.and_then(|nid| {
                 if let pengwm_core::tree::NodeData::Window { window_id, .. } =
                     &ws.arena.get(nid)?.data
@@ -286,10 +377,31 @@ impl StateManager {
             })
         };
         if let Some(wid) = window_id {
-            self.workspaces[self.active_workspace].remove_window(wid);
-            self.apply_layout(self.active_workspace);
+            self.workspaces[current].remove_window(wid);
+            self.apply_layout(current);
             self.workspaces[target].add_window(wid, None);
             self.apply_layout(target);
+        }
+    }
+
+    fn reload_config(&self) {
+        log::info!("Reloading config...");
+        let updated = KeybindConfig::load();
+        let mut keybinds = self.keybinds.lock().expect("keybind mutex poisoned");
+        *keybinds = updated;
+        log::info!("Config reloaded successfully ({} bindings)", keybinds.bindings.len());
+    }
+
+    fn hide_workspace(&self, workspace_idx: usize) {
+        let ws = &self.workspaces[workspace_idx];
+        for window_id in ws.all_windows() {
+            if let Some(&pid) = self.window_pids.get(&window_id) {
+                unsafe {
+                    if let Some(element) = ax_element::find_element(pid, window_id) {
+                        let _ = ax_element::set_window_rect(element, OFFSCREEN);
+                    }
+                }
+            }
         }
     }
 
@@ -304,17 +416,52 @@ impl StateManager {
         );
         let inset = layout::inset_rect(monitor_rect, self.gap_outer);
         let mut output = HashMap::new();
-        layout::calculate_layout(root, inset, &ws.arena, &mut output, self.gap_inner);
+
+        if ws.monocle {
+            if let Some(focused) = ws.focused_node {
+                if let Some(node) = ws.arena.get(focused) {
+                    if let pengwm_core::tree::NodeData::Window { window_id, .. } = &node.data {
+                        output.insert(*window_id, inset);
+                    }
+                }
+            }
+        } else {
+            layout::calculate_layout(root, inset, &ws.arena, &mut output, self.gap_inner);
+        }
 
         for (&window_id, rect) in &output {
             let global = layout::screen_local_to_global(*rect, ws.monitor_origin);
             let pid = match self.window_pids.get(&window_id) {
                 Some(&pid) => pid,
-                None => continue,
+                None => {
+                    log::warn!("apply_layout: skipping window {} (no PID mapped)", window_id);
+                    continue;
+                }
             };
             unsafe {
-                if let Some(element) = ax_element::find_element(pid, window_id) {
-                    let _ = ax_element::set_window_rect(element, global);
+                match ax_element::find_element(pid, window_id) {
+                    Some(element) => {
+                        if let Err(e) = ax_element::set_window_rect(element, global) {
+                            log::error!("apply_layout: set_window_rect failed for window {} pid {}: {}", window_id, pid, e);
+                        }
+                    }
+                    None => {
+                        log::warn!("apply_layout: find_element returned None for window {} pid {}", window_id, pid);
+                    }
+                }
+            }
+        }
+
+        if ws.monocle {
+            for window_id in ws.all_windows() {
+                if !output.contains_key(&window_id) {
+                    if let Some(&pid) = self.window_pids.get(&window_id) {
+                        unsafe {
+                            if let Some(element) = ax_element::find_element(pid, window_id) {
+                                let _ = ax_element::set_window_rect(element, OFFSCREEN);
+                            }
+                        }
+                    }
                 }
             }
         }

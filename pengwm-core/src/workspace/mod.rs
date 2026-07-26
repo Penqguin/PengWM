@@ -10,6 +10,8 @@ pub struct Workspace {
     pub monitor_origin: (i32, i32),
     pub monitor_size: (u32, u32),
     pub focused_node: Option<NodeId>,
+    pub monocle: bool,
+    pub pending_split: Option<SplitDirection>,
 }
 
 impl Workspace {
@@ -27,6 +29,8 @@ impl Workspace {
             monitor_origin: origin,
             monitor_size: size,
             focused_node: None,
+            monocle: false,
+            pending_split: None,
         }
     }
 
@@ -48,7 +52,9 @@ impl Workspace {
             return id;
         }
 
-        let dir = direction.unwrap_or_else(|| self.next_direction());
+        let dir = direction
+            .or_else(|| self.pending_split.take())
+            .unwrap_or_else(|| self.next_direction());
         let focused = self.focused_node.expect("focused_node set when root exists");
 
         let flatten = self
@@ -201,6 +207,40 @@ impl Workspace {
 
     pub fn window_count(&self) -> usize {
         self.all_windows().len()
+    }
+
+    pub fn toggle_monocle(&mut self) {
+        self.monocle = !self.monocle;
+    }
+
+    /// If `split_id` is a Split whose direction matches its parent's, absorb its
+    /// children into the parent and remove the now-redundant split.
+    pub fn flatten_split_if_redundant(&mut self, split_id: NodeId) {
+        let parent_id = match self.arena.get(split_id).and_then(|n| n.parent) {
+            Some(pid) => pid,
+            None => return,
+        };
+
+        let same_dir = match (&self.arena.get(split_id).unwrap().data, &self.arena.get(parent_id).unwrap().data) {
+            (NodeData::Split { direction: d1, .. }, NodeData::Split { direction: d2, .. }) => d1 == d2,
+            _ => return,
+        };
+
+        if !same_dir {
+            return;
+        }
+
+        let children: Vec<NodeId> = self.arena.get(split_id).unwrap().children.clone();
+        for &child in &children {
+            self.arena.get_mut(child).unwrap().parent = Some(parent_id);
+        }
+        let parent = self.arena.get_mut(parent_id).unwrap();
+        if let Some(pos) = parent.children.iter().position(|&c| c == split_id) {
+            parent.children.splice(pos..=pos, children);
+        }
+        self.arena.get_mut(split_id).unwrap().children.clear();
+        self.arena.remove(split_id);
+        self.rebalance_ratios(parent_id);
     }
 
     // -----------------------------------------------------------------------

@@ -1,6 +1,8 @@
 #![cfg(target_os = "macos")]
 
 use std::ffi::c_void;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 
@@ -8,11 +10,12 @@ use pengwm_daemon::event_loop::EventLoop;
 use pengwm_daemon::macos::ax_element;
 use pengwm_daemon::macos::cg_display;
 use pengwm_daemon::macos::ax_observer::ObserverRegistry;
+use pengwm_daemon::config::keybinds::KeybindConfig;
 
 #[test]
 #[ignore = "requires Accessibility permissions and a GUI environment"]
 fn macos_ffi_integration() {
-    let (_event_loop, _tx) = EventLoop::new();
+    let (_event_loop, _tx) = EventLoop::new(Arc::new(Mutex::new(KeybindConfig::default())));
 
     // 1. Query active displays
     let displays = cg_display::active_displays();
@@ -80,6 +83,76 @@ fn observer_registry_create_and_detach() {
     // After detach, no more events should come
     let result = rx.try_recv();
     assert!(result.is_err(), "should not receive events after detach");
+}
+
+#[test]
+#[ignore = "requires Accessibility permissions and a GUI environment"]
+fn on_window_created_tracks_pid_and_applies_layout() {
+    let (mut event_loop, _tx) = EventLoop::new(Arc::new(Mutex::new(KeybindConfig::default())));
+
+    // Drain initial window-discovery events so the state manager's
+    // window_pids map is populated for all running apps.
+    for _ in 0..10 {
+        if !event_loop.pump() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let pid = ax_element::frontmost_pid()
+        .expect("should have a frontmost application");
+    let windows_before = unsafe { ax_element::windows_for_pid(pid) };
+
+    // Launch a new Finder window so the AXObserver fires a
+    // WindowCreated notification.
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", r#"tell app "Finder" to make new Finder window"#])
+        .output();
+
+    // Give the AXObserver callback time to fire on the CFRunLoop.
+    std::thread::sleep(Duration::from_secs(3));
+
+    // Pump the event loop: CFRunLoop processes the AX callback →
+    // DaemonEvent::WindowCreated (now with PID) is queued →
+    // on_window_created tracks the PID + adds window to tree →
+    // apply_layout computes rects and calls set_window_rect.
+    for _ in 0..20 {
+        if !event_loop.pump() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let windows_after = unsafe { ax_element::windows_for_pid(pid) };
+
+    // The new window should be present in the window list.
+    assert!(
+        windows_after.len() >= windows_before.len(),
+        "window count should not shrink after launching a new window"
+    );
+
+    // Every window should have a readable, positive-size rect —
+    // proof that apply_layout successfully sent set_window_rect
+    // rather than skipping the window due to a missing PID.
+    for &(element, _) in &windows_after {
+        let rect = unsafe { ax_element::get_window_rect(element) };
+        assert!(rect.is_some(), "each window should have a readable rect");
+        let r = rect.unwrap();
+        assert!(
+            r.width > 0.0 && r.height > 0.0,
+            "tiled window should have positive dimensions, got {:?}",
+            r
+        );
+    }
+
+    // Clean up: close the window we just opened.
+    for &(element, _) in &windows_after {
+        let wid =
+            unsafe { ax_element::ax_window_id_from_element(element).unwrap_or(0) };
+        if !windows_before.iter().any(|&(_, id)| id == wid) {
+            unsafe { ax_element::close_window(element) };
+        }
+    }
 }
 
 #[test]

@@ -1,4 +1,5 @@
 pub mod keybinds;
+pub mod watcher;
 
 use serde::{Serialize, Deserialize};
 

@@ -1,8 +1,7 @@
-//! CLI argument definitions using clap.
+use clap::{Parser, Subcommand, ValueEnum};
+use pengwm_core::tree::{Direction, SplitDirection};
+use pengwm_core::command::Command;
 
-use clap::{Parser, Subcommand};
-
-/// A tiling window manager for macOS.
 #[derive(Parser, Debug)]
 #[command(name = "pengwm", about = "Control the PengWM daemon")]
 pub struct Cli {
@@ -12,43 +11,67 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum CliCommand {
-    /// Move focus in a direction
-    Focus {
-        direction: String,  // "left" | "right" | "up" | "down"
-    },
-    /// Swap the focused window with a neighbor
-    Swap {
-        direction: String,
-    },
-    /// Switch to a workspace by number
-    SwitchWorkspace {
-        number: u8,
-    },
-    /// Move the focused window to another workspace
-    MoveWindowToWorkspace {
-        number: u8,
-    },
-    /// Set outer gap (between windows and screen edge)
-    SetGapOuter {
-        pixels: i32,
-    },
-    /// Set inner gap (between adjacent windows)
-    SetGapInner {
-        pixels: i32,
-    },
-    /// Toggle between BSP and monocle layout
+    Focus { direction: DirectionArg },
+    MoveWindow { direction: DirectionArg },
+    Split { direction: SplitArg },
+    Workspace { id: u32 },
+    MoveWindowToWorkspace { id: u32 },
+    Close,
     ToggleLayout,
-    /// Reload configuration from disk
+    SetGapOuter { pixels: i32 },
+    SetGapInner { pixels: i32 },
     ReloadConfig,
-    /// Print daemon state
     State,
 }
 
-impl CliCommand {
-    /// Convert the CLI command into a DaemonCommand for sending over the socket.
-    #[allow(dead_code)]
-    pub fn to_daemon_command(&self) -> pengwm_core::command::DaemonCommand {
-        //  match self and construct the appropriate DaemonCommand variant
-        todo!()
+#[derive(ValueEnum, Clone, Debug)]
+pub enum DirectionArg {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+pub enum SplitArg {
+    Horizontal,
+    Vertical,
+}
+
+impl From<DirectionArg> for Direction {
+    fn from(d: DirectionArg) -> Self {
+        match d {
+            DirectionArg::Left => Direction::Left,
+            DirectionArg::Right => Direction::Right,
+            DirectionArg::Up => Direction::Up,
+            DirectionArg::Down => Direction::Down,
+        }
+    }
+}
+
+impl From<SplitArg> for SplitDirection {
+    fn from(d: SplitArg) -> Self {
+        match d {
+            SplitArg::Horizontal => SplitDirection::Horizontal,
+            SplitArg::Vertical => SplitDirection::Vertical,
+        }
+    }
+}
+
+impl From<CliCommand> for Command {
+    fn from(cmd: CliCommand) -> Self {
+        match cmd {
+            CliCommand::Focus { direction } => Command::Focus { direction: direction.into() },
+            CliCommand::MoveWindow { direction } => Command::MoveWindow { direction: direction.into() },
+            CliCommand::Split { direction } => Command::Split { direction: direction.into() },
+            CliCommand::Workspace { id } => Command::Workspace { id },
+            CliCommand::MoveWindowToWorkspace { id } => Command::MoveWindowToWorkspace { id },
+            CliCommand::Close => Command::Close,
+            CliCommand::ToggleLayout => Command::ToggleLayout,
+            CliCommand::SetGapOuter { pixels } => Command::SetGapOuter { pixels },
+            CliCommand::SetGapInner { pixels } => Command::SetGapInner { pixels },
+            CliCommand::ReloadConfig => Command::ReloadConfig,
+            CliCommand::State => Command::QueryState,
+        }
     }
 }

@@ -1,8 +1,14 @@
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use core_foundation::runloop::{
+    kCFRunLoopDefaultMode, CFRunLoopRunInMode,
+};
 use crate::state::StateManager;
+use crate::config::keybinds::KeybindConfig;
 
+#[derive(Debug)]
 pub enum DaemonEvent {
-    WindowCreated(pengwm_core::tree::WindowId),
+    WindowCreated(pengwm_core::tree::WindowId, i32),
     WindowDestroyed(pengwm_core::tree::WindowId),
     WindowFocused(pengwm_core::tree::WindowId),
 
@@ -14,9 +20,9 @@ pub enum DaemonEvent {
     MonitorRemoved(u32),
     MonitorResized(u32),
 
-    Command(pengwm_core::command::DaemonCommand, mpsc::Sender<pengwm_core::command::DaemonResponse>),
+    Command(pengwm_core::command::Command, mpsc::Sender<pengwm_core::command::DaemonResponse>),
 
-    Keybind(pengwm_core::command::DaemonCommand),
+    Keybind(pengwm_core::command::Command),
 }
 
 pub struct EventLoop {
@@ -25,19 +31,60 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
-    pub fn new() -> (Self, mpsc::Sender<DaemonEvent>) {
+    pub fn new(keybinds: Arc<Mutex<KeybindConfig>>) -> (Self, mpsc::Sender<DaemonEvent>) {
         let (tx, rx) = mpsc::channel(256);
-        let state = StateManager::new(tx.clone());
+        let state = StateManager::new(tx.clone(), keybinds);
         (Self { rx, state }, tx)
     }
 
-    pub async fn run(&mut self) {
-        loop {
-            match self.rx.recv().await {
-                Some(event) => self.dispatch(event),
-                None => {
-                    log::error!("Event loop channel closed");
-                    break;
+    /// Run one iteration of the event loop: let the CFRunLoop process one source,
+    /// then drain all queued mpsc messages. Returns `false` if the channel is
+    /// disconnected.
+    pub fn pump(&mut self) -> bool {
+        unsafe {
+            CFRunLoopRunInMode(
+                kCFRunLoopDefaultMode,
+                0.05,
+                1,
+            );
+            loop {
+                match self.rx.try_recv() {
+                    Ok(event) => self.dispatch(event),
+                    Err(mpsc::error::TryRecvError::Empty) => return true,
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        log::error!("Event loop channel closed");
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run the event loop synchronously on the current thread.
+    ///
+    /// Dispatches macOS events from the CFRunLoop (AXObserver, CGEventTap, NSWorkspace)
+    /// and drains the mpsc channel between each run loop iteration.
+    pub fn run_sync(&mut self) {
+        unsafe {
+            loop {
+                // Let the CFRunLoop process one source (event tap, AX callback, etc.)
+                // with a short timeout so we can drain the mpsc channel regularly.
+                CFRunLoopRunInMode(
+                    kCFRunLoopDefaultMode,
+                    0.05, // 50ms — balances latency vs CPU
+                    1,    // returnAfterSourceHandled — return after one source is handled
+                );
+
+                // Drain all queued mpsc messages
+                loop {
+                    match self.rx.try_recv() {
+                        Ok(event) => self.dispatch(event),
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            log::error!("Event loop channel closed");
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -45,7 +92,7 @@ impl EventLoop {
 
     fn dispatch(&mut self, event: DaemonEvent) {
         match event {
-            DaemonEvent::WindowCreated(id) => self.state.on_window_created(id),
+            DaemonEvent::WindowCreated(id, pid) => self.state.on_window_created(id, pid),
             DaemonEvent::WindowDestroyed(id) => self.state.on_window_destroyed(id),
             DaemonEvent::WindowFocused(id) => self.state.on_window_focused(id),
             DaemonEvent::AppLaunched(pid) => self.state.on_app_launched(pid),

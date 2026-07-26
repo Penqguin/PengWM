@@ -1,6 +1,10 @@
+use std::sync::{Arc, Mutex};
+use std::thread;
+
 use pengwm_daemon::config;
 use pengwm_daemon::macos;
 use pengwm_daemon::event_loop;
+use pengwm_daemon::ipc_server;
 
 fn main() {
     env_logger::init();
@@ -8,38 +12,59 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         if !macos::ax_element::is_process_trusted() {
-            eprintln!("PengWM requires Accessibility permissions.");
-            eprintln!("Go to System Settings > Privacy & Security > Accessibility");
-            eprintln!("and add Terminal (or whatever runs this daemon) to the list.");
-            eprintln!("You may need to restart the daemon after granting permission.");
-            std::process::exit(1);
+            eprintln!("PengWM needs Accessibility permissions to control windows.");
+            eprintln!("Opening System Settings…\n");
+
+            macos::ax_element::request_trusted_access();
+
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(120);
+            loop {
+                if macos::ax_element::is_process_trusted() {
+                    eprintln!("\n✓ Permission granted. Starting PengWM…");
+                    break;
+                }
+                if start.elapsed() > timeout {
+                    eprintln!("\nTimed out waiting for Accessibility permission.");
+                    eprintln!("Grant it manually:");
+                    eprintln!("  System Settings → Privacy & Security → Accessibility");
+                    eprintln!("Then re-run the daemon.");
+                    std::process::exit(1);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
         }
     }
 
-    let (_event_loop, tx) = event_loop::EventLoop::new();
+    eprintln!("[1/6] Loading config…");
+    let keybinds = Arc::new(Mutex::new(config::keybinds::KeybindConfig::load()));
 
-    let keybinds = config::keybinds::KeybindConfig::default();
+    eprintln!("[2/6] Initializing event loop and state…");
+    let (mut event_loop, tx) = event_loop::EventLoop::new(Arc::clone(&keybinds));
 
     #[cfg(target_os = "macos")]
     {
-        macos::event_tap::start(tx.clone(), keybinds);
+        eprintln!("[3/6] Starting global keybind tap…");
+        macos::event_tap::start(tx.clone(), Arc::clone(&keybinds));
+
+        eprintln!("[4/6] Attaching app lifecycle observers…");
         macos::ns_workspace::observe(tx.clone());
-        macos::cg_display::register_hotplug_callback(tx);
+
+        eprintln!("[5/6] Registering display hotplug callback…");
+        macos::cg_display::register_hotplug_callback(tx.clone());
     }
 
-    log::info!("PengWM daemon started");
+    eprintln!("[6/6] Starting IPC server and config watcher…");
+    config::watcher::watch(tx.clone());
 
-    #[cfg(target_os = "macos")]
-    unsafe {
-        let _run_loop = core_foundation::runloop::CFRunLoopGetCurrent();
-        core_foundation::runloop::CFRunLoopRun();
-    }
+    // Spawn the UDS listener on a background thread.
+    thread::spawn(move || {
+        ipc_server::start_ipc_server(tx);
+    });
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        log::warn!("PengWM only runs on macOS. Running in stub mode.");
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3600));
-        }
-    }
+    eprintln!("PengWM daemon ready (pid {})", std::process::id());
+
+    // Run the event loop synchronously on this thread.
+    // Drains macOS events (AXObserver, CGEventTap, NSWorkspace) and mpsc messages.
+    event_loop.run_sync();
 }

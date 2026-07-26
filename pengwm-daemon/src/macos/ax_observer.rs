@@ -147,7 +147,7 @@ impl ObserverRegistry {
         let windows = unsafe { ax_element::windows_for_pid(pid) };
         for (_element, window_id) in windows {
             log::info!("Discovered existing window {} for pid {}", window_id, pid);
-            let _ = self.event_tx.try_send(DaemonEvent::WindowCreated(window_id));
+            let _ = self.event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
         }
     }
 }
@@ -174,11 +174,14 @@ unsafe extern "C" fn observer_callback(
         }
     };
 
+    let mut pid: i32 = 0;
+    AXUIElementGetPid(element, &mut pid);
+
     #[allow(non_upper_case_globals)]
     match notif_str.as_str() {
         kAXWindowCreatedNotification => {
-            log::debug!("WindowCreated: {}", window_id);
-            let _ = tx.try_send(DaemonEvent::WindowCreated(window_id));
+            log::debug!("WindowCreated: {} pid={}", window_id, pid);
+            let _ = tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
         }
         kAXUIElementDestroyedNotification => {
             log::debug!("WindowDestroyed: {}", window_id);

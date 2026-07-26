@@ -1,16 +1,17 @@
-//! CLI client for PengWM.
-//!
-//! Connects to the daemon via Unix Domain Socket at /tmp/pengwm.sock,
-//! sends a JSON-serialized DaemonCommand, and prints the response.
+use clap::Parser;
+use pengwm_core::command::Command;
 
 mod cli;
+mod ipc_client;
 
 fn main() {
-    //  parse CLI args via clap (cli::Cli)
-    //  connect to UDS at /tmp/pengwm.sock
-    //  serialize DaemonCommand
-    //  send over socket
-    //  read response
-    //  print to stdout
-    todo!("cli entry")
+    let cli = cli::Cli::parse();
+    let cmd: Command = cli.command.into();
+    match ipc_client::send_command(&cmd) {
+        Ok(response) => print!("{response}"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
 }

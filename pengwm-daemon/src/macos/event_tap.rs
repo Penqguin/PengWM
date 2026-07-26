@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 use core_foundation::base::CFRelease;
 use core_foundation::runloop::{
@@ -24,10 +25,10 @@ const kCGHeadInsertEventTap: u32 = 0;
 #[allow(non_upper_case_globals)]
 const kCGKeyboardEventKeycode: u32 = 9;
 
-pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: KeybindConfig) {
+pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindConfig>>) {
     let ctx = Box::into_raw(Box::new(Context {
         event_tx,
-        keybinds: Box::new(keybinds),
+        keybinds: Arc::clone(&keybinds),
     })) as *mut c_void;
 
     let event_mask = CGEventMaskBit(kCGEventKeyDown);
@@ -44,6 +45,16 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: KeybindConfig) {
 
         if tap.is_null() {
             log::error!("Failed to create CGEventTap — check Accessibility permissions.");
+            eprintln!("✗ Failed to create global keybind tap (CGEventTap).");
+            eprintln!("  Keybind interception won't work. CLI commands via `pengwm` will still work.");
+            eprintln!("");
+            eprintln!("  To fix this, add pengwm-daemon to:");
+            eprintln!("    System Settings → Privacy & Security → Accessibility");
+            eprintln!("");
+
+            // Show the system permission prompt so the user can add the daemon.
+            super::ax_element::request_trusted_access();
+
             let _ = Box::from_raw(ctx as *mut Context);
             return;
         }
@@ -61,13 +72,14 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: KeybindConfig) {
 
         // The run loop source is retained by the run loop; do not release it.
 
+        eprintln!("✓ Global keybind tap active (Cmd+h/j/k/l, arrows, etc.)");
         log::info!("CGEventTap started successfully");
     }
 }
 
 struct Context {
     event_tx: mpsc::Sender<DaemonEvent>,
-    keybinds: Box<KeybindConfig>,
+    keybinds: Arc<Mutex<KeybindConfig>>,
 }
 
 unsafe extern "C" fn event_tap_callback(
@@ -83,7 +95,8 @@ unsafe extern "C" fn event_tap_callback(
 
     let filtered_flags = flags & (MODIFIER_CMD | MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT);
 
-    if let Some(command) = find_keybind(keycode, filtered_flags, &ctx.keybinds) {
+    let keybinds = ctx.keybinds.lock().expect("keybind mutex poisoned");
+    if let Some(command) = find_keybind(keycode, filtered_flags, &keybinds) {
         log::debug!("Keybind matched: keycode={}, command={:?}", keycode, command);
         let _ = ctx.event_tx.try_send(DaemonEvent::Keybind(command));
         return ptr::null_mut();
@@ -163,14 +176,14 @@ mod tests {
     #[test]
     fn context_struct_layout() {
         let (tx, _rx) = mpsc::channel(64);
-        let keybinds = Box::new(KeybindConfig::default());
+        let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
         let ctx = Context { event_tx: tx, keybinds };
         assert_eq!(std::mem::size_of_val(&ctx.event_tx), std::mem::size_of::<mpsc::Sender<DaemonEvent>>());
     }
 
     #[test]
     fn start_function_accepts_config() {
-        fn _type_check(_f: fn(mpsc::Sender<DaemonEvent>, KeybindConfig)) {}
+        fn _type_check(_f: fn(mpsc::Sender<DaemonEvent>, Arc<Mutex<KeybindConfig>>)) {}
         _type_check(start);
     }
 }
