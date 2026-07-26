@@ -1,5 +1,4 @@
 use std::ffi::c_void;
-use std::ptr;
 
 use core_graphics::display::{CGDirectDisplayID, CGDisplay};
 use tokio::sync::mpsc;
@@ -97,10 +96,10 @@ unsafe extern "C" fn hotplug_callback(
 }
 
 pub fn unregister_hotplug_callback() {
-    unsafe {
-        CGDisplayRemoveReconfigurationCallback(Some(hotplug_callback), ptr::null_mut());
-    }
     let ctx = REFCON.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+    unsafe {
+        CGDisplayRemoveReconfigurationCallback(Some(hotplug_callback), ctx);
+    }
     if !ctx.is_null() {
         unsafe {
             let _ = Box::from_raw(ctx as *mut mpsc::Sender<DaemonEvent>);

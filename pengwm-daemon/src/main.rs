@@ -6,6 +6,13 @@ use pengwm_daemon::macos;
 use pengwm_daemon::event_loop;
 use pengwm_daemon::ipc_server;
 
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationDidFinishLaunchingNotification};
+#[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSNotificationCenter;
+
 fn main() {
     env_logger::init();
 
@@ -52,6 +59,14 @@ fn main() {
 
         eprintln!("[5/6] Registering display hotplug callback…");
         macos::cg_display::register_hotplug_callback(tx.clone());
+
+        eprintln!("[5.5/6] Initializing NSApplication as accessory…");
+        let app = NSApplication::sharedApplication(unsafe { MainThreadMarker::new_unchecked() });
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        let center = NSNotificationCenter::defaultCenter();
+        unsafe {
+            center.postNotificationName_object(&NSApplicationDidFinishLaunchingNotification, Some(&app));
+        }
     }
 
     eprintln!("[6/6] Starting IPC server and config watcher…");

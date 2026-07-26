@@ -5,7 +5,6 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2_foundation::{
     NSNotificationCenter, NSNotification, NSString,
-    NSNumber,
 };
 use tokio::sync::mpsc;
 
@@ -15,7 +14,10 @@ use crate::event_loop::DaemonEvent;
 static NSApplicationProcessIdentifier: &str = "NSApplicationProcessIdentifier";
 
 pub fn observe(event_tx: mpsc::Sender<DaemonEvent>) {
-    let center = NSNotificationCenter::defaultCenter();
+    // NSWorkspace notifications are posted to the workspace's own
+    // notification center, NOT the default notification center.
+    let ws = NSWorkspace::sharedWorkspace();
+    let center = ws.notificationCenter();
 
     let ctx = Box::into_raw(Box::new(event_tx)) as *mut c_void;
 
@@ -79,8 +81,8 @@ fn extract_pid(notification: &NSNotification) -> Option<i32> {
     unsafe {
         let value: Option<Retained<NSObject>> = msg_send![&user_info, objectForKey: &*key];
         value.map(|obj| {
-            let num = &*obj as *const NSObject as *const NSNumber;
-            (*num).intValue()
+            let pid: i32 = msg_send![&obj, intValue];
+            pid
         })
     }
 }

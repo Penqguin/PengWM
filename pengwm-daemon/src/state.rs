@@ -77,7 +77,7 @@ impl StateManager {
             observer_registry,
             event_tx,
             gap_outer: 10.0,
-            gap_inner: 5.0,
+            gap_inner: 10.0,
             keybinds,
         };
 

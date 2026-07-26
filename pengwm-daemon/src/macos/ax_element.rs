@@ -33,18 +33,19 @@ pub fn request_trusted_access() {
     let _ = is_process_trusted_with_prompt();
 }
 
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn _AXUIElementGetWindow(element: AXUIElementRef, window_id: *mut u32) -> AXError;
+}
+
 /// # Safety
 ///
 /// `element` must be a valid, retained `AXUIElementRef`. The caller is responsible for
 /// ensuring the element remains valid for the duration of the call.
 pub unsafe fn ax_window_id_from_element(element: AXUIElementRef) -> Option<WindowId> {
-    let name = CFString::new(kAXWindowAttribute);
-    let mut value: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value);
-    if err == kAXErrorSuccess && !value.is_null() {
-        let window_id = value as u64;
-        CFRelease(value);
-        Some(window_id)
+    let mut wid: u32 = 0;
+    if _AXUIElementGetWindow(element, &mut wid) == kAXErrorSuccess {
+        Some(wid as WindowId)
     } else {
         None
     }
