@@ -37,7 +37,6 @@ If no file exists, defaults are used and a config watcher reloads changes at run
 ```toml
 gap_outer = 10
 gap_inner = 5
-max_tiles = 4
 mod_key = "cmd"
 ```
 
@@ -90,25 +89,84 @@ pengwm reload-config
 pengwm state
 ```
 
-## Development
+## Project Structure
+
+```
+pengwm-core/       Pure data types, layout engine, workspace logic (no macOS deps)
+pengwm-daemon/     Background daemon — event loop, state, macOS FFI
+pengwm-cli/        CLI client — clap parser, UDS sender
+```
+
+See [docs/](docs/) for full architecture, configuration, and command reference.
+
+## Contributing
+
+### Testing
+
+Run the full test suite (works on any platform — no macOS FFI required):
 
 ```bash
-# Run all tests (layout engine, workspace tree, IPC, FFI stubs)
 cargo test
-
-# Check lints
-cargo clippy
-
-# Run the daemon with verbose logs
-RUST_LOG=debug ./target/release/pengwm-daemon
 ```
 
-### Project Structure
+This runs ~90+ tests covering:
+- **Layout engine:** window placement, gaps, ratios, nested splits, monocle
+- **Workspace tree:** add/remove/focus/swap windows, split direction alternation
+- **StateManager:** command dispatch, event handling, workspace switching
+- **Keybind parsing:** modifier combinations, action names, TOML parsing
+- **IPC round-trip:** UDS send/receive/response (macOS only, no AX required)
 
-```
-pengwm-core/       Pure data types & layout engine (no macOS deps)
-pengwm-daemon/     The background daemon (event loop, state, FFI)
-pengwm-cli/        CLI client (clap parser, UDS sender)
+For macOS-specific integration tests (requires AX permissions):
+
+```bash
+cargo test -- --include-ignored
 ```
 
-See [docs/](docs/) for architecture, configuration, and command reference.
+These test the real Accessibility API: window rect get/set, observer attach/detach,
+and end-to-end window-created flow. They're `#[ignore]`d by default.
+
+### Visual / Interactive Testing
+
+For visual testing against a real display, build and run the daemon with debug logging:
+
+```bash
+cargo build && RUST_LOG=debug ./target/debug/pengwm-daemon
+```
+
+In another terminal, send commands through the CLI to see windows
+rearrange in real time:
+
+```bash
+./target/debug/pengwm focus right
+./target/debug/pengwm split horizontal
+./target/debug/pengwm toggle-layout
+```
+
+To monitor state without visual side effects:
+
+```bash
+./target/debug/pengwm state | jq
+```
+
+### Code Quality
+
+```bash
+cargo clippy        # Lint checks
+cargo fmt           # Formatting
+cargo test          # All unit tests
+```
+
+### Architecture Notes
+
+The project uses a **pure/dirty split** — `pengwm-core` is pure Rust with no
+macOS dependencies and runs `cargo test` on any platform. `pengwm-daemon`
+holds all macOS FFI. Key abstractions:
+
+- **Workspace::layout() / hide()** — produce global-coordinate window rects
+  from the tree. Tree internals (`NodeId`, `Arena`) are private.
+- **OsAdapter trait** — the seam between state logic and macOS FFI.
+  Two implementations: `MacOsAdapter` (real) and `TestAdapter` (mock).
+- **WindowElementCache** — O(1) `WindowId → AXUIElementRef` lookup inside
+  `MacOsAdapter`, populated by AX observer callbacks.
+
+See [docs/architecture.md](docs/architecture.md) for the full design.
