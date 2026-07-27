@@ -1,17 +1,21 @@
+use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
+use crate::layout::Rect;
 use crate::tree::{Arena, Direction, NodeData, NodeId, SplitDirection, WindowId};
+
+const OFFSCREEN: Rect = Rect { x: -9999.0, y: 0.0, width: 1.0, height: 1.0 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub name: String,
-    pub root: Option<NodeId>,
-    pub arena: Arena,
     pub monitor_id: u32,
-    pub monitor_origin: (i32, i32),
-    pub monitor_size: (u32, u32),
     pub focused_node: Option<NodeId>,
     pub monocle: bool,
     pub pending_split: Option<SplitDirection>,
+    root: Option<NodeId>,
+    arena: Arena,
+    monitor_origin: (i32, i32),
+    monitor_size: (u32, u32),
 }
 
 impl Workspace {
@@ -23,14 +27,14 @@ impl Workspace {
     ) -> Self {
         Self {
             name,
-            root: None,
-            arena: Arena::new(),
             monitor_id,
-            monitor_origin: origin,
-            monitor_size: size,
             focused_node: None,
             monocle: false,
             pending_split: None,
+            root: None,
+            arena: Arena::new(),
+            monitor_origin: origin,
+            monitor_size: size,
         }
     }
 
@@ -213,9 +217,105 @@ impl Workspace {
         self.monocle = !self.monocle;
     }
 
+    // -----------------------------------------------------------------------
+    // Layout
+    // -----------------------------------------------------------------------
+
+    /// Compute global-coordinate rects for every window using the stored monitor
+    /// geometry. Handles monocle internally: the focused window fills the monitor
+    /// (minus outer gap); all siblings get offscreen rects.
+    pub fn layout(&self, gap_inner: f64, gap_outer: f64) -> HashMap<WindowId, Rect> {
+        let Some(root) = self.root else { return HashMap::new() };
+
+        let monitor_rect = Rect::new(
+            0.0, 0.0,
+            self.monitor_size.0 as f64,
+            self.monitor_size.1 as f64,
+        );
+        let inset = crate::layout::inset_rect(monitor_rect, gap_outer);
+        let mut output = HashMap::new();
+
+        if self.monocle {
+            if let Some(focused) = self.focused_node {
+                if let Some(node) = self.arena.get(focused) {
+                    if let NodeData::Window { window_id, .. } = &node.data {
+                        let global = crate::layout::screen_local_to_global(inset, self.monitor_origin);
+                        output.insert(*window_id, global);
+                    }
+                }
+            }
+            for node in self.arena.nodes.values() {
+                if let NodeData::Window { window_id, .. } = &node.data {
+                    output.entry(*window_id).or_insert(OFFSCREEN);
+                }
+            }
+        } else {
+            crate::layout::calculate_layout(root, inset, &self.arena, &mut output, gap_inner);
+            for rect in output.values_mut() {
+                *rect = crate::layout::screen_local_to_global(*rect, self.monitor_origin);
+            }
+        }
+
+        output
+    }
+
+    /// Return offscreen rects for every window. Used when switching workspaces.
+    pub fn hide(&self) -> HashMap<WindowId, Rect> {
+        let mut result = HashMap::new();
+        for node in self.arena.nodes.values() {
+            if let NodeData::Window { window_id, .. } = &node.data {
+                result.insert(*window_id, OFFSCREEN);
+            }
+        }
+        result
+    }
+
+    // -----------------------------------------------------------------------
+    // Accessors for external callers (replaces direct field access)
+    // -----------------------------------------------------------------------
+
+    pub fn monitor_origin(&self) -> (i32, i32) {
+        self.monitor_origin
+    }
+
+    pub fn set_monitor_origin(&mut self, origin: (i32, i32)) {
+        self.monitor_origin = origin;
+    }
+
+    pub fn monitor_size(&self) -> (u32, u32) {
+        self.monitor_size
+    }
+
+    pub fn focused_window_id(&self) -> Option<WindowId> {
+        self.focused_node.and_then(|nid| {
+            if let NodeData::Window { window_id, .. } = &self.arena.get(nid)?.data {
+                Some(*window_id)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// True if the focused node is a Window leaf (not a Split container).
+    pub fn focused_is_window(&self) -> bool {
+        self.focused_node.is_some_and(|nid| {
+            self.arena.get(nid).is_some_and(|n| matches!(n.data, NodeData::Window { .. }))
+        })
+    }
+
+    /// Change the direction of the focused Split and flatten if redundant.
+    pub fn set_split_direction(&mut self, direction: SplitDirection) {
+        if let Some(node_id) = self.focused_node {
+            if let NodeData::Split { direction: ref mut dir, .. } = &mut self.arena.get_mut(node_id).unwrap().data {
+                *dir = direction;
+                self.flatten_split_if_redundant(node_id);
+            }
+        }
+    }
+
     /// If `split_id` is a Split whose direction matches its parent's, absorb its
     /// children into the parent and remove the now-redundant split.
-    pub fn flatten_split_if_redundant(&mut self, split_id: NodeId) {
+    fn flatten_split_if_redundant(&mut self, split_id: NodeId) {
         let parent_id = match self.arena.get(split_id).and_then(|n| n.parent) {
             Some(pid) => pid,
             None => return,
