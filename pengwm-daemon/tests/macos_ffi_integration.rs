@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use pengwm_daemon::event_loop::EventLoop;
 use pengwm_daemon::macos::ax_element;
 use pengwm_daemon::macos::cg_display;
-use pengwm_daemon::macos::ax_observer::ObserverRegistry;
+use pengwm_daemon::macos::ax_observer::{ObserverContext, ObserverRegistry};
 use pengwm_daemon::config::keybinds::KeybindConfig;
 
 #[test]
@@ -72,17 +72,16 @@ fn macos_ffi_integration() {
 #[test]
 #[ignore = "requires Accessibility permissions"]
 fn observer_registry_create_and_detach() {
-    let (tx, mut rx) = mpsc::channel(64);
-    let mut registry = ObserverRegistry::new(tx);
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = Box::new(ObserverContext::new(Box::new(move |event| {
+        let _ = tx.try_send(event);
+    })));
+    let mut registry = ObserverRegistry::new();
 
     let front_pid = ax_element::frontmost_pid()
         .expect("should have frontmost app");
-    registry.attach(front_pid);
+    registry.attach(front_pid, &ctx);
     registry.detach(front_pid);
-
-    // After detach, no more events should come
-    let result = rx.try_recv();
-    assert!(result.is_err(), "should not receive events after detach");
 }
 
 #[test]

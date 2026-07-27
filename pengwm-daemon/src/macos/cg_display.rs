@@ -3,13 +3,8 @@ use std::ffi::c_void;
 use core_graphics::display::{CGDirectDisplayID, CGDisplay};
 use tokio::sync::mpsc;
 
+use crate::adapter::DisplayInfo;
 use crate::event_loop::DaemonEvent;
-
-pub struct DisplayInfo {
-    pub id: u32,
-    pub origin: (i32, i32),
-    pub size: (u32, u32),
-}
 
 pub fn active_displays() -> Vec<DisplayInfo> {
     let ids = match CGDisplay::active_displays() {

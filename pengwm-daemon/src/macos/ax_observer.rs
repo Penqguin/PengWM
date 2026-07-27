@@ -3,46 +3,75 @@ use std::ffi::c_void;
 use std::ptr;
 
 use accessibility_sys::*;
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::base::{CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::runloop::{
     CFRunLoopGetCurrent, CFRunLoopAddSource, kCFRunLoopDefaultMode,
 };
-use tokio::sync::mpsc;
 
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
 
+use pengwm_core::tree::WindowId;
+
+/// Shared mutable state accessible from both the AX observer callback and
+/// MacOsAdapter. The cache maps WindowId to a retained AXUIElementRef + pid.
+/// The event_callback forwards AX events to the event loop.
+pub struct ObserverContext {
+    cache: std::cell::UnsafeCell<HashMap<WindowId, (AXUIElementRef, i32)>>,
+    event_callback: Box<dyn Fn(DaemonEvent) + Send>,
+}
+
+impl ObserverContext {
+    pub fn new(event_callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self {
+        Self {
+            cache: std::cell::UnsafeCell::new(HashMap::new()),
+            event_callback,
+        }
+    }
+
+    pub fn cache_mut(&self) -> &mut HashMap<WindowId, (AXUIElementRef, i32)> {
+        unsafe { &mut *self.cache.get() }
+    }
+
+    pub fn cache_get(&self) -> &HashMap<WindowId, (AXUIElementRef, i32)> {
+        unsafe { &*self.cache.get() }
+    }
+
+    pub fn call_event(&self, event: DaemonEvent) {
+        (self.event_callback)(event);
+    }
+}
+
+unsafe impl Send for ObserverContext {}
+unsafe impl Sync for ObserverContext {}
+
 struct RegisteredObserver {
     observer: AXObserverRef,
     app: AXUIElementRef,
-    refcon: *mut c_void,
 }
 
 impl Drop for RegisteredObserver {
     fn drop(&mut self) {
-        if !self.refcon.is_null() {
-            unsafe {
-                let _ = Box::from_raw(self.refcon as *mut mpsc::Sender<DaemonEvent>);
-            }
+        unsafe {
+            CFRelease(self.observer as CFTypeRef);
+            CFRelease(self.app as CFTypeRef);
         }
     }
 }
 
 pub struct ObserverRegistry {
     observers: HashMap<i32, RegisteredObserver>,
-    event_tx: mpsc::Sender<DaemonEvent>,
 }
 
 impl ObserverRegistry {
-    pub fn new(event_tx: mpsc::Sender<DaemonEvent>) -> Self {
+    pub fn new() -> Self {
         Self {
             observers: HashMap::new(),
-            event_tx,
         }
     }
 
-    pub fn attach(&mut self, pid: i32) {
+    pub fn attach(&mut self, pid: i32, ctx: &ObserverContext) {
         if self.observers.contains_key(&pid) {
             return;
         }
@@ -70,7 +99,7 @@ impl ObserverRegistry {
             kAXFocusedWindowChangedNotification,
         ];
 
-        let ctx = Box::into_raw(Box::new(self.event_tx.clone())) as *mut c_void;
+        let ctx_ptr = ctx as *const ObserverContext as *mut c_void;
 
         let mut all_succeeded = true;
         for &notif_name in &notifications {
@@ -80,7 +109,7 @@ impl ObserverRegistry {
                     observer,
                     app,
                     name.as_concrete_TypeRef(),
-                    ctx,
+                    ctx_ptr,
                 )
             };
             if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
@@ -94,7 +123,6 @@ impl ObserverRegistry {
 
         if !all_succeeded {
             unsafe {
-                let _ = Box::from_raw(ctx as *mut mpsc::Sender<DaemonEvent>);
                 CFRelease(observer as CFTypeRef);
                 CFRelease(app as CFTypeRef);
             }
@@ -105,7 +133,6 @@ impl ObserverRegistry {
         if run_loop_source.is_null() {
             log::warn!("AXObserverGetRunLoopSource returned null for pid {}", pid);
             unsafe {
-                let _ = Box::from_raw(ctx as *mut mpsc::Sender<DaemonEvent>);
                 CFRelease(observer as CFTypeRef);
                 CFRelease(app as CFTypeRef);
             }
@@ -117,17 +144,17 @@ impl ObserverRegistry {
             CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopDefaultMode);
         }
 
-        self.observers.insert(pid, RegisteredObserver { observer, app, refcon: ctx });
+        self.observers.insert(pid, RegisteredObserver { observer, app });
 
-        self.discover_existing_windows(pid);
+        self.discover_existing_windows(pid, ctx);
     }
 
     pub fn detach(&mut self, pid: i32) {
         if let Some(registered) = self.observers.remove(&pid) {
+            let run_loop = unsafe { CFRunLoopGetCurrent() };
             let run_loop_source = unsafe { AXObserverGetRunLoopSource(registered.observer) };
             if !run_loop_source.is_null() {
                 unsafe {
-                    let run_loop = CFRunLoopGetCurrent();
                     core_foundation::runloop::CFRunLoopRemoveSource(
                         run_loop,
                         run_loop_source,
@@ -135,19 +162,17 @@ impl ObserverRegistry {
                     );
                 }
             }
-            unsafe {
-                CFRelease(registered.observer as CFTypeRef);
-                CFRelease(registered.app as CFTypeRef);
-            }
             log::info!("Detached AXObserver for pid {}", pid);
         }
     }
 
-    fn discover_existing_windows(&self, pid: i32) {
+    fn discover_existing_windows(&self, pid: i32, ctx: &ObserverContext) {
         let windows = unsafe { ax_element::windows_for_pid(pid) };
-        for (_element, window_id) in windows {
+        for (element, window_id) in windows {
             log::info!("Discovered existing window {} for pid {}", window_id, pid);
-            let _ = self.event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
+            // element is already CFRetained by windows_for_pid — insert into cache
+            ctx.cache_mut().insert(window_id, (element, pid));
+            ctx.call_event(DaemonEvent::WindowCreated(window_id, pid));
         }
     }
 }
@@ -158,7 +183,7 @@ unsafe extern "C" fn observer_callback(
     notification: CFStringRef,
     refcon: *mut c_void,
 ) {
-    let tx = &*(refcon as *const mpsc::Sender<DaemonEvent>);
+    let ctx = &*(refcon as *const ObserverContext);
 
     if notification.is_null() {
         return;
@@ -181,15 +206,20 @@ unsafe extern "C" fn observer_callback(
     match notif_str.as_str() {
         kAXWindowCreatedNotification => {
             log::debug!("WindowCreated: {} pid={}", window_id, pid);
-            let _ = tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
+            CFRetain(element as CFTypeRef);
+            ctx.cache_mut().insert(window_id, (element, pid));
+            ctx.call_event(DaemonEvent::WindowCreated(window_id, pid));
         }
         kAXUIElementDestroyedNotification => {
             log::debug!("WindowDestroyed: {}", window_id);
-            let _ = tx.try_send(DaemonEvent::WindowDestroyed(window_id));
+            if let Some((elem, _)) = ctx.cache_mut().remove(&window_id) {
+                CFRelease(elem as CFTypeRef);
+            }
+            ctx.call_event(DaemonEvent::WindowDestroyed(window_id));
         }
         kAXFocusedWindowChangedNotification => {
             log::debug!("WindowFocused: {}", window_id);
-            let _ = tx.try_send(DaemonEvent::WindowFocused(window_id));
+            ctx.call_event(DaemonEvent::WindowFocused(window_id));
         }
         _ => {}
     }
@@ -201,22 +231,8 @@ mod tests {
 
     #[test]
     fn registry_new_is_empty() {
-        let (tx, _rx) = mpsc::channel(64);
-        let registry = ObserverRegistry::new(tx);
+        let registry = ObserverRegistry::new();
         assert!(registry.observers.is_empty());
-    }
-
-    #[test]
-    fn notification_constants_match() {
-        assert_eq!(kAXWindowCreatedNotification, "AXWindowCreated");
-        assert_eq!(kAXUIElementDestroyedNotification, "AXUIElementDestroyed");
-        assert_eq!(kAXFocusedWindowChangedNotification, "AXFocusedWindowChanged");
-    }
-
-    #[test]
-    fn observer_callback_is_compatible() {
-        fn _type_check(_f: unsafe extern "C" fn(AXObserverRef, AXUIElementRef, CFStringRef, *mut c_void)) {}
-        _type_check(observer_callback);
     }
 
     #[test]

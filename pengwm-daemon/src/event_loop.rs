@@ -3,6 +3,8 @@ use tokio::sync::mpsc;
 use core_foundation::runloop::{
     kCFRunLoopDefaultMode, CFRunLoopRunInMode,
 };
+use crate::adapter::OsAdapter;
+use crate::adapter_macos::MacOsAdapter;
 use crate::state::StateManager;
 use crate::config::keybinds::KeybindConfig;
 
@@ -33,7 +35,11 @@ pub struct EventLoop {
 impl EventLoop {
     pub fn new(keybinds: Arc<Mutex<KeybindConfig>>) -> (Self, mpsc::Sender<DaemonEvent>) {
         let (tx, rx) = mpsc::channel(256);
-        let state = StateManager::new(tx.clone(), keybinds);
+        let event_tx = tx.clone();
+        let os: Box<dyn OsAdapter> = Box::new(MacOsAdapter::with_callback(Box::new(move |event| {
+            let _ = event_tx.try_send(event);
+        })));
+        let state = StateManager::new(tx.clone(), keybinds, os);
         (Self { rx, state }, tx)
     }
 
