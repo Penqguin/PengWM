@@ -3,11 +3,9 @@ use std::ffi::c_void;
 use std::ptr;
 
 use accessibility_sys::*;
-use core_foundation::base::{CFRelease, CFRetain, CFTypeRef, TCFType};
+use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
+use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent};
 use core_foundation::string::{CFString, CFStringRef};
-use core_foundation::runloop::{
-    CFRunLoopGetCurrent, CFRunLoopAddSource, kCFRunLoopDefaultMode,
-};
 
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
@@ -30,8 +28,11 @@ impl ObserverContext {
         }
     }
 
-    pub fn cache_mut(&self) -> &mut HashMap<WindowId, (AXUIElementRef, i32)> {
-        unsafe { &mut *self.cache.get() }
+    /// # Safety
+    /// Caller must ensure no other mutable references to the cache are outstanding.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn cache_mut(&self) -> &mut HashMap<WindowId, (AXUIElementRef, i32)> {
+        &mut *self.cache.get()
     }
 
     pub fn cache_get(&self) -> &HashMap<WindowId, (AXUIElementRef, i32)> {
@@ -44,9 +45,21 @@ impl ObserverContext {
 
     /// Insert a window into the cache, releasing any previously cached element.
     pub fn cache_insert(&self, window_id: WindowId, element: AXUIElementRef, pid: i32) {
-        if let Some((old_elem, _)) = self.cache_mut().insert(window_id, (element, pid)) {
+        if let Some((old_elem, _)) = unsafe { self.cache_mut() }.insert(window_id, (element, pid)) {
             unsafe { CFRelease(old_elem as CFTypeRef) };
         }
+    }
+
+    /// Find the window ID for a given element pointer by linear scan.
+    /// Uses CFEqual for reliable comparison (handles toll-free bridging).
+    pub fn find_window_id_by_element(&self, element: AXUIElementRef) -> Option<WindowId> {
+        for (&wid, &(cached_elem, _)) in self.cache_get().iter() {
+            let equal: bool = unsafe { CFEqual(cached_elem as CFTypeRef, element as CFTypeRef) != 0 };
+            if equal {
+                return Some(wid);
+            }
+        }
+        None
     }
 }
 
@@ -71,6 +84,12 @@ pub struct ObserverRegistry {
     observers: HashMap<i32, RegisteredObserver>,
 }
 
+impl Default for ObserverRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ObserverRegistry {
     pub fn new() -> Self {
         Self {
@@ -90,19 +109,22 @@ impl ObserverRegistry {
         }
 
         let mut observer: AXObserverRef = ptr::null_mut();
-        let err = unsafe {
-            AXObserverCreate(pid, observer_callback, &mut observer)
-        };
+        let err = unsafe { AXObserverCreate(pid, observer_callback, &mut observer) };
 
         if err != kAXErrorSuccess || observer.is_null() {
-            log::warn!("AXObserverCreate failed for pid {}: {}", pid, error_string(err));
+            log::warn!(
+                "AXObserverCreate failed for pid {}: {}",
+                pid,
+                error_string(err)
+            );
             unsafe { CFRelease(app as CFTypeRef) };
             return;
         }
 
+        // Individual window destroyed notifications are registered per-window
+        // in observer_callback and register_window_destroyed — see below.
         let notifications = [
             kAXWindowCreatedNotification,
-            kAXUIElementDestroyedNotification,
             kAXFocusedWindowChangedNotification,
         ];
 
@@ -112,17 +134,14 @@ impl ObserverRegistry {
         for &notif_name in &notifications {
             let name = CFString::new(notif_name);
             let err = unsafe {
-                AXObserverAddNotification(
-                    observer,
-                    app,
-                    name.as_concrete_TypeRef(),
-                    ctx_ptr,
-                )
+                AXObserverAddNotification(observer, app, name.as_concrete_TypeRef(), ctx_ptr)
             };
             if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
                 log::warn!(
                     "AXObserverAddNotification failed for pid {} notif {}: {}",
-                    pid, notif_name, error_string(err)
+                    pid,
+                    notif_name,
+                    error_string(err)
                 );
                 all_succeeded = false;
             }
@@ -151,7 +170,66 @@ impl ObserverRegistry {
             CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopDefaultMode);
         }
 
-        self.observers.insert(pid, RegisteredObserver { observer, app });
+        self.observers
+            .insert(pid, RegisteredObserver { observer, app });
+    }
+
+    /// Register a kAXWindowMovedNotification on a specific window element.
+    /// This fires when the window is dragged, allowing overlap detection.
+    /// # Safety
+    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
+    pub unsafe fn register_window_moved(
+        &self,
+        pid: i32,
+        window: AXUIElementRef,
+        refcon: *mut c_void,
+    ) {
+        if let Some(registered) = self.observers.get(&pid) {
+            let name = CFString::new(kAXWindowMovedNotification);
+            let err = AXObserverAddNotification(
+                registered.observer,
+                window,
+                name.as_concrete_TypeRef(),
+                refcon,
+            );
+            if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
+                log::warn!(
+                    "register_window_moved failed for pid {}: {}",
+                    pid,
+                    error_string(err)
+                );
+            }
+        }
+    }
+
+    /// Register a kAXUIElementDestroyedNotification on a specific window element.
+    /// This fires when the window is closed, allowing the daemon to re-layout.
+    /// # Safety
+    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
+    pub unsafe fn register_window_destroyed(
+        &self,
+        pid: i32,
+        window: AXUIElementRef,
+        refcon: *mut c_void,
+    ) {
+        if let Some(registered) = self.observers.get(&pid) {
+            let name = CFString::new(kAXUIElementDestroyedNotification);
+            let err = unsafe {
+                AXObserverAddNotification(
+                    registered.observer,
+                    window,
+                    name.as_concrete_TypeRef(),
+                    refcon,
+                )
+            };
+            if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
+                log::warn!(
+                    "register_window_destroyed failed for pid {}: {}",
+                    pid,
+                    error_string(err)
+                );
+            }
+        }
     }
 
     pub fn detach(&mut self, pid: i32) {
@@ -170,11 +248,10 @@ impl ObserverRegistry {
             log::info!("Detached AXObserver for pid {}", pid);
         }
     }
-
 }
 
 unsafe extern "C" fn observer_callback(
-    _observer: AXObserverRef,
+    observer: AXObserverRef,
     element: AXUIElementRef,
     notification: CFStringRef,
     refcon: *mut c_void,
@@ -187,39 +264,99 @@ unsafe extern "C" fn observer_callback(
 
     let notif_str = CFString::wrap_under_get_rule(notification).to_string();
 
+    let mut pid: i32 = 0;
+    AXUIElementGetPid(element, &mut pid);
+
+    // Handle kAXUIElementDestroyedNotification early — the element is dead
+    // so ax_window_id_from_element will fail. Fall back to cache lookup by
+    // element pointer.
+    if notif_str.as_str() == kAXUIElementDestroyedNotification {
+        let window_id = match ax_element::ax_window_id_from_element(element) {
+            Some(id) => id,
+            None => match ctx.find_window_id_by_element(element) {
+                Some(id) => id,
+                None => {
+                    log::warn!("WindowDestroyed: unknown element (not in cache)");
+                    return;
+                }
+            },
+        };
+        log::debug!("WindowDestroyed: {}", window_id);
+        if let Some((elem, _)) = unsafe { ctx.cache_mut() }.remove(&window_id) {
+            CFRelease(elem as CFTypeRef);
+        }
+        ctx.call_event(DaemonEvent::WindowDestroyed(window_id));
+        return;
+    }
+
     let window_id = match ax_element::ax_window_id_from_element(element) {
         Some(id) => id,
         None => {
-            log::warn!("AX callback could not extract window ID");
+            log::debug!("AX callback could not extract window ID (likely app-level event)");
             return;
         }
     };
-
-    let mut pid: i32 = 0;
-    AXUIElementGetPid(element, &mut pid);
 
     #[allow(non_upper_case_globals)]
     match notif_str.as_str() {
         kAXWindowCreatedNotification => {
             if !ax_element::is_manageable(element) {
-                log::debug!("WindowCreated SKIPPED (not manageable): {} pid={}", window_id, pid);
+                log::debug!(
+                    "WindowCreated SKIPPED (not manageable): {} pid={}",
+                    window_id,
+                    pid
+                );
                 return;
             }
             log::debug!("WindowCreated: {} pid={}", window_id, pid);
             CFRetain(element as CFTypeRef);
             ctx.cache_insert(window_id, element, pid);
-            ctx.call_event(DaemonEvent::WindowCreated(window_id, pid));
-        }
-        kAXUIElementDestroyedNotification => {
-            log::debug!("WindowDestroyed: {}", window_id);
-            if let Some((elem, _)) = ctx.cache_mut().remove(&window_id) {
-                CFRelease(elem as CFTypeRef);
+
+            // Register per-window destroyed notification so we detect when
+            // this window closes (the app-level registration does NOT fire
+            // for child windows).
+            let destroyed_name = CFString::new(kAXUIElementDestroyedNotification);
+            let add_err = AXObserverAddNotification(
+                observer,
+                element,
+                destroyed_name.as_concrete_TypeRef(),
+                refcon,
+            );
+            if add_err != kAXErrorSuccess && add_err != kAXErrorNotificationAlreadyRegistered {
+                log::warn!(
+                    "Failed to register kAXUIElementDestroyedNotification on window {}: {}",
+                    window_id,
+                    error_string(add_err)
+                );
             }
-            ctx.call_event(DaemonEvent::WindowDestroyed(window_id));
+
+            // Register per-window moved notification so we detect drags
+            // for swap-on-hold and snap-back.
+            let moved_name = CFString::new(kAXWindowMovedNotification);
+            let moved_err = AXObserverAddNotification(
+                observer,
+                element,
+                moved_name.as_concrete_TypeRef(),
+                refcon,
+            );
+            if moved_err != kAXErrorSuccess && moved_err != kAXErrorNotificationAlreadyRegistered {
+                log::debug!(
+                    "kAXWindowMovedNotification registration skipped for window {}: {}",
+                    window_id,
+                    error_string(moved_err)
+                );
+            }
+
+            ctx.call_event(DaemonEvent::WindowCreated(window_id, pid));
         }
         kAXFocusedWindowChangedNotification => {
             log::debug!("WindowFocused: {}", window_id);
             ctx.call_event(DaemonEvent::WindowFocused(window_id));
+        }
+        kAXWindowMovedNotification => {
+            if let Some(rect) = unsafe { crate::macos::ax_element::get_window_rect(element) } {
+                ctx.call_event(DaemonEvent::WindowMoved(window_id, rect.x, rect.y));
+            }
         }
         _ => {}
     }

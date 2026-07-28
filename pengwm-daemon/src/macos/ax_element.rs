@@ -2,12 +2,12 @@ use std::ffi::c_void;
 use std::ptr;
 
 use accessibility_sys::*;
+use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
 use core_foundation::base::{CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::boolean::kCFBooleanTrue;
-use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
-use core_foundation::array::{CFArrayRef, CFArrayGetCount, CFArrayGetValueAtIndex};
+use core_foundation::string::{CFString, CFStringRef};
 
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
@@ -20,9 +20,7 @@ pub fn is_process_trusted_with_prompt() -> bool {
     unsafe {
         let key = CFString::new("AXTrustedCheckOptionPrompt");
         let val = CFNumber::from(1i32);
-        let dict = CFDictionary::from_CFType_pairs(
-            &[(key, val)],
-        );
+        let dict = CFDictionary::from_CFType_pairs(&[(key, val)]);
         AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef())
     }
 }
@@ -59,7 +57,10 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
     let pos_name = CFString::new(kAXPositionAttribute);
     let size_name = CFString::new(kAXSizeAttribute);
 
-    let mut point = CGPoint { x: rect.x, y: rect.y };
+    let mut point = CGPoint {
+        x: rect.x,
+        y: rect.y,
+    };
     let pos_value = AXValueCreate(kAXValueTypeCGPoint, &mut point as *mut _ as *mut c_void);
     if pos_value.is_null() {
         anyhow::bail!("AXValueCreate failed for position");
@@ -71,10 +72,16 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
     );
     CFRelease(pos_value as CFTypeRef);
     if err != kAXErrorSuccess {
-        anyhow::bail!("AXUIElementSetAttributeValue position error: {}", error_string(err));
+        anyhow::bail!(
+            "AXUIElementSetAttributeValue position error: {}",
+            error_string(err)
+        );
     }
 
-    let mut size = CGSize { width: rect.width, height: rect.height };
+    let mut size = CGSize {
+        width: rect.width,
+        height: rect.height,
+    };
     let size_value = AXValueCreate(kAXValueTypeCGSize, &mut size as *mut _ as *mut c_void);
     if size_value.is_null() {
         anyhow::bail!("AXValueCreate failed for size");
@@ -86,7 +93,10 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
     );
     CFRelease(size_value as CFTypeRef);
     if err != kAXErrorSuccess {
-        anyhow::bail!("AXUIElementSetAttributeValue size error: {}", error_string(err));
+        anyhow::bail!(
+            "AXUIElementSetAttributeValue size error: {}",
+            error_string(err)
+        );
     }
 
     Ok(())
@@ -101,27 +111,45 @@ pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
     let size_name = CFString::new(kAXSizeAttribute);
 
     let mut pos_val: CFTypeRef = ptr::null();
-    let err_pos = AXUIElementCopyAttributeValue(element, pos_name.as_concrete_TypeRef(), &mut pos_val);
+    let err_pos =
+        AXUIElementCopyAttributeValue(element, pos_name.as_concrete_TypeRef(), &mut pos_val);
     if err_pos != kAXErrorSuccess || pos_val.is_null() {
         return None;
     }
 
     let mut size_val: CFTypeRef = ptr::null();
-    let err_size = AXUIElementCopyAttributeValue(element, size_name.as_concrete_TypeRef(), &mut size_val);
+    let err_size =
+        AXUIElementCopyAttributeValue(element, size_name.as_concrete_TypeRef(), &mut size_val);
     if err_size != kAXErrorSuccess || size_val.is_null() {
         CFRelease(pos_val);
         return None;
     }
 
     let mut point = CGPoint { x: 0.0, y: 0.0 };
-    let mut size = CGSize { width: 0.0, height: 0.0 };
-    AXValueGetValue(pos_val as AXValueRef, kAXValueTypeCGPoint, &mut point as *mut _ as *mut c_void);
-    AXValueGetValue(size_val as AXValueRef, kAXValueTypeCGSize, &mut size as *mut _ as *mut c_void);
+    let mut size = CGSize {
+        width: 0.0,
+        height: 0.0,
+    };
+    AXValueGetValue(
+        pos_val as AXValueRef,
+        kAXValueTypeCGPoint,
+        &mut point as *mut _ as *mut c_void,
+    );
+    AXValueGetValue(
+        size_val as AXValueRef,
+        kAXValueTypeCGSize,
+        &mut size as *mut _ as *mut c_void,
+    );
 
     CFRelease(pos_val);
     CFRelease(size_val);
 
-    Some(Rect { x: point.x, y: point.y, width: size.width, height: size.height })
+    Some(Rect {
+        x: point.x,
+        y: point.y,
+        width: size.width,
+        height: size.height,
+    })
 }
 
 /// # Safety
@@ -147,7 +175,8 @@ pub unsafe fn focus_window(element: AXUIElementRef) {
 pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
     let role_name = CFString::new(kAXRoleAttribute);
     let mut role_val: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(element, role_name.as_concrete_TypeRef(), &mut role_val);
+    let err =
+        AXUIElementCopyAttributeValue(element, role_name.as_concrete_TypeRef(), &mut role_val);
     if err != kAXErrorSuccess || role_val.is_null() {
         return false;
     }
@@ -158,7 +187,11 @@ pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
 
     let subrole_name = CFString::new(kAXSubroleAttribute);
     let mut subrole_val: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(element, subrole_name.as_concrete_TypeRef(), &mut subrole_val);
+    let err = AXUIElementCopyAttributeValue(
+        element,
+        subrole_name.as_concrete_TypeRef(),
+        &mut subrole_val,
+    );
     if err != kAXErrorSuccess || subrole_val.is_null() {
         return false;
     }
@@ -286,5 +319,3 @@ struct CGSize {
     width: f64,
     height: f64,
 }
-
-
