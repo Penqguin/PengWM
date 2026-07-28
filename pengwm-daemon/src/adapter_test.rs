@@ -16,6 +16,7 @@ pub struct TestAdapter {
     pub displays: Vec<DisplayInfo>,
     pub focused_windows: HashMap<i32, WindowId>,
     pub observers: HashSet<i32>,
+    pub bundle_ids: HashMap<i32, String>,
 }
 
 impl TestAdapter {
@@ -29,6 +30,7 @@ impl TestAdapter {
             displays: Vec::new(),
             focused_windows: HashMap::new(),
             observers: HashSet::new(),
+            bundle_ids: HashMap::new(),
         }
     }
 }
@@ -58,11 +60,7 @@ impl OsAdapter for TestAdapter {
         self.displays.first().map(|d| d.id).unwrap_or(0)
     }
 
-    fn set_window_rect(
-        &mut self,
-        window_id: WindowId,
-        rect: Rect,
-    ) -> anyhow::Result<()> {
+    fn set_window_rect(&mut self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
         self.window_rects.insert(window_id, rect);
         Ok(())
     }
@@ -77,7 +75,12 @@ impl OsAdapter for TestAdapter {
     }
 
     fn hide_windows(&mut self, window_ids: &[WindowId]) {
-        let offscreen = Rect { x: -9999.0, y: 0.0, width: 1.0, height: 1.0 };
+        let offscreen = Rect {
+            x: -9999.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        };
         for &wid in window_ids {
             self.window_rects.insert(wid, offscreen);
         }
@@ -91,10 +94,22 @@ impl OsAdapter for TestAdapter {
         self.observers.remove(&pid);
     }
 
+    fn app_bundle_id(&self, pid: i32) -> Option<String> {
+        self.bundle_ids.get(&pid).cloned()
+    }
+
     fn with_callback(_callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
     where
         Self: Sized,
     {
         TestAdapter::new()
+    }
+
+    fn update_workspace_indicator(
+        &mut self,
+        _workspaces: &[(&str, bool)],
+        _display_width: f64,
+        _display_height: f64,
+    ) {
     }
 }

@@ -1,18 +1,27 @@
-use accessibility_sys::AXUIElementRef;
+use std::ffi::c_void;
+
 use crate::adapter::{DisplayInfo, OsAdapter};
+use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
 use crate::macos::ax_observer::{ObserverContext, ObserverRegistry};
 use crate::macos::cg_display;
 use crate::macos::ns_workspace;
-use crate::event_loop::DaemonEvent;
+use crate::macos::workspace_bar::WorkspaceBar;
+use accessibility_sys::AXUIElementRef;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
-const OFFSCREEN: Rect = Rect { x: -9999.0, y: 0.0, width: 1.0, height: 1.0 };
+const OFFSCREEN: Rect = Rect {
+    x: -9999.0,
+    y: 0.0,
+    width: 1.0,
+    height: 1.0,
+};
 
 pub struct MacOsAdapter {
     observer_registry: ObserverRegistry,
     ctx: Box<ObserverContext>,
+    workspace_bar: WorkspaceBar,
 }
 
 impl MacOsAdapter {
@@ -20,6 +29,7 @@ impl MacOsAdapter {
         Self {
             observer_registry: ObserverRegistry::new(),
             ctx: Box::new(ObserverContext::new(callback)),
+            workspace_bar: WorkspaceBar::new(),
         }
     }
 
@@ -59,6 +69,18 @@ impl OsAdapter for MacOsAdapter {
         for (element, window_id) in windows {
             // element is already CFRetained by windows_for_pid
             self.ctx.cache_insert(window_id, element, pid);
+            unsafe {
+                self.observer_registry.register_window_destroyed(
+                    pid,
+                    element,
+                    &*self.ctx as *const ObserverContext as *mut c_void,
+                );
+                self.observer_registry.register_window_moved(
+                    pid,
+                    element,
+                    &*self.ctx as *const ObserverContext as *mut c_void,
+                );
+            }
             result.push(window_id);
         }
         result
@@ -76,15 +98,10 @@ impl OsAdapter for MacOsAdapter {
         cg_display::primary_display_id()
     }
 
-    fn set_window_rect(
-        &mut self,
-        window_id: WindowId,
-        rect: Rect,
-    ) -> anyhow::Result<()> {
-        let (element, pid) = self.cache_get_element(window_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!("element not found in cache for window {}", window_id)
-            })?;
+    fn set_window_rect(&mut self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
+        let (element, pid) = self.cache_get_element(window_id).ok_or_else(|| {
+            anyhow::anyhow!("element not found in cache for window {}", window_id)
+        })?;
         match unsafe { ax_element::set_window_rect(element, rect) } {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -93,7 +110,27 @@ impl OsAdapter for MacOsAdapter {
                     log::warn!("stale element for window {}, re-discovering", window_id);
                     if let Some(new_elem) = self.refresh_element(window_id, pid) {
                         self.ctx.cache_insert(window_id, new_elem, pid);
+                        unsafe {
+                            self.observer_registry.register_window_destroyed(
+                                pid,
+                                new_elem,
+                                &*self.ctx as *const ObserverContext as *mut c_void,
+                            );
+                            self.observer_registry.register_window_moved(
+                                pid,
+                                new_elem,
+                                &*self.ctx as *const ObserverContext as *mut c_void,
+                            );
+                        }
                         return unsafe { ax_element::set_window_rect(new_elem, rect) };
+                    }
+                    // Window is gone — evict from cache so we don't keep retrying.
+                    if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
+                        unsafe {
+                            core_foundation::base::CFRelease(
+                                elem as core_foundation::base::CFTypeRef,
+                            )
+                        };
                     }
                 }
                 Err(e)
@@ -105,8 +142,10 @@ impl OsAdapter for MacOsAdapter {
         if let Some((element, _pid)) = self.cache_get_element(window_id) {
             unsafe { ax_element::close_window(element) };
             // Remove from cache regardless — the element is no longer valid
-            if let Some((elem, _)) = self.ctx.cache_mut().remove(&window_id) {
-                unsafe { core_foundation::base::CFRelease(elem as core_foundation::base::CFTypeRef) };
+            if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
+                unsafe {
+                    core_foundation::base::CFRelease(elem as core_foundation::base::CFTypeRef)
+                };
             }
         }
     }
@@ -127,10 +166,33 @@ impl OsAdapter for MacOsAdapter {
         self.observer_registry.detach(pid);
     }
 
+    fn app_bundle_id(&self, pid: i32) -> Option<String> {
+        ns_workspace::bundle_id_for_pid(pid)
+    }
+
     fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
     where
         Self: Sized,
     {
         MacOsAdapter::with_callback(callback)
+    }
+
+    fn update_workspace_indicator(
+        &mut self,
+        workspaces: &[(&str, bool)],
+        display_width: f64,
+        display_height: f64,
+    ) {
+        let items: Vec<_> = workspaces
+            .iter()
+            .map(
+                |(name, active)| crate::macos::workspace_bar::WorkspaceBarItem {
+                    name: name.to_string(),
+                    active: *active,
+                },
+            )
+            .collect();
+        self.workspace_bar
+            .update(&items, display_width, display_height);
     }
 }

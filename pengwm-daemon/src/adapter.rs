@@ -1,6 +1,6 @@
+use crate::event_loop::DaemonEvent;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
-use crate::event_loop::DaemonEvent;
 
 pub trait OsAdapter {
     fn running_app_pids(&self) -> Vec<i32>;
@@ -14,9 +14,16 @@ pub trait OsAdapter {
     fn hide_windows(&mut self, window_ids: &[WindowId]);
     fn attach_observer(&mut self, pid: i32);
     fn detach_observer(&mut self, pid: i32);
+    fn app_bundle_id(&self, pid: i32) -> Option<String>;
     fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
     where
         Self: Sized;
+    fn update_workspace_indicator(
+        &mut self,
+        workspaces: &[(&str, bool)],
+        display_width: f64,
+        display_height: f64,
+    );
 }
 
 #[derive(Clone)]
