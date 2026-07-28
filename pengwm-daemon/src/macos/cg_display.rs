@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::adapter::DisplayInfo;
 use crate::event_loop::DaemonEvent;
+use crate::macos::ns_workspace;
 
 pub fn active_displays() -> Vec<DisplayInfo> {
     let ids = match CGDisplay::active_displays() {
@@ -12,15 +13,23 @@ pub fn active_displays() -> Vec<DisplayInfo> {
         Err(_) => return Vec::new(),
     };
 
+    let primary_id = primary_display_id();
+    let top_inset = ns_workspace::menu_bar_height() as u32;
+
     ids.iter()
         .map(|&id| {
             let display = CGDisplay::new(id);
             let bounds = display.bounds();
-            DisplayInfo {
-                id,
-                origin: (bounds.origin.x as i32, bounds.origin.y as i32),
-                size: (bounds.size.width as u32, bounds.size.height as u32),
+            let mut origin = (bounds.origin.x as i32, bounds.origin.y as i32);
+            let mut size = (bounds.size.width as u32, bounds.size.height as u32);
+
+            // Account for the macOS menu bar on the primary display.
+            if id == primary_id && top_inset > 0 {
+                origin.1 += top_inset as i32;
+                size.1 = size.1.saturating_sub(top_inset);
             }
+
+            DisplayInfo { id, origin, size }
         })
         .collect()
 }
