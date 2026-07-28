@@ -25,44 +25,196 @@ impl Default for KeybindConfig {
     fn default() -> Self {
         let bindings = vec![
             // Focus movement: cmd-h/j/k/l (vim-style)
-            Keybind { keycode: 0x04, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Left } },
-            Keybind { keycode: 0x26, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Down } },
-            Keybind { keycode: 0x28, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Up } },
-            Keybind { keycode: 0x25, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Right } },
+            Keybind {
+                keycode: 0x04,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Left,
+                },
+            },
+            Keybind {
+                keycode: 0x26,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Down,
+                },
+            },
+            Keybind {
+                keycode: 0x28,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Up,
+                },
+            },
+            Keybind {
+                keycode: 0x25,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Right,
+                },
+            },
             // Arrow keys as alternative
-            Keybind { keycode: 0x7B, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Left } },
-            Keybind { keycode: 0x7D, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Down } },
-            Keybind { keycode: 0x7E, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Up } },
-            Keybind { keycode: 0x7C, modifiers: MODIFIER_CMD,  action: Command::Focus { direction: Direction::Right } },
+            Keybind {
+                keycode: 0x7B,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Left,
+                },
+            },
+            Keybind {
+                keycode: 0x7D,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Down,
+                },
+            },
+            Keybind {
+                keycode: 0x7E,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Up,
+                },
+            },
+            Keybind {
+                keycode: 0x7C,
+                modifiers: MODIFIER_CMD,
+                action: Command::Focus {
+                    direction: Direction::Right,
+                },
+            },
             // Swap: cmd-shift-h/j/k/l
-            Keybind { keycode: 0x04, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindow { direction: Direction::Left } },
-            Keybind { keycode: 0x26, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindow { direction: Direction::Down } },
-            Keybind { keycode: 0x28, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindow { direction: Direction::Up } },
-            Keybind { keycode: 0x25, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindow { direction: Direction::Right } },
+            Keybind {
+                keycode: 0x04,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindow {
+                    direction: Direction::Left,
+                },
+            },
+            Keybind {
+                keycode: 0x26,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindow {
+                    direction: Direction::Down,
+                },
+            },
+            Keybind {
+                keycode: 0x28,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindow {
+                    direction: Direction::Up,
+                },
+            },
+            Keybind {
+                keycode: 0x25,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindow {
+                    direction: Direction::Right,
+                },
+            },
             // Workspace switching: cmd-1..9
-            Keybind { keycode: 0x12, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 1 } },
-            Keybind { keycode: 0x13, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 2 } },
-            Keybind { keycode: 0x14, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 3 } },
-            Keybind { keycode: 0x15, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 4 } },
-            Keybind { keycode: 0x17, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 5 } },
-            Keybind { keycode: 0x16, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 6 } },
-            Keybind { keycode: 0x1A, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 7 } },
-            Keybind { keycode: 0x1B, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 8 } },
-            Keybind { keycode: 0x19, modifiers: MODIFIER_CMD,  action: Command::Workspace { id: 9 } },
+            Keybind {
+                keycode: 0x12,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 1 },
+            },
+            Keybind {
+                keycode: 0x13,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 2 },
+            },
+            Keybind {
+                keycode: 0x14,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 3 },
+            },
+            Keybind {
+                keycode: 0x15,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 4 },
+            },
+            Keybind {
+                keycode: 0x17,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 5 },
+            },
+            Keybind {
+                keycode: 0x16,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 6 },
+            },
+            Keybind {
+                keycode: 0x1A,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 7 },
+            },
+            Keybind {
+                keycode: 0x1B,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 8 },
+            },
+            Keybind {
+                keycode: 0x19,
+                modifiers: MODIFIER_CMD,
+                action: Command::Workspace { id: 9 },
+            },
             // Move window to workspace: cmd-shift-1..9
-            Keybind { keycode: 0x12, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 1 } },
-            Keybind { keycode: 0x13, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 2 } },
-            Keybind { keycode: 0x14, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 3 } },
-            Keybind { keycode: 0x15, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 4 } },
-            Keybind { keycode: 0x17, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 5 } },
-            Keybind { keycode: 0x16, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 6 } },
-            Keybind { keycode: 0x1A, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 7 } },
-            Keybind { keycode: 0x1B, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 8 } },
-            Keybind { keycode: 0x19, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::MoveWindowToWorkspace { id: 9 } },
+            Keybind {
+                keycode: 0x12,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 1 },
+            },
+            Keybind {
+                keycode: 0x13,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 2 },
+            },
+            Keybind {
+                keycode: 0x14,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 3 },
+            },
+            Keybind {
+                keycode: 0x15,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 4 },
+            },
+            Keybind {
+                keycode: 0x17,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 5 },
+            },
+            Keybind {
+                keycode: 0x16,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 6 },
+            },
+            Keybind {
+                keycode: 0x1A,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 7 },
+            },
+            Keybind {
+                keycode: 0x1B,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 8 },
+            },
+            Keybind {
+                keycode: 0x19,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::MoveWindowToWorkspace { id: 9 },
+            },
             // Toggle layout: cmd-f
-            Keybind { keycode: 0x03, modifiers: MODIFIER_CMD,  action: Command::ToggleLayout },
+            Keybind {
+                keycode: 0x03,
+                modifiers: MODIFIER_CMD,
+                action: Command::ToggleLayout,
+            },
             // Reload config: cmd-shift-r
-            Keybind { keycode: 0x0F, modifiers: MODIFIER_CMD | MODIFIER_SHIFT,  action: Command::ReloadConfig },
+            Keybind {
+                keycode: 0x0F,
+                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                action: Command::ReloadConfig,
+            },
         ];
         KeybindConfig { bindings }
     }
@@ -92,14 +244,21 @@ impl KeybindConfig {
                 }
             },
             Err(_) => {
-                log::info!("No keybinds config at '{}'. Using defaults.", path.display());
+                log::info!(
+                    "No keybinds config at '{}'. Using defaults.",
+                    path.display()
+                );
                 Self::default()
             }
         }
     }
 }
 
-pub fn find_keybind(keycode: u16, modifiers: ModifierFlags, config: &KeybindConfig) -> Option<Command> {
+pub fn find_keybind(
+    keycode: u16,
+    modifiers: ModifierFlags,
+    config: &KeybindConfig,
+) -> Option<Command> {
     for bind in &config.bindings {
         if bind.keycode == keycode && bind.modifiers == modifiers {
             return Some(bind.action.clone());
@@ -110,26 +269,55 @@ pub fn find_keybind(keycode: u16, modifiers: ModifierFlags, config: &KeybindConf
 
 pub fn key_name_to_keycode(name: &str) -> u16 {
     match name {
-        "a" => 0x00, "b" => 0x0B, "c" => 0x08, "d" => 0x02,
-        "e" => 0x0E, "f" => 0x03, "g" => 0x05, "h" => 0x04,
-        "i" => 0x22, "j" => 0x26, "k" => 0x28, "l" => 0x25,
-        "m" => 0x2E, "n" => 0x2D, "o" => 0x1F, "p" => 0x23,
-        "q" => 0x0C, "r" => 0x0F, "s" => 0x01, "t" => 0x11,
-        "u" => 0x20, "v" => 0x09, "w" => 0x0D, "x" => 0x07,
-        "y" => 0x10, "z" => 0x06,
-        "0" => 0x1D, "1" => 0x12, "2" => 0x13, "3" => 0x14,
-        "4" => 0x15, "5" => 0x17, "6" => 0x16, "7" => 0x1A,
-        "8" => 0x1B, "9" => 0x19,
-        "left"  => 0x7B, "right" => 0x7C, "down" => 0x7D, "up" => 0x7E,
-        "space"   => 0x31,
-        "tab"     => 0x30,
-        "escape"  => 0x35,
-        "return"  => 0x24,
-        "delete"  => 0x33,
-        "home"    => 0x73,
-        "end"     => 0x77,
-        "pageup"  => 0x74,
-        "pagedown"=> 0x79,
+        "a" => 0x00,
+        "b" => 0x0B,
+        "c" => 0x08,
+        "d" => 0x02,
+        "e" => 0x0E,
+        "f" => 0x03,
+        "g" => 0x05,
+        "h" => 0x04,
+        "i" => 0x22,
+        "j" => 0x26,
+        "k" => 0x28,
+        "l" => 0x25,
+        "m" => 0x2E,
+        "n" => 0x2D,
+        "o" => 0x1F,
+        "p" => 0x23,
+        "q" => 0x0C,
+        "r" => 0x0F,
+        "s" => 0x01,
+        "t" => 0x11,
+        "u" => 0x20,
+        "v" => 0x09,
+        "w" => 0x0D,
+        "x" => 0x07,
+        "y" => 0x10,
+        "z" => 0x06,
+        "0" => 0x1D,
+        "1" => 0x12,
+        "2" => 0x13,
+        "3" => 0x14,
+        "4" => 0x15,
+        "5" => 0x17,
+        "6" => 0x16,
+        "7" => 0x1A,
+        "8" => 0x1B,
+        "9" => 0x19,
+        "left" => 0x7B,
+        "right" => 0x7C,
+        "down" => 0x7D,
+        "up" => 0x7E,
+        "space" => 0x31,
+        "tab" => 0x30,
+        "escape" => 0x35,
+        "return" => 0x24,
+        "delete" => 0x33,
+        "home" => 0x73,
+        "end" => 0x77,
+        "pageup" => 0x74,
+        "pagedown" => 0x79,
         _ => 0x00,
     }
 }
@@ -142,9 +330,9 @@ pub fn parse_modifiers(s: &str) -> ModifierFlags {
     for part in s.split('-') {
         match part.trim().to_lowercase().as_str() {
             "cmd" | "command" => flags |= MODIFIER_CMD,
-            "alt" | "option"  => flags |= MODIFIER_ALT,
-            "ctrl" | "control"=> flags |= MODIFIER_CTRL,
-            "shift"           => flags |= MODIFIER_SHIFT,
+            "alt" | "option" => flags |= MODIFIER_ALT,
+            "ctrl" | "control" => flags |= MODIFIER_CTRL,
+            "shift" => flags |= MODIFIER_SHIFT,
             _ => {}
         }
     }
@@ -153,14 +341,30 @@ pub fn parse_modifiers(s: &str) -> ModifierFlags {
 
 pub fn parse_action(s: &str) -> Option<Command> {
     match s {
-        "focus-left"  => Some(Command::Focus { direction: Direction::Left }),
-        "focus-right" => Some(Command::Focus { direction: Direction::Right }),
-        "focus-up"    => Some(Command::Focus { direction: Direction::Up }),
-        "focus-down"  => Some(Command::Focus { direction: Direction::Down }),
-        "swap-left"   => Some(Command::MoveWindow { direction: Direction::Left }),
-        "swap-right"  => Some(Command::MoveWindow { direction: Direction::Right }),
-        "swap-up"     => Some(Command::MoveWindow { direction: Direction::Up }),
-        "swap-down"   => Some(Command::MoveWindow { direction: Direction::Down }),
+        "focus-left" => Some(Command::Focus {
+            direction: Direction::Left,
+        }),
+        "focus-right" => Some(Command::Focus {
+            direction: Direction::Right,
+        }),
+        "focus-up" => Some(Command::Focus {
+            direction: Direction::Up,
+        }),
+        "focus-down" => Some(Command::Focus {
+            direction: Direction::Down,
+        }),
+        "swap-left" => Some(Command::MoveWindow {
+            direction: Direction::Left,
+        }),
+        "swap-right" => Some(Command::MoveWindow {
+            direction: Direction::Right,
+        }),
+        "swap-up" => Some(Command::MoveWindow {
+            direction: Direction::Up,
+        }),
+        "swap-down" => Some(Command::MoveWindow {
+            direction: Direction::Down,
+        }),
         "toggle-layout" => Some(Command::ToggleLayout),
         "reload-config" => Some(Command::ReloadConfig),
         _ => {
@@ -201,7 +405,11 @@ pub fn from_toml_value(value: &toml::Value) -> KeybindConfig {
         let (modifier_str, key_name) = split_keybind_str(key_str);
         let modifiers = parse_modifiers(modifier_str);
         let keycode = key_name_to_keycode(key_name);
-        bindings.push(Keybind { keycode, modifiers, action });
+        bindings.push(Keybind {
+            keycode,
+            modifiers,
+            action,
+        });
     }
     KeybindConfig { bindings }
 }
@@ -223,25 +431,46 @@ mod tests {
     #[test]
     fn default_has_vim_navigation() {
         let config = KeybindConfig::default();
-        assert!(config.bindings.iter().any(|b| b.keycode == 0x04 && b.modifiers == MODIFIER_CMD));
-        assert!(config.bindings.iter().any(|b| b.keycode == 0x26 && b.modifiers == MODIFIER_CMD));
-        assert!(config.bindings.iter().any(|b| b.keycode == 0x28 && b.modifiers == MODIFIER_CMD));
-        assert!(config.bindings.iter().any(|b| b.keycode == 0x25 && b.modifiers == MODIFIER_CMD));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| b.keycode == 0x04 && b.modifiers == MODIFIER_CMD));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| b.keycode == 0x26 && b.modifiers == MODIFIER_CMD));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| b.keycode == 0x28 && b.modifiers == MODIFIER_CMD));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| b.keycode == 0x25 && b.modifiers == MODIFIER_CMD));
     }
 
     #[test]
     fn default_has_swap_modifiers() {
         let config = KeybindConfig::default();
         let mods = MODIFIER_CMD | MODIFIER_SHIFT;
-        assert!(config.bindings.iter().any(|b| b.keycode == 0x04 && b.modifiers == mods));
-        assert!(config.bindings.iter().any(|b| b.keycode == 0x26 && b.modifiers == mods));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| b.keycode == 0x04 && b.modifiers == mods));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| b.keycode == 0x26 && b.modifiers == mods));
     }
 
     #[test]
     fn default_has_workspace_switching() {
         let config = KeybindConfig::default();
         for i in 1..=9 {
-            assert!(config.bindings.iter().any(|b| matches!(&b.action, Command::Workspace { id } if *id == i)));
+            assert!(config
+                .bindings
+                .iter()
+                .any(|b| matches!(&b.action, Command::Workspace { id } if *id == i)));
         }
     }
 
@@ -249,20 +478,31 @@ mod tests {
     fn default_has_move_to_workspace() {
         let config = KeybindConfig::default();
         let mods = MODIFIER_CMD | MODIFIER_SHIFT;
-        assert!(config.bindings.iter().any(|b| b.keycode == 0x12 && b.modifiers == mods));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| b.keycode == 0x12 && b.modifiers == mods));
     }
 
     #[test]
     fn default_has_toggle_layout() {
         let config = KeybindConfig::default();
-        assert!(config.bindings.iter().any(|b| matches!(b.action, Command::ToggleLayout)));
+        assert!(config
+            .bindings
+            .iter()
+            .any(|b| matches!(b.action, Command::ToggleLayout)));
     }
 
     #[test]
     fn find_keybind_matches() {
         let config = KeybindConfig::default();
         let result = find_keybind(0x04, MODIFIER_CMD, &config);
-        assert!(matches!(result, Some(Command::Focus { direction: Direction::Left })));
+        assert!(matches!(
+            result,
+            Some(Command::Focus {
+                direction: Direction::Left
+            })
+        ));
     }
 
     #[test]
@@ -334,7 +574,10 @@ mod tests {
 
     #[test]
     fn parse_modifiers_invalid_part_ignored() {
-        assert_eq!(parse_modifiers("cmd-foo-shift"), MODIFIER_CMD | MODIFIER_SHIFT);
+        assert_eq!(
+            parse_modifiers("cmd-foo-shift"),
+            MODIFIER_CMD | MODIFIER_SHIFT
+        );
     }
 
     #[test]
@@ -346,33 +589,60 @@ mod tests {
 
     #[test]
     fn parse_action_focus() {
-        assert!(matches!(parse_action("focus-left"), Some(Command::Focus { direction: Direction::Left })));
-        assert!(matches!(parse_action("focus-right"), Some(Command::Focus { direction: Direction::Right })));
+        assert!(matches!(
+            parse_action("focus-left"),
+            Some(Command::Focus {
+                direction: Direction::Left
+            })
+        ));
+        assert!(matches!(
+            parse_action("focus-right"),
+            Some(Command::Focus {
+                direction: Direction::Right
+            })
+        ));
     }
 
     #[test]
     fn parse_action_swap() {
-        assert!(matches!(parse_action("swap-left"), Some(Command::MoveWindow { direction: Direction::Left })));
+        assert!(matches!(
+            parse_action("swap-left"),
+            Some(Command::MoveWindow {
+                direction: Direction::Left
+            })
+        ));
     }
 
     #[test]
     fn parse_action_workspace() {
-        assert!(matches!(parse_action("workspace-3"), Some(Command::Workspace { id: 3 })));
+        assert!(matches!(
+            parse_action("workspace-3"),
+            Some(Command::Workspace { id: 3 })
+        ));
     }
 
     #[test]
     fn parse_action_move_to_workspace() {
-        assert!(matches!(parse_action("move-to-workspace-5"), Some(Command::MoveWindowToWorkspace { id: 5 })));
+        assert!(matches!(
+            parse_action("move-to-workspace-5"),
+            Some(Command::MoveWindowToWorkspace { id: 5 })
+        ));
     }
 
     #[test]
     fn parse_action_toggle_layout() {
-        assert!(matches!(parse_action("toggle-layout"), Some(Command::ToggleLayout)));
+        assert!(matches!(
+            parse_action("toggle-layout"),
+            Some(Command::ToggleLayout)
+        ));
     }
 
     #[test]
     fn parse_action_reload_config() {
-        assert!(matches!(parse_action("reload-config"), Some(Command::ReloadConfig)));
+        assert!(matches!(
+            parse_action("reload-config"),
+            Some(Command::ReloadConfig)
+        ));
     }
 
     #[test]

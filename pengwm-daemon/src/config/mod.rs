@@ -1,7 +1,18 @@
 pub mod keybinds;
 pub mod watcher;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceBarConfig {
+    pub enabled: bool,
+}
+
+impl Default for WorkspaceBarConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -9,6 +20,8 @@ pub struct Settings {
     pub gap_inner: i32,
     pub max_tiles: usize,
     pub mod_key: String,
+    pub restricted_apps: Vec<String>,
+    pub workspace_bar: WorkspaceBarConfig,
 }
 
 impl Default for Settings {
@@ -18,6 +31,8 @@ impl Default for Settings {
             gap_inner: 5,
             max_tiles: 4,
             mod_key: "cmd".into(),
+            restricted_apps: Vec::new(),
+            workspace_bar: WorkspaceBarConfig::default(),
         }
     }
 }
@@ -30,15 +45,17 @@ impl Settings {
 
     pub fn load_from(path: &std::path::Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(contents) => {
-                match toml::from_str::<Settings>(&contents) {
-                    Ok(settings) => settings,
-                    Err(e) => {
-                        log::warn!("Failed to parse config '{}': {}. Using defaults.", path.display(), e);
-                        Self::default()
-                    }
+            Ok(contents) => match toml::from_str::<Settings>(&contents) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to parse config '{}': {}. Using defaults.",
+                        path.display(),
+                        e
+                    );
+                    Self::default()
                 }
-            }
+            },
             Err(_) => {
                 log::info!("No config file at '{}'. Using defaults.", path.display());
                 Self::default()
@@ -49,11 +66,16 @@ impl Settings {
 
 pub fn config_file_path() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        let path = std::path::PathBuf::from(dir).join("pengwm").join("config.toml");
+        let path = std::path::PathBuf::from(dir)
+            .join("pengwm")
+            .join("config.toml");
         if path.exists() {
             return path;
         }
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    std::path::PathBuf::from(home).join(".config").join("pengwm").join("config.toml")
+    std::path::PathBuf::from(home)
+        .join(".config")
+        .join("pengwm")
+        .join("config.toml")
 }
