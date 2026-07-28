@@ -56,8 +56,10 @@ fn add_alternating_dir_creates_nested_split() {
     assert_eq!(ws.window_count(), 3);
     let parent_a = ws.arena.get(a).unwrap().parent.unwrap();
     let parent_c = ws.arena.get(c).unwrap().parent.unwrap();
-    assert_ne!(parent_a, parent_c,
-        "a and c should be under different splits (nested, not flattened)");
+    assert_ne!(
+        parent_a, parent_c,
+        "a and c should be under different splits (nested, not flattened)"
+    );
     let child_list = ws.arena.get(parent_a).unwrap().children.clone();
     assert_eq!(child_list.len(), 2);
     assert!(child_list.contains(&a));
@@ -131,21 +133,37 @@ fn focus_toggle() {
 
     ws.focus_window(100);
     assert_eq!(ws.focused_node, Some(a));
-    assert!(
-        matches!(&ws.arena.get(a).unwrap().data, NodeData::Window { is_focused: true, .. })
-    );
-    assert!(
-        matches!(&ws.arena.get(b).unwrap().data, NodeData::Window { is_focused: false, .. })
-    );
+    assert!(matches!(
+        &ws.arena.get(a).unwrap().data,
+        NodeData::Window {
+            is_focused: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &ws.arena.get(b).unwrap().data,
+        NodeData::Window {
+            is_focused: false,
+            ..
+        }
+    ));
 
     ws.focus_window(200);
     assert_eq!(ws.focused_node, Some(b));
-    assert!(
-        matches!(&ws.arena.get(a).unwrap().data, NodeData::Window { is_focused: false, .. })
-    );
-    assert!(
-        matches!(&ws.arena.get(b).unwrap().data, NodeData::Window { is_focused: true, .. })
-    );
+    assert!(matches!(
+        &ws.arena.get(a).unwrap().data,
+        NodeData::Window {
+            is_focused: false,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &ws.arena.get(b).unwrap().data,
+        NodeData::Window {
+            is_focused: true,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -226,18 +244,27 @@ fn focus_neighbor_nested() {
 
     ws.focus_window(100);
     ws.focus_neighbor(Direction::Right);
-    assert_eq!(ws.focused_node, Some(b),
-        "right from a should go to b (leftmost leaf of sibling split)");
+    assert_eq!(
+        ws.focused_node,
+        Some(b),
+        "right from a should go to b (leftmost leaf of sibling split)"
+    );
 
     ws.focus_window(200);
     ws.focus_neighbor(Direction::Down);
-    assert_eq!(ws.focused_node, Some(c),
-        "down from b should go to c (next sibling in horizontal split)");
+    assert_eq!(
+        ws.focused_node,
+        Some(c),
+        "down from b should go to c (next sibling in horizontal split)"
+    );
 
     ws.focus_window(200);
     ws.focus_neighbor(Direction::Left);
-    assert_eq!(ws.focused_node, Some(a),
-        "left from b should go to a (previous sibling in root vertical split)");
+    assert_eq!(
+        ws.focused_node,
+        Some(a),
+        "left from b should go to a (previous sibling in root vertical split)"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -270,9 +297,13 @@ fn first_split_on_widescreen_defaults_to_vertical() {
     let _b = ws.add_window(200, None);
     let root = ws.root.unwrap();
     let root_node = ws.arena.get(root).unwrap();
-    assert!(
-        matches!(&root_node.data, NodeData::Split { direction: SplitDirection::Vertical, .. })
-    );
+    assert!(matches!(
+        &root_node.data,
+        NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -283,15 +314,26 @@ fn auto_alternates_on_subsequent_add() {
     let c = ws.add_window(300, None);
 
     let root = ws.root.unwrap();
-    assert!(matches!(&ws.arena.get(root).unwrap().data, NodeData::Split { direction: SplitDirection::Vertical, .. }),
-        "first split should be Vertical on widescreen");
+    assert!(
+        matches!(
+            &ws.arena.get(root).unwrap().data,
+            NodeData::Split {
+                direction: SplitDirection::Vertical,
+                ..
+            }
+        ),
+        "first split should be Vertical on widescreen"
+    );
 
     let parent_a = ws.arena.get(a).unwrap().parent.unwrap();
     let parent_b = ws.arena.get(b).unwrap().parent.unwrap();
     let parent_c = ws.arena.get(c).unwrap().parent.unwrap();
 
     assert_eq!(parent_a, root, "a should be direct child of root split");
-    assert_eq!(parent_b, parent_c, "b and c should be siblings under nested split");
+    assert_eq!(
+        parent_b, parent_c,
+        "b and c should be siblings under nested split"
+    );
     let inner_parent = ws.arena.get(parent_b).unwrap().parent.unwrap();
     assert_eq!(inner_parent, root, "inner split should be child of root");
 }

@@ -1,9 +1,14 @@
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 use crate::layout::Rect;
 use crate::tree::{Arena, Direction, NodeData, NodeId, SplitDirection, WindowId};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-const OFFSCREEN: Rect = Rect { x: -9999.0, y: 0.0, width: 1.0, height: 1.0 };
+const OFFSCREEN: Rect = Rect {
+    x: -9999.0,
+    y: 0.0,
+    width: 1.0,
+    height: 1.0,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
@@ -19,12 +24,7 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(
-        name: String,
-        monitor_id: u32,
-        origin: (i32, i32),
-        size: (u32, u32),
-    ) -> Self {
+    pub fn new(name: String, monitor_id: u32, origin: (i32, i32), size: (u32, u32)) -> Self {
         Self {
             name,
             monitor_id,
@@ -42,15 +42,12 @@ impl Workspace {
     // Window management
     // -----------------------------------------------------------------------
 
-    pub fn add_window(
-        &mut self,
-        window_id: WindowId,
-        direction: Option<SplitDirection>,
-    ) -> NodeId {
+    pub fn add_window(&mut self, window_id: WindowId, direction: Option<SplitDirection>) -> NodeId {
         if self.root.is_none() {
-            let id = self
-                .arena
-                .alloc(NodeData::Window { window_id, is_focused: true });
+            let id = self.arena.alloc(NodeData::Window {
+                window_id,
+                is_focused: true,
+            });
             self.root = Some(id);
             self.focused_node = Some(id);
             return id;
@@ -59,22 +56,23 @@ impl Workspace {
         let dir = direction
             .or_else(|| self.pending_split.take())
             .unwrap_or_else(|| self.next_direction());
-        let focused = self.focused_node.expect("focused_node set when root exists");
+        let focused = self
+            .focused_node
+            .expect("focused_node set when root exists");
 
         let flatten = self
             .arena
             .get(focused)
             .and_then(|n| n.parent)
             .and_then(|pid| self.arena.get(pid))
-            .is_some_and(|p| {
-                matches!(&p.data, NodeData::Split { direction: d, .. } if *d == dir)
-            });
+            .is_some_and(|p| matches!(&p.data, NodeData::Split { direction: d, .. } if *d == dir));
 
         if flatten {
             let parent_id = self.arena.get(focused).and_then(|n| n.parent).unwrap();
-            let new_id = self
-                .arena
-                .alloc(NodeData::Window { window_id, is_focused: true });
+            let new_id = self.arena.alloc(NodeData::Window {
+                window_id,
+                is_focused: true,
+            });
             self.arena.get_mut(parent_id).unwrap().children.push(new_id);
             self.arena.get_mut(new_id).unwrap().parent = Some(parent_id);
             self.rebalance_ratios(parent_id);
@@ -83,9 +81,10 @@ impl Workspace {
         }
 
         let old_parent = self.arena.get(focused).and_then(|n| n.parent);
-        let new_id = self
-            .arena
-            .alloc(NodeData::Window { window_id, is_focused: true });
+        let new_id = self.arena.alloc(NodeData::Window {
+            window_id,
+            is_focused: true,
+        });
         let split_id = self.arena.alloc(NodeData::Split {
             direction: dir,
             ratios: vec![0.5, 0.5],
@@ -162,6 +161,26 @@ impl Workspace {
         self.set_focused_node(target);
     }
 
+    pub fn swap_windows_by_id(&mut self, dragged_id: WindowId, target_id: WindowId) -> bool {
+        let dragged_node = match self.find_window(dragged_id) {
+            Some(id) => id,
+            None => return false,
+        };
+        let target_node = match self.find_window(target_id) {
+            Some(id) => id,
+            None => return false,
+        };
+        if dragged_node == target_node {
+            return false;
+        }
+        let dragged_data = self.arena.get(dragged_node).unwrap().data.clone();
+        let target_data = self.arena.get(target_node).unwrap().data.clone();
+        self.arena.get_mut(dragged_node).unwrap().data = target_data;
+        self.arena.get_mut(target_node).unwrap().data = dragged_data;
+        self.focused_node = Some(target_node);
+        true
+    }
+
     pub fn swap_window(&mut self, direction: Direction) {
         let focused = match self.focused_node {
             Some(id) => id,
@@ -184,10 +203,7 @@ impl Workspace {
 
     pub fn find_window(&self, window_id: WindowId) -> Option<NodeId> {
         for (id, node) in &self.arena.nodes {
-            if let NodeData::Window {
-                window_id: wid, ..
-            } = &node.data
-            {
+            if let NodeData::Window { window_id: wid, .. } = &node.data {
                 if *wid == window_id {
                     return Some(*id);
                 }
@@ -199,10 +215,7 @@ impl Workspace {
     pub fn all_windows(&self) -> Vec<WindowId> {
         let mut result = Vec::new();
         for node in self.arena.nodes.values() {
-            if let NodeData::Window {
-                window_id: wid, ..
-            } = &node.data
-            {
+            if let NodeData::Window { window_id: wid, .. } = &node.data {
                 result.push(*wid);
             }
         }
@@ -225,10 +238,13 @@ impl Workspace {
     /// geometry. Handles monocle internally: the focused window fills the monitor
     /// (minus outer gap); all siblings get offscreen rects.
     pub fn layout(&self, gap_inner: f64, gap_outer: f64) -> HashMap<WindowId, Rect> {
-        let Some(root) = self.root else { return HashMap::new() };
+        let Some(root) = self.root else {
+            return HashMap::new();
+        };
 
         let monitor_rect = Rect::new(
-            0.0, 0.0,
+            0.0,
+            0.0,
             self.monitor_size.0 as f64,
             self.monitor_size.1 as f64,
         );
@@ -239,7 +255,8 @@ impl Workspace {
             if let Some(focused) = self.focused_node {
                 if let Some(node) = self.arena.get(focused) {
                     if let NodeData::Window { window_id, .. } = &node.data {
-                        let global = crate::layout::screen_local_to_global(inset, self.monitor_origin);
+                        let global =
+                            crate::layout::screen_local_to_global(inset, self.monitor_origin);
                         output.insert(*window_id, global);
                     }
                 }
@@ -299,14 +316,20 @@ impl Workspace {
     /// True if the focused node is a Window leaf (not a Split container).
     pub fn focused_is_window(&self) -> bool {
         self.focused_node.is_some_and(|nid| {
-            self.arena.get(nid).is_some_and(|n| matches!(n.data, NodeData::Window { .. }))
+            self.arena
+                .get(nid)
+                .is_some_and(|n| matches!(n.data, NodeData::Window { .. }))
         })
     }
 
     /// Change the direction of the focused Split and flatten if redundant.
     pub fn set_split_direction(&mut self, direction: SplitDirection) {
         if let Some(node_id) = self.focused_node {
-            if let NodeData::Split { direction: ref mut dir, .. } = &mut self.arena.get_mut(node_id).unwrap().data {
+            if let NodeData::Split {
+                direction: ref mut dir,
+                ..
+            } = &mut self.arena.get_mut(node_id).unwrap().data
+            {
                 *dir = direction;
                 self.flatten_split_if_redundant(node_id);
             }
@@ -321,8 +344,13 @@ impl Workspace {
             None => return,
         };
 
-        let same_dir = match (&self.arena.get(split_id).unwrap().data, &self.arena.get(parent_id).unwrap().data) {
-            (NodeData::Split { direction: d1, .. }, NodeData::Split { direction: d2, .. }) => d1 == d2,
+        let same_dir = match (
+            &self.arena.get(split_id).unwrap().data,
+            &self.arena.get(parent_id).unwrap().data,
+        ) {
+            (NodeData::Split { direction: d1, .. }, NodeData::Split { direction: d2, .. }) => {
+                d1 == d2
+            }
             _ => return,
         };
 
@@ -373,9 +401,7 @@ impl Workspace {
         };
         match self.arena.get(focused).and_then(|n| n.parent) {
             Some(pid) => match self.arena.get(pid).map(|p| &p.data) {
-                Some(NodeData::Split {
-                    direction: d, ..
-                }) => match d {
+                Some(NodeData::Split { direction: d, .. }) => match d {
                     SplitDirection::Horizontal => SplitDirection::Vertical,
                     SplitDirection::Vertical => SplitDirection::Horizontal,
                 },
@@ -401,8 +427,7 @@ impl Workspace {
         if let Some(old_id) = self.focused_node {
             if let Some(old) = self.arena.get_mut(old_id) {
                 if let NodeData::Window {
-                    ref mut is_focused,
-                    ..
+                    ref mut is_focused, ..
                 } = old.data
                 {
                     *is_focused = false;
@@ -412,8 +437,7 @@ impl Workspace {
         self.focused_node = Some(node_id);
         if let Some(node) = self.arena.get_mut(node_id) {
             if let NodeData::Window {
-                ref mut is_focused,
-                ..
+                ref mut is_focused, ..
             } = node.data
             {
                 *is_focused = true;
@@ -441,9 +465,8 @@ impl Workspace {
             .unwrap_or(0);
         if n > 0 {
             let equal = 1.0 / n as f32;
-            if let NodeData::Split {
-                ref mut ratios, ..
-            } = &mut self.arena.get_mut(split_id).unwrap().data
+            if let NodeData::Split { ref mut ratios, .. } =
+                &mut self.arena.get_mut(split_id).unwrap().data
             {
                 *ratios = vec![equal; n];
             }
@@ -504,10 +527,7 @@ impl Workspace {
             match node.parent {
                 Some(pid) => {
                     let parent = self.arena.get(pid)?;
-                    if let NodeData::Split {
-                        direction: d, ..
-                    } = &parent.data
-                    {
+                    if let NodeData::Split { direction: d, .. } = &parent.data {
                         if *d == target_axis {
                             break (pid, current);
                         }
@@ -524,7 +544,7 @@ impl Workspace {
 
         let target_pos = if is_forward {
             (pos + 1) % n_children
-          } else if pos == 0 {
+        } else if pos == 0 {
             n_children - 1
         } else {
             pos - 1

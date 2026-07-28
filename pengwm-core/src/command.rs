@@ -1,6 +1,6 @@
-use serde::{Serialize, Deserialize};
 use crate::layout::Rect;
 use crate::tree::{Direction, SplitDirection, WindowId};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
