@@ -1,13 +1,18 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-use pengwm_core::tree::WindowId;
-use pengwm_core::workspace::Workspace;
-use pengwm_core::command::{Command, DaemonResponse};
 use crate::adapter::OsAdapter;
-use crate::event_loop::DaemonEvent;
 use crate::config::keybinds::KeybindConfig;
 use crate::config::Settings;
+use crate::event_loop::DaemonEvent;
+use pengwm_core::command::{Command, DaemonResponse};
+use pengwm_core::layout::Rect;
+use pengwm_core::tree::WindowId;
+use pengwm_core::workspace::Workspace;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+const SWAP_HOLD_DURATION: Duration = Duration::from_secs(2);
+const DRAG_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub struct StateManager {
     workspaces: Vec<Workspace>,
@@ -20,6 +25,13 @@ pub struct StateManager {
     gap_outer: f64,
     gap_inner: f64,
     keybinds: Arc<Mutex<KeybindConfig>>,
+    restricted_apps: Vec<String>,
+    workspace_bar_enabled: bool,
+    last_layout_rects: HashMap<WindowId, Rect>,
+    drag_window: Option<WindowId>,
+    drag_overlap_target: Option<WindowId>,
+    drag_overlap_start: Option<Instant>,
+    last_drag_move: Option<Instant>,
 }
 
 impl StateManager {
@@ -66,6 +78,7 @@ impl StateManager {
         }
 
         let settings = Settings::load();
+        let workspace_bar_enabled = settings.workspace_bar.enabled;
         let mut state = Self {
             workspaces,
             active_workspaces,
@@ -74,9 +87,16 @@ impl StateManager {
             window_pids,
             os,
             event_tx,
-            gap_outer: settings.gap_outer as f64,
-            gap_inner: settings.gap_inner as f64,
+            gap_outer: settings.gap_outer.max(0) as f64,
+            gap_inner: settings.gap_inner.max(0) as f64,
             keybinds,
+            restricted_apps: settings.restricted_apps,
+            workspace_bar_enabled,
+            last_layout_rects: HashMap::new(),
+            drag_window: None,
+            drag_overlap_target: None,
+            drag_overlap_start: None,
+            last_drag_move: None,
         };
 
         for i in 0..state.workspaces.len() {
@@ -85,6 +105,7 @@ impl StateManager {
             }
         }
 
+        state.refresh_workspace_bar();
         state
     }
 
@@ -108,8 +129,8 @@ impl StateManager {
     }
 
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
-        if !self.window_pids.contains_key(&window_id) {
-            self.window_pids.insert(window_id, pid);
+        if let std::collections::hash_map::Entry::Vacant(e) = self.window_pids.entry(window_id) {
+            e.insert(pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
         }
         let target = self.active_workspace_idx();
@@ -117,8 +138,19 @@ impl StateManager {
         if ws.find_window(window_id).is_some() {
             return;
         }
+
+        if !self.restricted_apps.is_empty() {
+            if let Some(bundle_id) = self.os.app_bundle_id(pid) {
+                if self.restricted_apps.contains(&bundle_id) {
+                    log::info!("App {} is restricted — enabling monocle", bundle_id);
+                    ws.monocle = true;
+                }
+            }
+        }
+
         ws.add_window(window_id, None);
         self.apply_layout(target);
+        self.refresh_workspace_bar();
     }
 
     pub fn on_window_destroyed(&mut self, window_id: WindowId) {
@@ -136,6 +168,7 @@ impl StateManager {
             windows.retain(|w| *w != window_id);
             !windows.is_empty()
         });
+        self.refresh_workspace_bar();
     }
 
     pub fn on_window_focused(&mut self, window_id: WindowId) {
@@ -149,9 +182,103 @@ impl StateManager {
                         self.hide_workspace(prev_idx);
                     }
                 }
+                self.refresh_workspace_bar();
                 return;
             }
         }
+    }
+
+    fn find_workspace_for_window(&self, window_id: WindowId) -> Option<usize> {
+        self.workspaces
+            .iter()
+            .position(|ws| ws.find_window(window_id).is_some())
+    }
+
+    pub fn on_window_moved(&mut self, window_id: WindowId, x: f64, y: f64) {
+        let now = Instant::now();
+        self.drag_window = Some(window_id);
+        self.last_drag_move = Some(now);
+
+        if self.find_workspace_for_window(window_id).is_none() {
+            return;
+        }
+
+        let dragged_size = match self.last_layout_rects.get(&window_id) {
+            Some(r) => (r.width, r.height),
+            None => return,
+        };
+
+        let cx = x + dragged_size.0 / 2.0;
+        let cy = y + dragged_size.1 / 2.0;
+
+        let new_target = self
+            .last_layout_rects
+            .iter()
+            .find(|(&wid, rect)| {
+                if wid == window_id {
+                    return false;
+                }
+                cx >= rect.x
+                    && cx <= rect.x + rect.width
+                    && cy >= rect.y
+                    && cy <= rect.y + rect.height
+            })
+            .map(|(&wid, _)| wid);
+
+        match (self.drag_overlap_target, new_target) {
+            (Some(t), Some(nt)) if t == nt => {
+                // same target — swap timing is handled in on_tick
+            }
+            (_, Some(nt)) => {
+                self.drag_overlap_target = Some(nt);
+                self.drag_overlap_start = Some(now);
+            }
+            (_, None) => {
+                self.drag_overlap_target = None;
+                self.drag_overlap_start = None;
+            }
+        }
+    }
+
+    pub fn on_tick(&mut self) {
+        let now = Instant::now();
+
+        // Check swap hold first — this runs every 50ms even when move
+        // notifications stop (user holds window still over a target).
+        if let (Some(window_id), Some(target)) = (self.drag_window, self.drag_overlap_target) {
+            if let Some(start) = self.drag_overlap_start {
+                if now.duration_since(start) >= SWAP_HOLD_DURATION {
+                    if let Some(ws_idx) = self.find_workspace_for_window(window_id) {
+                        let ws = &mut self.workspaces[ws_idx];
+                        if ws.swap_windows_by_id(window_id, target) {
+                            self.apply_layout(ws_idx);
+                        }
+                    }
+                    self.clear_drag_state();
+                    return;
+                }
+            }
+        }
+
+        // Only snap back when there's no active overlap target — otherwise
+        // the 500ms idle timeout would kill the swap before the 2s hold.
+        if let Some(last_move) = self.last_drag_move {
+            if self.drag_overlap_target.is_none()
+                && now.duration_since(last_move) >= DRAG_IDLE_TIMEOUT
+            {
+                if self.drag_window.is_some() {
+                    self.apply_layout(self.active_workspace_idx());
+                }
+                self.clear_drag_state();
+            }
+        }
+    }
+
+    fn clear_drag_state(&mut self) {
+        self.drag_window = None;
+        self.drag_overlap_target = None;
+        self.drag_overlap_start = None;
+        self.last_drag_move = None;
     }
 
     pub fn on_app_launched(&mut self, pid: i32) {
@@ -160,7 +287,9 @@ impl StateManager {
         for window_id in self.os.poll_windows_for_pid(pid) {
             self.window_pids.insert(window_id, pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
-            let _ = self.event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
+            let _ = self
+                .event_tx
+                .try_send(DaemonEvent::WindowCreated(window_id, pid));
         }
     }
 
@@ -170,9 +299,12 @@ impl StateManager {
         if let Some(windows) = self.pid_to_windows.remove(&pid) {
             for window_id in windows {
                 self.window_pids.remove(&window_id);
-                let _ = self.event_tx.try_send(DaemonEvent::WindowDestroyed(window_id));
+                let _ = self
+                    .event_tx
+                    .try_send(DaemonEvent::WindowDestroyed(window_id));
             }
         }
+        self.refresh_workspace_bar();
     }
 
     pub fn on_app_activated(&mut self, pid: i32) {
@@ -180,11 +312,15 @@ impl StateManager {
         self.frontmost_pid = Some(pid);
         if let Some(window_id) = self.os.focused_window_for_pid(pid) {
             self.on_window_focused(window_id);
+        } else {
+            self.refresh_workspace_bar();
         }
     }
 
     pub fn on_monitor_added(&mut self, display_id: u32) {
-        let info = self.os.active_displays()
+        let info = self
+            .os
+            .active_displays()
             .into_iter()
             .find(|d| d.id == display_id);
         let (origin, size) = match info {
@@ -196,11 +332,14 @@ impl StateManager {
         let idx = self.workspaces.len();
         self.active_workspaces.insert(display_id, idx);
         self.workspaces.push(ws);
+        self.refresh_workspace_bar();
     }
 
     pub fn on_monitor_removed(&mut self, _display_id: u32) {
         let primary = self.os.primary_display_id();
-        let primary_origin = self.os.active_displays()
+        let primary_origin = self
+            .os
+            .active_displays()
             .into_iter()
             .find(|d| d.id == primary)
             .map(|d| d.origin)
@@ -212,9 +351,8 @@ impl StateManager {
             }
         }
         let active = self.os.active_displays();
-        self.workspaces.retain(|ws| {
-            active.iter().any(|d| d.id == ws.monitor_id)
-        });
+        self.workspaces
+            .retain(|ws| active.iter().any(|d| d.id == ws.monitor_id));
         if self.workspaces.is_empty() {
             self.workspaces.push(Workspace::new(
                 "ws-1".into(),
@@ -223,14 +361,19 @@ impl StateManager {
                 (1920, 1080),
             ));
         }
-        self.active_workspaces.retain(|_, idx| *idx < self.workspaces.len());
+        self.active_workspaces
+            .retain(|_, idx| *idx < self.workspaces.len());
         if self.active_workspaces.is_empty() {
-            self.active_workspaces.insert(self.workspaces[0].monitor_id, 0);
+            self.active_workspaces
+                .insert(self.workspaces[0].monitor_id, 0);
         }
+        self.refresh_workspace_bar();
     }
 
     pub fn on_monitor_resized(&mut self, display_id: u32) {
-        let info = self.os.active_displays()
+        let info = self
+            .os
+            .active_displays()
             .into_iter()
             .find(|d| d.id == display_id);
         if let Some(display) = info {
@@ -241,13 +384,10 @@ impl StateManager {
                 }
             }
         }
+        self.refresh_workspace_bar();
     }
 
-    pub fn on_command(
-        &mut self,
-        cmd: Command,
-        tx: mpsc::Sender<DaemonResponse>,
-    ) {
+    pub fn on_command(&mut self, cmd: Command, tx: mpsc::Sender<DaemonResponse>) {
         match cmd {
             Command::Focus { direction } => self.focus_command(direction),
             Command::MoveWindow { direction } => self.swap_command(direction),
@@ -304,17 +444,21 @@ impl StateManager {
                 self.reload_config();
             }
             Command::QueryState => {
-                let info = self.workspaces.iter().map(|ws| {
-                    pengwm_core::command::WorkspaceInfo {
+                let info = self
+                    .workspaces
+                    .iter()
+                    .map(|ws| pengwm_core::command::WorkspaceInfo {
                         name: ws.name.clone(),
                         monitor_id: ws.monitor_id,
                         window_count: ws.window_count(),
                         focused_window: ws.focused_window_id(),
-                    }
-                }).collect();
+                    })
+                    .collect();
                 let _ = tx.try_send(DaemonResponse::State { workspaces: info });
+                return;
             }
         }
+        self.refresh_workspace_bar();
     }
 
     fn focus_command(&mut self, direction: Direction) {
@@ -342,6 +486,7 @@ impl StateManager {
             self.workspaces[target].add_window(wid, None);
             self.apply_layout(target);
         }
+        self.refresh_workspace_bar();
     }
 
     fn reload_config(&mut self) {
@@ -353,10 +498,17 @@ impl StateManager {
             log::info!("Config reloaded ({} bindings)", keybinds.bindings.len());
         }
         let updated_settings = Settings::load();
-        self.gap_outer = updated_settings.gap_outer as f64;
-        self.gap_inner = updated_settings.gap_inner as f64;
+        self.gap_outer = updated_settings.gap_outer.max(0) as f64;
+        self.gap_inner = updated_settings.gap_inner.max(0) as f64;
+        self.restricted_apps = updated_settings.restricted_apps;
+        self.workspace_bar_enabled = updated_settings.workspace_bar.enabled;
         self.apply_layout(self.active_workspace_idx());
-        log::info!("Config reloaded (gaps: {}/{})", self.gap_outer, self.gap_inner);
+        self.refresh_workspace_bar();
+        log::info!(
+            "Config reloaded (gaps: {}/{})",
+            self.gap_outer,
+            self.gap_inner
+        );
     }
 
     fn hide_workspace(&mut self, workspace_idx: usize) {
@@ -366,11 +518,72 @@ impl StateManager {
 
     fn apply_layout(&mut self, workspace_idx: usize) {
         let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
+        self.last_layout_rects = rects.clone();
+
+        log::debug!(
+            "apply_layout ws={} gaps_in={} out={}:",
+            workspace_idx,
+            self.gap_inner,
+            self.gap_outer
+        );
+        for (&window_id, rect) in &rects {
+            log::debug!(
+                "  win={} -> ({:.0},{:.0}) {}x{}",
+                window_id,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            );
+        }
 
         for (&window_id, rect) in &rects {
             if let Err(e) = self.os.set_window_rect(window_id, *rect) {
-                log::error!("apply_layout: set_window_rect failed for window {}: {}", window_id, e);
+                log::error!(
+                    "apply_layout: set_window_rect failed for window {}: {}",
+                    window_id,
+                    e
+                );
             }
+        }
+    }
+
+    fn refresh_workspace_bar(&mut self) {
+        if !self.workspace_bar_enabled {
+            return;
+        }
+
+        let active_idx = self.active_workspace_idx();
+        let active_monitor = self.workspaces[active_idx].monitor_id;
+
+        let info: Vec<(&str, bool)> = self
+            .workspaces
+            .iter()
+            .map(|ws| {
+                let is_active = ws.monitor_id == active_monitor
+                    && self
+                        .active_workspaces
+                        .get(&ws.monitor_id)
+                        .map(|&idx| {
+                            idx < self.workspaces.len() && std::ptr::eq(&self.workspaces[idx], ws)
+                        })
+                        .unwrap_or(false);
+                (ws.name.as_str(), is_active)
+            })
+            .collect();
+
+        let display = self
+            .os
+            .active_displays()
+            .into_iter()
+            .find(|d| d.id == active_monitor)
+            .or_else(|| self.os.active_displays().into_iter().next());
+
+        if let Some(display) = display {
+            self.os
+                .update_workspace_indicator(&info, display.size.0 as f64, display.size.1 as f64);
+        } else {
+            self.os.update_workspace_indicator(&info, 1920.0, 1080.0);
         }
     }
 }
@@ -395,13 +608,25 @@ mod state_tests {
         }
         if display_count == 2 {
             adapter.displays = vec![
-                DisplayInfo { id: 1, origin: (0, 0), size: (1920, 1080) },
-                DisplayInfo { id: 2, origin: (1920, 0), size: (1920, 1080) },
+                DisplayInfo {
+                    id: 1,
+                    origin: (0, 0),
+                    size: (1920, 1080),
+                },
+                DisplayInfo {
+                    id: 2,
+                    origin: (1920, 0),
+                    size: (1920, 1080),
+                },
             ];
         }
         adapter.frontmost = Some(42);
         adapter.running_apps = vec![42];
-        adapter.windows.entry(42).or_default().extend(vec![100, 200]);
+        adapter
+            .windows
+            .entry(42)
+            .or_default()
+            .extend(vec![100, 200]);
         adapter.window_pids.insert(100, 42);
         adapter.window_pids.insert(200, 42);
         adapter
@@ -525,7 +750,9 @@ mod state_tests {
         sm.on_window_created(300, 42);
 
         // Find which workspace received them (avoids HashMap ordering assumptions)
-        let source = sm.workspaces.iter()
+        let source = sm
+            .workspaces
+            .iter()
             .position(|ws| ws.find_window(100).is_some())
             .expect("window 100 should be in some workspace");
         assert_eq!(sm.workspaces[source].window_count(), 2);
