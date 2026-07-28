@@ -9,7 +9,7 @@ use core_foundation::runloop::{
 use tokio::sync::mpsc;
 
 use crate::event_loop::DaemonEvent;
-use crate::config::keybinds::{KeybindConfig, find_keybind, ModifierFlags};
+use crate::config::keybinds::{KeybindConfig, find_keybind, ModifierFlags, MODIFIER_NONE};
 
 type CGEventRef = *mut c_void;
 type CGEventMask = u64;
@@ -24,6 +24,16 @@ const kCGHeadInsertEventTap: u32 = 0;
 
 #[allow(non_upper_case_globals)]
 const kCGKeyboardEventKeycode: u32 = 9;
+
+/// System shortcuts that must never be intercepted, even if user binds them.
+const SYSTEM_SAFE_SHORTCUTS: &[(u16, ModifierFlags)] = &[
+    (0x30, MODIFIER_CMD), // Cmd+Tab — app switcher
+    (0x30, MODIFIER_CMD | MODIFIER_SHIFT), // Cmd+Shift+Tab — reverse app switcher
+    (0x32, MODIFIER_CMD), // Cmd+` — same-app window cycling (backtick)
+    (0x32, MODIFIER_CMD | MODIFIER_SHIFT), // Cmd+Shift+` — reverse window cycling
+    (0x31, MODIFIER_CMD), // Cmd+Space — Spotlight
+    (0x31, MODIFIER_CMD | MODIFIER_ALT), // Cmd+Alt+Space — Finder Spotlight
+];
 
 pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindConfig>>) {
     let ctx = Box::into_raw(Box::new(Context {
@@ -94,6 +104,17 @@ unsafe extern "C" fn event_tap_callback(
     let flags = CGEventGetFlags(event);
 
     let filtered_flags = flags & (MODIFIER_CMD | MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT);
+
+    // Always pass through unmodified keypresses (Tab, Space, Enter, etc.)
+    // so the active event tap cannot interfere with normal keyboard input.
+    if filtered_flags == MODIFIER_NONE {
+        return event;
+    }
+
+    // Never intercept system-critical shortcuts.
+    if SYSTEM_SAFE_SHORTCUTS.contains(&(keycode, filtered_flags)) {
+        return event;
+    }
 
     let keybinds = ctx.keybinds.lock().expect("keybind mutex poisoned");
     if let Some(command) = find_keybind(keycode, filtered_flags, &keybinds) {

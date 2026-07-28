@@ -110,6 +110,7 @@ cargo test
 ```
 
 This runs ~90+ tests covering:
+
 - **Layout engine:** window placement, gaps, ratios, nested splits, monocle
 - **Workspace tree:** add/remove/focus/swap windows, split direction alternation
 - **StateManager:** command dispatch, event handling, workspace switching

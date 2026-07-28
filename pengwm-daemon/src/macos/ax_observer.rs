@@ -41,6 +41,13 @@ impl ObserverContext {
     pub fn call_event(&self, event: DaemonEvent) {
         (self.event_callback)(event);
     }
+
+    /// Insert a window into the cache, releasing any previously cached element.
+    pub fn cache_insert(&self, window_id: WindowId, element: AXUIElementRef, pid: i32) {
+        if let Some((old_elem, _)) = self.cache_mut().insert(window_id, (element, pid)) {
+            unsafe { CFRelease(old_elem as CFTypeRef) };
+        }
+    }
 }
 
 unsafe impl Send for ObserverContext {}
@@ -145,8 +152,6 @@ impl ObserverRegistry {
         }
 
         self.observers.insert(pid, RegisteredObserver { observer, app });
-
-        self.discover_existing_windows(pid, ctx);
     }
 
     pub fn detach(&mut self, pid: i32) {
@@ -166,15 +171,6 @@ impl ObserverRegistry {
         }
     }
 
-    fn discover_existing_windows(&self, pid: i32, ctx: &ObserverContext) {
-        let windows = unsafe { ax_element::windows_for_pid(pid) };
-        for (element, window_id) in windows {
-            log::info!("Discovered existing window {} for pid {}", window_id, pid);
-            // element is already CFRetained by windows_for_pid — insert into cache
-            ctx.cache_mut().insert(window_id, (element, pid));
-            ctx.call_event(DaemonEvent::WindowCreated(window_id, pid));
-        }
-    }
 }
 
 unsafe extern "C" fn observer_callback(
@@ -205,9 +201,13 @@ unsafe extern "C" fn observer_callback(
     #[allow(non_upper_case_globals)]
     match notif_str.as_str() {
         kAXWindowCreatedNotification => {
+            if !ax_element::is_manageable(element) {
+                log::debug!("WindowCreated SKIPPED (not manageable): {} pid={}", window_id, pid);
+                return;
+            }
             log::debug!("WindowCreated: {} pid={}", window_id, pid);
             CFRetain(element as CFTypeRef);
-            ctx.cache_mut().insert(window_id, (element, pid));
+            ctx.cache_insert(window_id, element, pid);
             ctx.call_event(DaemonEvent::WindowCreated(window_id, pid));
         }
         kAXUIElementDestroyedNotification => {

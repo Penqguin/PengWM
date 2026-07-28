@@ -7,6 +7,7 @@ use pengwm_core::command::{Command, DaemonResponse};
 use crate::adapter::OsAdapter;
 use crate::event_loop::DaemonEvent;
 use crate::config::keybinds::KeybindConfig;
+use crate::config::Settings;
 
 pub struct StateManager {
     workspaces: Vec<Workspace>,
@@ -64,6 +65,7 @@ impl StateManager {
             }
         }
 
+        let settings = Settings::load();
         let mut state = Self {
             workspaces,
             active_workspaces,
@@ -72,8 +74,8 @@ impl StateManager {
             window_pids,
             os,
             event_tx,
-            gap_outer: 10.0,
-            gap_inner: 10.0,
+            gap_outer: settings.gap_outer as f64,
+            gap_inner: settings.gap_inner as f64,
             keybinds,
         };
 
@@ -342,12 +344,19 @@ impl StateManager {
         }
     }
 
-    fn reload_config(&self) {
+    fn reload_config(&mut self) {
         log::info!("Reloading config...");
-        let updated = KeybindConfig::load();
-        let mut keybinds = self.keybinds.lock().expect("keybind mutex poisoned");
-        *keybinds = updated;
-        log::info!("Config reloaded successfully ({} bindings)", keybinds.bindings.len());
+        let updated_keybinds = KeybindConfig::load();
+        {
+            let mut keybinds = self.keybinds.lock().expect("keybind mutex poisoned");
+            *keybinds = updated_keybinds;
+            log::info!("Config reloaded ({} bindings)", keybinds.bindings.len());
+        }
+        let updated_settings = Settings::load();
+        self.gap_outer = updated_settings.gap_outer as f64;
+        self.gap_inner = updated_settings.gap_inner as f64;
+        self.apply_layout(self.active_workspace_idx());
+        log::info!("Config reloaded (gaps: {}/{})", self.gap_outer, self.gap_inner);
     }
 
     fn hide_workspace(&mut self, workspace_idx: usize) {
