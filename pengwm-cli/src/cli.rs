@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use pengwm_core::tree::{Direction, SplitDirection};
 use pengwm_core::command::Command;
+use pengwm_core::tree::{Direction, SplitDirection};
 
 #[derive(Parser, Debug)]
 #[command(name = "pengwm", about = "Control the PengWM daemon")]
@@ -61,9 +61,15 @@ impl From<SplitArg> for SplitDirection {
 impl From<CliCommand> for Command {
     fn from(cmd: CliCommand) -> Self {
         match cmd {
-            CliCommand::Focus { direction } => Command::Focus { direction: direction.into() },
-            CliCommand::MoveWindow { direction } => Command::MoveWindow { direction: direction.into() },
-            CliCommand::Split { direction } => Command::Split { direction: direction.into() },
+            CliCommand::Focus { direction } => Command::Focus {
+                direction: direction.into(),
+            },
+            CliCommand::MoveWindow { direction } => Command::MoveWindow {
+                direction: direction.into(),
+            },
+            CliCommand::Split { direction } => Command::Split {
+                direction: direction.into(),
+            },
             CliCommand::Workspace { id } => Command::Workspace { id },
             CliCommand::MoveWindowToWorkspace { id } => Command::MoveWindowToWorkspace { id },
             CliCommand::Close => Command::Close,

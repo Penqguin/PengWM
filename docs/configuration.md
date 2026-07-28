@@ -6,12 +6,12 @@ apply on save (or via `pengwm reload-config`).
 
 ## Settings
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `gap_outer` | int | `10` | Pixels between windows and screen edge |
-| `gap_inner` | int | `5` | Pixels between adjacent windows |
-| `max_tiles` | int | `4` | Max windows per workspace before overflow |
-| `mod_key` | string | `"cmd"` | Primary modifier for keybindings |
+| Key         | Type   | Default | Description                               |
+| ----------- | ------ | ------- | ----------------------------------------- |
+| `gap_outer` | int    | `10`    | Pixels between windows and screen edge    |
+| `gap_inner` | int    | `5`     | Pixels between adjacent windows           |
+| `max_tiles` | int    | `4`     | Max windows per workspace before overflow |
+| `mod_key`   | string | `"cmd"` | Primary modifier for keybindings          |
 
 ```toml
 gap_outer = 8
@@ -27,25 +27,25 @@ Keybindings are defined in the same config file using
 
 ### Modifiers
 
-| Token | Key |
-|-------|-----|
-| `cmd` / `command` | Command (⌘) |
-| `alt` / `option` | Option (⌥) |
+| Token              | Key         |
+| ------------------ | ----------- |
+| `cmd` / `command`  | Command (⌘) |
+| `alt` / `option`   | Option (⌥)  |
 | `ctrl` / `control` | Control (⌃) |
-| `shift` | Shift (⇧) |
+| `shift`            | Shift (⇧)   |
 
 Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 
 ### Actions
 
-| Action | Description |
-|--------|-------------|
-| `focus-left` / `focus-right` / `focus-up` / `focus-down` | Move focus in direction |
-| `swap-left` / `swap-right` / `swap-up` / `swap-down` | Move focused window in direction |
-| `workspace-1` .. `workspace-9` | Switch to workspace |
-| `move-to-workspace-1` .. `move-to-workspace-9` | Move window to workspace |
-| `toggle-layout` | Toggle between tiling and monocle |
-| `reload-config` | Reload configuration from disk |
+| Action                                                   | Description                       |
+| -------------------------------------------------------- | --------------------------------- |
+| `focus-left` / `focus-right` / `focus-up` / `focus-down` | Move focus in direction           |
+| `swap-left` / `swap-right` / `swap-up` / `swap-down`     | Move focused window in direction  |
+| `workspace-1` .. `workspace-9`                           | Switch to workspace               |
+| `move-to-workspace-1` .. `move-to-workspace-9`           | Move window to workspace          |
+| `toggle-layout`                                          | Toggle between tiling and monocle |
+| `reload-config`                                          | Reload configuration from disk    |
 
 ### Example
 

@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
+use pengwm_daemon::config::keybinds::KeybindConfig;
 use pengwm_daemon::event_loop::EventLoop;
 use pengwm_daemon::macos::ax_element;
-use pengwm_daemon::macos::cg_display;
 use pengwm_daemon::macos::ax_observer::{ObserverContext, ObserverRegistry};
-use pengwm_daemon::config::keybinds::KeybindConfig;
+use pengwm_daemon::macos::cg_display;
 
 #[test]
 #[ignore = "requires Accessibility permissions and a GUI environment"]
@@ -19,7 +19,10 @@ fn macos_ffi_integration() {
 
     // 1. Query active displays
     let displays = cg_display::active_displays();
-    assert!(!displays.is_empty(), "at least one display should be active");
+    assert!(
+        !displays.is_empty(),
+        "at least one display should be active"
+    );
     let primary = cg_display::primary_display_id();
     assert!(primary > 0, "primary display id should be non-zero");
 
@@ -27,8 +30,7 @@ fn macos_ffi_integration() {
     assert!(ax_element::is_process_trusted(), "AX permissions required");
 
     // 3. Get the current frontmost app PID
-    let front_pid = ax_element::frontmost_pid()
-        .expect("should have a frontmost application");
+    let front_pid = ax_element::frontmost_pid().expect("should have a frontmost application");
 
     // 4. Discover existing windows for the frontmost app
     let windows = unsafe { ax_element::windows_for_pid(front_pid) };
@@ -42,7 +44,10 @@ fn macos_ffi_integration() {
         if let Some(rect) = original_rect {
             // Move the window by 10px right and down, then back
             let moved = pengwm_core::layout::Rect::new(
-                rect.x + 10.0, rect.y + 10.0, rect.width, rect.height,
+                rect.x + 10.0,
+                rect.y + 10.0,
+                rect.width,
+                rect.height,
             );
             let result = unsafe { ax_element::set_window_rect(element, moved) };
             assert!(result.is_ok(), "set_window_rect should succeed");
@@ -62,7 +67,10 @@ fn macos_ffi_integration() {
     let app_elem = unsafe { accessibility_sys::AXUIElementCreateApplication(front_pid) };
     if !app_elem.is_null() {
         let manageable = unsafe { ax_element::is_manageable(app_elem) };
-        assert!(!manageable, "application elements should not be manageable windows");
+        assert!(
+            !manageable,
+            "application elements should not be manageable windows"
+        );
         unsafe {
             core_foundation::base::CFRelease(app_elem as *const c_void);
         }
@@ -78,8 +86,7 @@ fn observer_registry_create_and_detach() {
     })));
     let mut registry = ObserverRegistry::new();
 
-    let front_pid = ax_element::frontmost_pid()
-        .expect("should have frontmost app");
+    let front_pid = ax_element::frontmost_pid().expect("should have frontmost app");
     registry.attach(front_pid, &ctx);
     registry.detach(front_pid);
 }
@@ -98,8 +105,7 @@ fn on_window_created_tracks_pid_and_applies_layout() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let pid = ax_element::frontmost_pid()
-        .expect("should have a frontmost application");
+    let pid = ax_element::frontmost_pid().expect("should have a frontmost application");
     let windows_before = unsafe { ax_element::windows_for_pid(pid) };
 
     // Launch a new Finder window so the AXObserver fires a
@@ -146,8 +152,7 @@ fn on_window_created_tracks_pid_and_applies_layout() {
 
     // Clean up: close the window we just opened.
     for &(element, _) in &windows_after {
-        let wid =
-            unsafe { ax_element::ax_window_id_from_element(element).unwrap_or(0) };
+        let wid = unsafe { ax_element::ax_window_id_from_element(element).unwrap_or(0) };
         if !windows_before.iter().any(|&(_, id)| id == wid) {
             unsafe { ax_element::close_window(element) };
         }

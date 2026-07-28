@@ -38,12 +38,19 @@ fn ipc_send_command_receives_event() {
     stream.shutdown(std::net::Shutdown::Write).unwrap();
 
     // Read the event off the mpsc channel (blocks until received).
-    let event = event_rx.blocking_recv().expect("channel closed before event received");
+    let event = event_rx
+        .blocking_recv()
+        .expect("channel closed before event received");
 
     match event {
         DaemonEvent::Command(received_cmd, resp_tx) => {
             assert!(
-                matches!(received_cmd, Command::Split { direction: SplitDirection::Horizontal }),
+                matches!(
+                    received_cmd,
+                    Command::Split {
+                        direction: SplitDirection::Horizontal
+                    }
+                ),
                 "expected Split(Horizontal), got {:?}",
                 received_cmd
             );
