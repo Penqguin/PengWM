@@ -26,8 +26,8 @@ block2 = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["alloc"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSNotification", "NSRunLoop", "NSDictionary", "NSValue", "block2"] }
-objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSNotification", "NSGeometry", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSApplication", "NSWindow", "NSPanel", "NSView", "NSControl", "NSResponder", "NSTextField", "NSColor", "NSFont", "NSScreen", "NSVisualEffectView", "NSParagraphStyle"] }
 core-foundation = "0.9"
 accessibility-sys = "0.2"
 core-graphics = "0.21"
