@@ -1,18 +1,17 @@
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-use core_foundation::runloop::{
-    kCFRunLoopDefaultMode, CFRunLoopRunInMode,
-};
 use crate::adapter::OsAdapter;
 use crate::adapter_macos::MacOsAdapter;
-use crate::state::StateManager;
 use crate::config::keybinds::KeybindConfig;
+use crate::state::StateManager;
+use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopRunInMode};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum DaemonEvent {
     WindowCreated(pengwm_core::tree::WindowId, i32),
     WindowDestroyed(pengwm_core::tree::WindowId),
     WindowFocused(pengwm_core::tree::WindowId),
+    WindowMoved(pengwm_core::tree::WindowId, f64, f64),
 
     AppLaunched(i32),
     AppTerminated(i32),
@@ -22,7 +21,10 @@ pub enum DaemonEvent {
     MonitorRemoved(u32),
     MonitorResized(u32),
 
-    Command(pengwm_core::command::Command, mpsc::Sender<pengwm_core::command::DaemonResponse>),
+    Command(
+        pengwm_core::command::Command,
+        mpsc::Sender<pengwm_core::command::DaemonResponse>,
+    ),
 
     Keybind(pengwm_core::command::Command),
 }
@@ -36,9 +38,10 @@ impl EventLoop {
     pub fn new(keybinds: Arc<Mutex<KeybindConfig>>) -> (Self, mpsc::Sender<DaemonEvent>) {
         let (tx, rx) = mpsc::channel(256);
         let event_tx = tx.clone();
-        let os: Box<dyn OsAdapter> = Box::new(MacOsAdapter::with_callback(Box::new(move |event| {
-            let _ = event_tx.try_send(event);
-        })));
+        let os: Box<dyn OsAdapter> =
+            Box::new(MacOsAdapter::with_callback(Box::new(move |event| {
+                let _ = event_tx.try_send(event);
+            })));
         let state = StateManager::new(tx.clone(), keybinds, os);
         (Self { rx, state }, tx)
     }
@@ -48,15 +51,14 @@ impl EventLoop {
     /// disconnected.
     pub fn pump(&mut self) -> bool {
         unsafe {
-            CFRunLoopRunInMode(
-                kCFRunLoopDefaultMode,
-                0.05,
-                1,
-            );
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, 1);
             loop {
                 match self.rx.try_recv() {
                     Ok(event) => self.dispatch(event),
-                    Err(mpsc::error::TryRecvError::Empty) => return true,
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        self.state.on_tick();
+                        return true;
+                    }
                     Err(mpsc::error::TryRecvError::Disconnected) => {
                         log::error!("Event loop channel closed");
                         return false;
@@ -92,6 +94,7 @@ impl EventLoop {
                         }
                     }
                 }
+                self.state.on_tick();
             }
         }
     }
@@ -101,6 +104,7 @@ impl EventLoop {
             DaemonEvent::WindowCreated(id, pid) => self.state.on_window_created(id, pid),
             DaemonEvent::WindowDestroyed(id) => self.state.on_window_destroyed(id),
             DaemonEvent::WindowFocused(id) => self.state.on_window_focused(id),
+            DaemonEvent::WindowMoved(id, x, y) => self.state.on_window_moved(id, x, y),
             DaemonEvent::AppLaunched(pid) => self.state.on_app_launched(pid),
             DaemonEvent::AppTerminated(pid) => self.state.on_app_terminated(pid),
             DaemonEvent::AppActivated(pid) => self.state.on_app_activated(pid),

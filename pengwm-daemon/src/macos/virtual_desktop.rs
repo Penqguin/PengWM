@@ -16,4 +16,3 @@ pub fn active_space_for_display(_display_id: u32) -> Option<u8> {
 pub fn switch_to_space(_display_id: u32, _space_index: u8) {
     log::warn!("virtual_desktop::switch_to_space not yet implemented (requires CGSPrivate)");
 }
-

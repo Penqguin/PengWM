@@ -1,15 +1,14 @@
 use std::ffi::c_void;
-use std::ptr;
 use std::sync::{Arc, Mutex};
 
 use core_foundation::base::CFRelease;
 use core_foundation::runloop::{
-    CFRunLoopGetCurrent, CFRunLoopAddSource, kCFRunLoopDefaultMode, CFRunLoopSourceRef,
+    kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopSourceRef,
 };
 use tokio::sync::mpsc;
 
+use crate::config::keybinds::{find_keybind, KeybindConfig, ModifierFlags, MODIFIER_NONE};
 use crate::event_loop::DaemonEvent;
-use crate::config::keybinds::{KeybindConfig, find_keybind, ModifierFlags, MODIFIER_NONE};
 
 type CGEventRef = *mut c_void;
 type CGEventMask = u64;
@@ -27,12 +26,12 @@ const kCGKeyboardEventKeycode: u32 = 9;
 
 /// System shortcuts that must never be intercepted, even if user binds them.
 const SYSTEM_SAFE_SHORTCUTS: &[(u16, ModifierFlags)] = &[
-    (0x30, MODIFIER_CMD), // Cmd+Tab — app switcher
+    (0x30, MODIFIER_CMD),                  // Cmd+Tab — app switcher
     (0x30, MODIFIER_CMD | MODIFIER_SHIFT), // Cmd+Shift+Tab — reverse app switcher
-    (0x32, MODIFIER_CMD), // Cmd+` — same-app window cycling (backtick)
+    (0x32, MODIFIER_CMD),                  // Cmd+` — same-app window cycling (backtick)
     (0x32, MODIFIER_CMD | MODIFIER_SHIFT), // Cmd+Shift+` — reverse window cycling
-    (0x31, MODIFIER_CMD), // Cmd+Space — Spotlight
-    (0x31, MODIFIER_CMD | MODIFIER_ALT), // Cmd+Alt+Space — Finder Spotlight
+    (0x31, MODIFIER_CMD),                  // Cmd+Space — Spotlight
+    (0x31, MODIFIER_CMD | MODIFIER_ALT),   // Cmd+Alt+Space — Finder Spotlight
 ];
 
 pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindConfig>>) {
@@ -47,7 +46,7 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindCon
         let tap = CGEventTapCreate(
             kCGSessionEventTap,
             kCGHeadInsertEventTap,
-            0, // kCGEventTapOptionDefault = 0
+            1, // kCGEventTapOptionListenOnly = 1
             event_mask,
             Some(event_tap_callback),
             ctx,
@@ -56,11 +55,13 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindCon
         if tap.is_null() {
             log::error!("Failed to create CGEventTap — check Accessibility permissions.");
             eprintln!("✗ Failed to create global keybind tap (CGEventTap).");
-            eprintln!("  Keybind interception won't work. CLI commands via `pengwm` will still work.");
-            eprintln!("");
+            eprintln!(
+                "  Keybind interception won't work. CLI commands via `pengwm` will still work."
+            );
+            eprintln!();
             eprintln!("  To fix this, add pengwm-daemon to:");
             eprintln!("    System Settings → Privacy & Security → Accessibility");
-            eprintln!("");
+            eprintln!();
 
             // Show the system permission prompt so the user can add the daemon.
             super::ax_element::request_trusted_access();
@@ -69,7 +70,8 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindCon
             return;
         }
 
-        let run_loop_source: CFRunLoopSourceRef = CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) as CFRunLoopSourceRef;
+        let run_loop_source: CFRunLoopSourceRef =
+            CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) as CFRunLoopSourceRef;
         if run_loop_source.is_null() {
             log::error!("Failed to create CFRunLoopSource from event tap");
             CFRelease(tap);
@@ -118,9 +120,13 @@ unsafe extern "C" fn event_tap_callback(
 
     let keybinds = ctx.keybinds.lock().expect("keybind mutex poisoned");
     if let Some(command) = find_keybind(keycode, filtered_flags, &keybinds) {
-        log::debug!("Keybind matched: keycode={}, command={:?}", keycode, command);
+        log::debug!(
+            "Keybind matched: keycode={}, command={:?}",
+            keycode,
+            command
+        );
         let _ = ctx.event_tx.try_send(DaemonEvent::Keybind(command));
-        return ptr::null_mut();
+        return event;
     }
 
     event
@@ -143,7 +149,9 @@ extern "C" {
         place: u32,
         options: u32,
         events_of_interest: CGEventMask,
-        callback: Option<unsafe extern "C" fn(CGEventRef, u32, CGEventRef, *mut c_void) -> CGEventRef>,
+        callback: Option<
+            unsafe extern "C" fn(CGEventRef, u32, CGEventRef, *mut c_void) -> CGEventRef,
+        >,
         refcon: *mut c_void,
     ) -> CGEventRef;
 
@@ -158,5 +166,3 @@ extern "C" {
 }
 
 type CGEventFlags = u64;
-
-

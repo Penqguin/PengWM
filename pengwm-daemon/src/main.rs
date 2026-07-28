@@ -2,14 +2,16 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use pengwm_daemon::config;
-use pengwm_daemon::macos;
 use pengwm_daemon::event_loop;
 use pengwm_daemon::ipc_server;
+use pengwm_daemon::macos;
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationDidFinishLaunchingNotification};
-#[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDidFinishLaunchingNotification,
+};
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSNotificationCenter;
 
@@ -46,30 +48,36 @@ fn main() {
     eprintln!("[1/6] Loading config…");
     let keybinds = Arc::new(Mutex::new(config::keybinds::KeybindConfig::load()));
 
-    eprintln!("[2/6] Initializing event loop and state…");
-    let (mut event_loop, tx) = event_loop::EventLoop::new(Arc::clone(&keybinds));
-
     #[cfg(target_os = "macos")]
     {
-        eprintln!("[3/6] Starting global keybind tap…");
-        macos::event_tap::start(tx.clone(), Arc::clone(&keybinds));
-
-        eprintln!("[4/6] Attaching app lifecycle observers…");
-        macos::ns_workspace::observe(tx.clone());
-
-        eprintln!("[5/6] Registering display hotplug callback…");
-        macos::cg_display::register_hotplug_callback(tx.clone());
-
-        eprintln!("[5.5/6] Initializing NSApplication as accessory…");
+        eprintln!("[2/6] Initializing NSApplication as accessory…");
         let app = NSApplication::sharedApplication(unsafe { MainThreadMarker::new_unchecked() });
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         let center = NSNotificationCenter::defaultCenter();
         unsafe {
-            center.postNotificationName_object(&NSApplicationDidFinishLaunchingNotification, Some(&app));
+            center.postNotificationName_object(
+                NSApplicationDidFinishLaunchingNotification,
+                Some(&app),
+            );
         }
     }
 
-    eprintln!("[6/6] Starting IPC server and config watcher…");
+    eprintln!("[3/6] Initializing event loop and state…");
+    let (mut event_loop, tx) = event_loop::EventLoop::new(Arc::clone(&keybinds));
+
+    #[cfg(target_os = "macos")]
+    {
+        eprintln!("[4/6] Starting global keybind tap…");
+        macos::event_tap::start(tx.clone(), Arc::clone(&keybinds));
+
+        eprintln!("[5/6] Attaching app lifecycle observers…");
+        macos::ns_workspace::observe(tx.clone());
+
+        eprintln!("[6/6] Registering display hotplug callback…");
+        macos::cg_display::register_hotplug_callback(tx.clone());
+    }
+
+    eprintln!("[7/6] Starting IPC server and config watcher…");
     config::watcher::watch(tx.clone());
 
     // Spawn the UDS listener on a background thread.

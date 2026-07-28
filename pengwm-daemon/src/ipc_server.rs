@@ -68,7 +68,10 @@ fn handle_client(
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
-    if event_tx.blocking_send(DaemonEvent::Command(cmd, resp_tx)).is_err() {
+    if event_tx
+        .blocking_send(DaemonEvent::Command(cmd, resp_tx))
+        .is_err()
+    {
         return;
     }
 
