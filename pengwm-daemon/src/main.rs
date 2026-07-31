@@ -1,21 +1,34 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use clap::Parser;
+use pengwm_core::command::Command;
 use pengwm_daemon::config;
 use pengwm_daemon::event_loop;
 use pengwm_daemon::ipc_server;
 use pengwm_daemon::macos;
 
-#[cfg(target_os = "macos")]
-use objc2::MainThreadMarker;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDidFinishLaunchingNotification,
-};
-#[cfg(target_os = "macos")]
-use objc2_foundation::NSNotificationCenter;
-
+mod cli;
+mod ipc_client;
 fn main() {
+    let cli = cli::Cli::parse();
+
+    match cli.command {
+        None | Some(cli::CliCommand::Daemon) => daemon_main(),
+        Some(cmd) => {
+            let command: Command = cmd.into();
+            match ipc_client::send_command(&command) {
+                Ok(response) => print!("{response}"),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+fn daemon_main() {
     env_logger::init();
 
     #[cfg(target_os = "macos")]
@@ -51,6 +64,12 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         eprintln!("[2/6] Initializing NSApplication as accessory…");
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{
+            NSApplication, NSApplicationActivationPolicy,
+            NSApplicationDidFinishLaunchingNotification,
+        };
+        use objc2_foundation::NSNotificationCenter;
         let app = NSApplication::sharedApplication(unsafe { MainThreadMarker::new_unchecked() });
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         let center = NSNotificationCenter::defaultCenter();
@@ -84,6 +103,9 @@ fn main() {
     thread::spawn(move || {
         ipc_server::start_ipc_server(tx);
     });
+
+    // The `pengwm-bar` process is spawned inside EventLoop::new (gated on
+    // `bar.enabled`), and its pid is excluded from window management.
 
     eprintln!("PengWM daemon ready (pid {})", std::process::id());
 

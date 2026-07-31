@@ -3,23 +3,44 @@ use pengwm_core::command::Command;
 use pengwm_core::tree::{Direction, SplitDirection};
 
 #[derive(Parser, Debug)]
-#[command(name = "pengwm", about = "Control the PengWM daemon")]
+#[command(
+    name = "pengwm",
+    about = "PengWM — a tiling window manager for macOS.\n\nRun with no arguments to start the daemon."
+)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: CliCommand,
+    pub command: Option<CliCommand>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum CliCommand {
-    Focus { direction: DirectionArg },
-    MoveWindow { direction: DirectionArg },
-    Split { direction: SplitArg },
-    Workspace { id: u32 },
-    MoveWindowToWorkspace { id: u32 },
+    /// Start the daemon (used by launchd and manual starts)
+    Daemon,
+    Focus {
+        direction: DirectionArg,
+    },
+    MoveWindow {
+        direction: DirectionArg,
+    },
+    Split {
+        direction: SplitArg,
+    },
+    Workspace {
+        id: u32,
+    },
+    MoveWindowToWorkspace {
+        id: u32,
+    },
     Close,
     ToggleLayout,
-    SetGapOuter { pixels: i32 },
-    SetGapInner { pixels: i32 },
+    /// Toggle the status bar visibility
+    ToggleBar,
+    SetGapOuter {
+        pixels: i32,
+    },
+    SetGapInner {
+        pixels: i32,
+    },
     ReloadConfig,
     State,
 }
@@ -61,6 +82,7 @@ impl From<SplitArg> for SplitDirection {
 impl From<CliCommand> for Command {
     fn from(cmd: CliCommand) -> Self {
         match cmd {
+            CliCommand::Daemon => unreachable!("daemon is handled before conversion"),
             CliCommand::Focus { direction } => Command::Focus {
                 direction: direction.into(),
             },
@@ -74,6 +96,7 @@ impl From<CliCommand> for Command {
             CliCommand::MoveWindowToWorkspace { id } => Command::MoveWindowToWorkspace { id },
             CliCommand::Close => Command::Close,
             CliCommand::ToggleLayout => Command::ToggleLayout,
+            CliCommand::ToggleBar => Command::ToggleBar,
             CliCommand::SetGapOuter { pixels } => Command::SetGapOuter { pixels },
             CliCommand::SetGapInner { pixels } => Command::SetGapInner { pixels },
             CliCommand::ReloadConfig => Command::ReloadConfig,

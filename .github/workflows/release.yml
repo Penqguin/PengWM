@@ -41,13 +41,11 @@ jobs:
 
       - name: Ad-hoc codesign (required for macOS AX permissions)
         run: |
-          codesign --force --deep -s - target/release/pengwm-daemon
-          codesign --force --deep -s - target/release/pengwm-cli
+          codesign --force --deep -s - target/release/pengwm
 
       - name: Package binaries
         run: |
-          cp target/release/pengwm-daemon dist/
-          cp target/release/pengwm-cli dist/
+          cp target/release/pengwm dist/
           cd dist && tar czf ../pengwm-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz .
 
       - name: Upload release artifact

@@ -9,9 +9,7 @@ pub fn send_command(cmd: &Command) -> Result<String, String> {
     let body = serde_json::to_string(cmd).map_err(|e| format!("serialize error: {e}"))?;
 
     let mut stream = UnixStream::connect(SOCKET_PATH).map_err(|e| {
-        format!(
-            "could not connect to daemon at {SOCKET_PATH}: {e}\n       is pengwm-daemon running?"
-        )
+        format!("could not connect to daemon at {SOCKET_PATH}: {e}\n       is pengwm running?")
     })?;
 
     stream
