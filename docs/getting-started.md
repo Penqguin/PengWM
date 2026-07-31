@@ -17,7 +17,7 @@ cargo build --release
 ### Start the daemon
 
 ```bash
-./target/release/pengwm-daemon
+./target/release/pengwm
 ```
 
 The daemon will:
@@ -26,6 +26,9 @@ The daemon will:
 3. Attach AXObservers to all running apps
 4. Start the CGEventTap for global keybindings
 5. Listen for CLI commands on `/tmp/pengwm.sock`
+
+`pengwm` is a single binary: run it with no arguments to start the daemon,
+or pass a subcommand to control a running daemon (see below).
 
 ### Control with the CLI
 
@@ -60,17 +63,18 @@ The daemon will:
 
 | Keys | Action |
 |------|--------|
-| `Cmd-h/j/k/l` or `Cmd-arrows` | Focus left/down/up/right |
-| `Cmd-Shift-h/j/k/l` or `Cmd-Shift-arrows` | Move window |
-| `Cmd-1..9` | Switch to workspace |
-| `Cmd-Shift-1..9` | Move window to workspace |
-| `Cmd-f` | Toggle monocle layout |
+| `Alt-h/j/k/l` or `Alt-arrows` | Focus left/down/up/right |
+| `Alt-Shift-h/j/k/l` or `Alt-Shift-arrows` | Move window into the neighbor's space (swap + resize) |
+| `Alt-1..9` | Switch to workspace |
+| `Alt-Shift-1..9` | Move window to workspace |
+| `Alt-/` | Switch to tiling layout |
+| `Alt-,` | Switch to accordion layout |
 | `Cmd-Shift-r` | Reload config |
 
 ## Debugging
 
 ```bash
-RUST_LOG=debug ./target/release/pengwm-daemon
+RUST_LOG=debug ./target/release/pengwm
 ```
 
 Logs include window creation events, focus changes, keybind matches, and

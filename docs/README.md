@@ -7,11 +7,11 @@
 
 ## Overview
 
-PengWM is a tiling window manager for macOS. It runs as a background daemon
-and is controlled via a CLI client over a Unix Domain Socket.
+PengWM is a tiling window manager for macOS. It ships as a single `pengwm`
+binary: run it with no arguments to start the daemon, or pass a subcommand
+to control a running daemon over a Unix Domain Socket.
 
 | Component | Description |
 |-----------|-------------|
-| `pengwm-daemon` | Background process — event loop, state tree, macOS FFI |
-| `pengwm-cli` | Command-line client — sends commands via UDS |
+| `pengwm` | Single binary — daemon + CLI client, event loop, macOS FFI |
 | `pengwm-core` | Shared library — layout engine, data types, IPC protocol |

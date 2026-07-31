@@ -12,9 +12,9 @@ cd pengwm
 cargo build --release
 
 # Grant Accessibility permissions first, then start the daemon
-./target/release/pengwm-daemon
+./target/release/pengwm
 
-# In another terminal, control it via the CLI
+# In another terminal, control it
 ./target/release/pengwm focus left
 ./target/release/pengwm split horizontal
 ./target/release/pengwm workspace 3
@@ -25,7 +25,7 @@ cargo build --release
 
 1. **macOS 14+** (Ventura should work, Sequoia tested)
 2. **Accessibility permissions:** System Settings → Privacy & Security → Accessibility → add
-   your terminal (or `pengwm-daemon` binary directly after code-signing)
+   your terminal (or the `pengwm` binary directly after code-signing)
 3. **Displays have separate Spaces:** System Settings → Desktop & Dock → turn on
    _Displays have separate Spaces_
 
@@ -38,6 +38,14 @@ If no file exists, defaults are used and a config watcher reloads changes at run
 gap_outer = 10
 gap_inner = 5
 mod_key = "cmd"
+restricted_apps = []
+
+[bar]
+position = "top"
+thickness = 32
+visible = true
+enabled = true
+theme = "tokyo-night"
 ```
 
 ### Keybindings
@@ -45,33 +53,45 @@ mod_key = "cmd"
 Keybindings are defined in the same file with `modifier-key = "action"` entries:
 
 ```toml
-cmd-h     = "focus-left"
-cmd-j     = "focus-down"
-cmd-k     = "focus-up"
-cmd-l     = "focus-right"
-cmd-left  = "focus-left"
-cmd-down  = "focus-down"
-cmd-up    = "focus-up"
-cmd-right = "focus-right"
+alt-h     = "focus-left"
+alt-j     = "focus-down"
+alt-k     = "focus-up"
+alt-l     = "focus-right"
+alt-left  = "focus-left"
+alt-down  = "focus-down"
+alt-up    = "focus-up"
+alt-right = "focus-right"
 
-cmd-shift-h     = "swap-left"
-cmd-shift-j     = "swap-down"
-cmd-shift-k     = "swap-up"
-cmd-shift-l     = "swap-right"
-cmd-shift-left  = "swap-left"
-cmd-shift-down  = "swap-down"
-cmd-shift-up    = "swap-up"
-cmd-shift-right = "swap-right"
+alt-shift-h     = "swap-left"
+alt-shift-j     = "swap-down"
+alt-shift-k     = "swap-up"
+alt-shift-l     = "swap-right"
+alt-shift-left  = "swap-left"
+alt-shift-down  = "swap-down"
+alt-shift-up    = "swap-up"
+alt-shift-right = "swap-right"
 
-cmd-1 = "workspace-1"
-cmd-f = "toggle-layout"
+alt-1 = "workspace-1"
+alt-shift-1 = "move-to-workspace-1"
+alt-/ = "layout-tile"
+alt-, = "layout-accordion"
+alt-b = "toggle-bar"
 cmd-shift-r = "reload-config"
 ```
 
 **Modifiers:** `cmd`, `alt`/`option`, `ctrl`/`control`, `shift` (join with `-`).
 
 **Actions:** `focus-{left,right,up,down}`, `swap-{left,right,up,down}`,
-`workspace-{1..9}`, `move-to-workspace-{1..9}`, `toggle-layout`, `reload-config`.
+`workspace-{1..9}`, `move-to-workspace-{1..9}`, `layout-tile`, `layout-accordion`,
+`toggle-layout`, `toggle-bar`, `reload-config`.
+
+## Status Bar
+
+PengWM ships a minimal status bar (`pengwm-bar`, built on egui/eframe) that the
+daemon spawns automatically. It shows a split-direction icon and clickable
+workspace pills on the primary display, themed tokyo-night by default. See
+[docs/configuration.md](docs/configuration.md) for the `[bar]` table, themes,
+and corner-radius options.
 
 ## CLI Usage
 
@@ -93,8 +113,8 @@ pengwm state
 
 ```
 pengwm-core/       Pure data types, layout engine, workspace logic (no macOS deps)
-pengwm-daemon/     Background daemon — event loop, state, macOS FFI
-pengwm-cli/        CLI client — clap parser, UDS sender
+pengwm-daemon/     The `pengwm` binary — daemon, CLI client, macOS FFI
+pengwm-bar/        The `pengwm-bar` status bar — egui/eframe frontend
 ```
 
 See [docs/](docs/) for full architecture, configuration, and command reference.
@@ -131,7 +151,7 @@ and end-to-end window-created flow. They're `#[ignore]`d by default.
 For visual testing against a real display, build and run the daemon with debug logging:
 
 ```bash
-cargo build && RUST_LOG=debug ./target/debug/pengwm-daemon
+cargo build && RUST_LOG=debug ./target/debug/pengwm
 ```
 
 In another terminal, send commands through the CLI to see windows
@@ -161,7 +181,9 @@ cargo test          # All unit tests
 
 The project uses a **pure/dirty split** — `pengwm-core` is pure Rust with no
 macOS dependencies and runs `cargo test` on any platform. `pengwm-daemon`
-holds all macOS FFI. Key abstractions:
+holds all macOS FFI and ships as the single `pengwm` binary: run it with no
+arguments to start the daemon, or pass a subcommand to control a running
+daemon. Key abstractions:
 
 - **Workspace::layout() / hide()** — produce global-coordinate window rects
   from the tree. Tree internals (`NodeId`, `Arena`) are private.

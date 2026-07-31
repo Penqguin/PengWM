@@ -125,5 +125,31 @@ StateManager: recv DaemonEvent
 | Crate | Deps | Purpose |
 |-------|------|---------|
 | `pengwm-core` | serde, serde_json | Types, layout math, workspace logic |
-| `pengwm-daemon` | core, tokio, accessibility-sys, objc2 | Event loop, FFI, state, IPC server |
-| `pengwm-cli` | core, clap, serde_json | CLI argument parsing, UDS sender |
+| `pengwm-daemon` | core, tokio, clap, accessibility-sys, objc2 | Single `pengwm` binary: daemon, CLI parser, UDS sender/server |
+| `pengwm-bar` | core, eframe/egui, serde, toml, objc2 (macOS) | Status bar: split icon + workspace pills |
+
+## Bar
+
+`pengwm-bar` is a lightweight eframe (egui) process that subscribes to a
+second UDS at `/tmp/pengwm-bar.sock`. The daemon spawns it at startup (gated on
+`[bar].enabled`, excluded from tiling by pid) and pushes newline-delimited JSON
+`BarMessage`s over that socket.
+
+```
+pengwm-daemon                    pengwm-bar
+  bar_server ── BarMessage ──▶ ─── subscribe() ──▶ egui repaint
+  (caches last Show/Hide         (reconnect w/ backoff,
+   + last State, replays         250ms → 2s)
+   both on connect)              ── send_command(Command) ──▶ pengwm.sock
+                                                                 └─▶ daemon
+```
+
+- `BarMessage::Show` / `Hide` drive `ViewportCommand::Visible`; `Reload`
+  re-reads config + theme; `Exit` closes the window.
+- `BarMessage::State` carries `workspaces`, `active_workspace`,
+  `split_direction`, and the daemon-reserved `rect`; the bar positions itself
+  with `OuterPosition`/`InnerSize` and switches workspaces on click by sending
+  `Command::Workspace` back over the command socket.
+- Themes are built-in TOML presets (tokyo-night default) with `[bar.colors]`
+  overrides; corner radius auto-matches the macOS version.
+
