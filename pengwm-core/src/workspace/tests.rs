@@ -104,6 +104,92 @@ fn remove_window_unfocused() {
 }
 
 #[test]
+fn remove_left_window_keeps_vertical_root() {
+    let mut ws = make_workspace();
+    // Auto-layout: VSplit(100, HSplit(200, 300)) — 100 left, 200/300 right.
+    let _a = ws.add_window(100, None);
+    let _b = ws.add_window(200, None);
+    let _c = ws.add_window(300, None);
+
+    ws.remove_window(100);
+
+    assert_eq!(ws.window_count(), 2);
+    let root = ws.root.unwrap();
+    let root_data = &ws.arena.get(root).unwrap().data;
+    assert!(
+        matches!(
+            root_data,
+            NodeData::Split {
+                direction: SplitDirection::Vertical,
+                ..
+            }
+        ),
+        "root should stay Vertical after closing the left window, got {:?}",
+        root_data
+    );
+    assert_eq!(ws.arena.get(root).unwrap().children.len(), 2);
+    assert!(ws.find_window(200).is_some());
+    assert!(ws.find_window(300).is_some());
+}
+
+#[test]
+fn remove_left_window_nested_keeps_vertical_root() {
+    let mut ws = make_workspace();
+    // Auto-layout: VSplit(100, HSplit(200, VSplit(300, 400))).
+    let _a = ws.add_window(100, None);
+    let _b = ws.add_window(200, None);
+    let _c = ws.add_window(300, None);
+    let _d = ws.add_window(400, None);
+
+    ws.remove_window(100);
+
+    assert_eq!(ws.window_count(), 3);
+    let root = ws.root.unwrap();
+    let root_data = &ws.arena.get(root).unwrap().data;
+    assert!(
+        matches!(
+            root_data,
+            NodeData::Split {
+                direction: SplitDirection::Vertical,
+                ..
+            }
+        ),
+        "root should stay Vertical after closing the left window, got {:?}",
+        root_data
+    );
+    // Root holds one window (200) and a nested split with 300/400.
+    assert_eq!(ws.arena.get(root).unwrap().children.len(), 2);
+}
+
+#[test]
+fn remove_non_left_window_still_collapses() {
+    let mut ws = make_workspace();
+    // VSplit(100, HSplit(200, 300))
+    let _a = ws.add_window(100, None);
+    let _b = ws.add_window(200, None);
+    let _c = ws.add_window(300, None);
+
+    ws.remove_window(200);
+
+    assert_eq!(ws.window_count(), 2);
+    let root = ws.root.unwrap();
+    let root_data = &ws.arena.get(root).unwrap().data;
+    assert!(
+        matches!(
+            root_data,
+            NodeData::Split {
+                direction: SplitDirection::Vertical,
+                ..
+            }
+        ),
+        "closing the top-right window should keep the vertical root, got {:?}",
+        root_data
+    );
+    assert!(ws.find_window(100).is_some());
+    assert!(ws.find_window(300).is_some());
+}
+
+#[test]
 fn remove_window_rebalance() {
     let mut ws = make_workspace();
     ws.add_window(100, Some(SplitDirection::Vertical));
@@ -336,4 +422,164 @@ fn auto_alternates_on_subsequent_add() {
     );
     let inner_parent = ws.arena.get(parent_b).unwrap().parent.unwrap();
     assert_eq!(inner_parent, root, "inner split should be child of root");
+}
+
+// -----------------------------------------------------------------------
+// reserved rect
+// -----------------------------------------------------------------------
+
+fn full_monitor_rect(ws: &Workspace) -> Rect {
+    let (w, h) = ws.monitor_size();
+    Rect::new(0.0, 0.0, w as f64, h as f64)
+}
+
+#[test]
+fn no_reservation_uses_full_monitor() {
+    let ws = make_workspace();
+    let rect = ws.usable_rect(full_monitor_rect(&ws));
+    assert_eq!(rect, full_monitor_rect(&ws));
+}
+
+#[test]
+fn top_bar_reserves_top_strip() {
+    let mut ws = make_workspace();
+    ws.add_window(100, None);
+    ws.set_reserved_rect(Some(Rect::new(0.0, 0.0, 1920.0, 30.0)));
+    let rects = ws.layout(5.0, 10.0);
+    let r = &rects[&100];
+    assert_eq!(r.y, 30.0 + 10.0, "layout starts below the bar");
+    assert_eq!(r.height, 1080.0 - 30.0 - 20.0);
+}
+
+#[test]
+fn bottom_bar_reserves_bottom_strip() {
+    let mut ws = make_workspace();
+    ws.add_window(100, None);
+    ws.set_reserved_rect(Some(Rect::new(0.0, 1050.0, 1920.0, 30.0)));
+    let rects = ws.layout(5.0, 10.0);
+    let r = &rects[&100];
+    assert_eq!(r.y, 10.0);
+    assert_eq!(r.height, 1050.0 - 20.0, "tiling stops above the bar");
+}
+
+#[test]
+fn left_bar_reserves_left_strip() {
+    let mut ws = make_workspace();
+    ws.add_window(100, None);
+    ws.set_reserved_rect(Some(Rect::new(0.0, 0.0, 40.0, 1080.0)));
+    let rects = ws.layout(5.0, 10.0);
+    let r = &rects[&100];
+    assert_eq!(r.x, 40.0 + 10.0);
+    assert_eq!(r.width, 1920.0 - 40.0 - 20.0);
+}
+
+#[test]
+fn right_bar_reserves_right_strip() {
+    let mut ws = make_workspace();
+    ws.add_window(100, None);
+    ws.set_reserved_rect(Some(Rect::new(1880.0, 0.0, 40.0, 1080.0)));
+    let rects = ws.layout(5.0, 10.0);
+    let r = &rects[&100];
+    assert_eq!(r.x, 10.0);
+    assert_eq!(r.width, 1880.0 - 20.0);
+}
+
+#[test]
+fn monocle_respects_reservation() {
+    let mut ws = make_workspace();
+    ws.add_window(100, None);
+    ws.add_window(200, None);
+    ws.monocle = true;
+    ws.set_reserved_rect(Some(Rect::new(0.0, 0.0, 1920.0, 30.0)));
+    let rects = ws.layout(5.0, 10.0);
+    let focused = ws.focused_window_id().unwrap();
+    let r = &rects[&focused];
+    assert_eq!(r.y, 30.0 + 10.0, "monocle window also avoids the bar");
+}
+
+#[test]
+fn clearing_reservation_restores_layout() {
+    let mut ws = make_workspace();
+    ws.add_window(100, None);
+    ws.set_reserved_rect(Some(Rect::new(0.0, 0.0, 1920.0, 30.0)));
+    ws.set_reserved_rect(None);
+    let rects = ws.layout(5.0, 10.0);
+    let r = &rects[&100];
+    assert_eq!(r.y, 10.0);
+    assert_eq!(r.height, 1080.0 - 20.0);
+}
+
+// -----------------------------------------------------------------------
+// focused_split_direction
+// -----------------------------------------------------------------------
+
+#[test]
+fn split_direction_none_for_single_window() {
+    let mut ws = make_workspace();
+    ws.add_window(100, None);
+    assert_eq!(ws.focused_split_direction(), None);
+}
+
+#[test]
+fn split_direction_of_focused_split() {
+    let mut ws = make_workspace();
+    let a = ws.add_window(100, None);
+    let _b = ws.add_window(200, None);
+    ws.focus_window(100);
+    let root_split = ws.arena.get(a).unwrap().parent.unwrap();
+    assert!(matches!(
+        &ws.arena.get(root_split).unwrap().data,
+        NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ..
+        }
+    ));
+    assert_eq!(ws.focused_split_direction(), Some(SplitDirection::Vertical));
+}
+
+#[test]
+fn split_direction_walks_up_nested_split() {
+    let mut ws = make_workspace();
+    let _a = ws.add_window(100, None);
+    let _b = ws.add_window(200, None);
+    let _c = ws.add_window(300, None);
+    ws.focus_window(100);
+    assert_eq!(
+        ws.focused_split_direction(),
+        Some(SplitDirection::Vertical),
+        "a sits directly under the root Vertical split"
+    );
+    ws.focus_window(300);
+    assert_eq!(
+        ws.focused_split_direction(),
+        Some(SplitDirection::Horizontal),
+        "c sits under the nested Horizontal split"
+    );
+}
+
+#[test]
+fn command_toggle_bar_roundtrips() {
+    let cmd = crate::command::Command::ToggleBar;
+    let json = serde_json::to_string(&cmd).unwrap();
+    let back: crate::command::Command = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back, crate::command::Command::ToggleBar));
+}
+
+#[test]
+fn bar_state_roundtrips() {
+    use crate::command::{BarMessage, BarState, BarWorkspace};
+    let state = BarState {
+        workspaces: vec![BarWorkspace {
+            name: "ws-1".into(),
+            monitor_id: 1,
+            window_count: 2,
+            active: true,
+        }],
+        active_workspace: 0,
+        split_direction: Some(SplitDirection::Vertical),
+        rect: None,
+    };
+    let json = serde_json::to_string(&BarMessage::State(state)).unwrap();
+    let back: BarMessage = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back, BarMessage::State(_)));
 }

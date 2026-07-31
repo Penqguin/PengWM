@@ -424,10 +424,22 @@ mod tests {
     #[test]
     fn layout_four_alternating_nested_no_gap() {
         let mut arena = Arena::new();
-        let a = arena.alloc(NodeData::Window { window_id: 1, is_focused: false });
-        let b = arena.alloc(NodeData::Window { window_id: 2, is_focused: false });
-        let c = arena.alloc(NodeData::Window { window_id: 3, is_focused: false });
-        let d = arena.alloc(NodeData::Window { window_id: 4, is_focused: false });
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let c = arena.alloc(NodeData::Window {
+            window_id: 3,
+            is_focused: false,
+        });
+        let d = arena.alloc(NodeData::Window {
+            window_id: 4,
+            is_focused: false,
+        });
 
         // Build the alternating tree: VSplit(A, HSplit(B, VSplit(C, D)))
         let inner_v = arena.alloc(NodeData::Split {
@@ -485,10 +497,22 @@ mod tests {
     #[test]
     fn layout_four_flattened_vertical_with_gap() {
         let mut arena = Arena::new();
-        let a = arena.alloc(NodeData::Window { window_id: 1, is_focused: false });
-        let b = arena.alloc(NodeData::Window { window_id: 2, is_focused: false });
-        let c = arena.alloc(NodeData::Window { window_id: 3, is_focused: false });
-        let d = arena.alloc(NodeData::Window { window_id: 4, is_focused: false });
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let c = arena.alloc(NodeData::Window {
+            window_id: 3,
+            is_focused: false,
+        });
+        let d = arena.alloc(NodeData::Window {
+            window_id: 4,
+            is_focused: false,
+        });
 
         let split = arena.alloc(NodeData::Split {
             direction: SplitDirection::Vertical,
@@ -542,7 +566,10 @@ mod tests {
                 assert!(
                     !(overlap_x && overlap_y),
                     "Overlap between {} and {}: {:?} vs {:?}",
-                    i, j, r1, r2
+                    i,
+                    j,
+                    r1,
+                    r2
                 );
             }
         }

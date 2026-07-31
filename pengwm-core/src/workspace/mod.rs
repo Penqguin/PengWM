@@ -21,6 +21,9 @@ pub struct Workspace {
     arena: Arena,
     monitor_origin: (i32, i32),
     monitor_size: (u32, u32),
+    /// Global-coordinate region of the monitor that is off-limits to windows
+    /// (e.g. a status bar strip). Applied in `layout()` before the gap inset.
+    reserved: Option<Rect>,
 }
 
 impl Workspace {
@@ -35,6 +38,7 @@ impl Workspace {
             arena: Arena::new(),
             monitor_origin: origin,
             monitor_size: size,
+            reserved: None,
         }
     }
 
@@ -248,7 +252,8 @@ impl Workspace {
             self.monitor_size.0 as f64,
             self.monitor_size.1 as f64,
         );
-        let inset = crate::layout::inset_rect(monitor_rect, gap_outer);
+        let usable = self.usable_rect(monitor_rect);
+        let inset = crate::layout::inset_rect(usable, gap_outer);
         let mut output = HashMap::new();
 
         if self.monocle {
@@ -384,8 +389,50 @@ impl Workspace {
         self.monitor_id == display_id
     }
 
+    /// Reserve a region of the monitor (in global coordinates) that windows
+    /// must avoid — used for the bar strip. `None` clears the reservation.
+    pub fn set_reserved_rect(&mut self, global: Option<Rect>) {
+        self.reserved = global;
+    }
+
+    pub fn reserved_rect(&self) -> Option<Rect> {
+        self.reserved
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
+    // -----------------------------------------------------------------------
+
+    /// Subtract the reserved region (an edge strip spanning the monitor) from
+    /// the full monitor rect, producing the tiling area.
+    fn usable_rect(&self, monitor: Rect) -> Rect {
+        let Some(reserved) = self.reserved else {
+            return monitor;
+        };
+        let local = Rect::new(
+            reserved.x - self.monitor_origin.0 as f64,
+            reserved.y - self.monitor_origin.1 as f64,
+            reserved.width,
+            reserved.height,
+        );
+        remove_edge_strip(monitor, local)
+    }
+
+    /// Direction of the focused split container (the focused node itself, or
+    /// its nearest split ancestor). `None` when there is no focused split.
+    pub fn focused_split_direction(&self) -> Option<SplitDirection> {
+        let mut current = self.focused_node?;
+        loop {
+            let node = self.arena.get(current)?;
+            match &node.data {
+                NodeData::Split { direction, .. } => return Some(*direction),
+                NodeData::Window { .. } => current = node.parent?,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers (monitor)
     // -----------------------------------------------------------------------
 
     fn next_direction(&self) -> SplitDirection {
@@ -497,6 +544,32 @@ impl Workspace {
             }
 
             let only_child = self.arena.get(id).unwrap().children[0];
+
+            // If the only remaining child is itself a split, absorb its
+            // children into `id` rather than promoting it wholesale. Promoting
+            // a differently-oriented split flips the layout (e.g. a vertical
+            // left/right split becomes horizontal top/bottom); absorbing keeps
+            // `id`'s orientation, e.g. one window on the left and the rest on
+            // the right.
+            if matches!(
+                &self.arena.get(only_child).unwrap().data,
+                NodeData::Split { .. }
+            ) {
+                let grandchildren: Vec<NodeId> =
+                    self.arena.get(only_child).unwrap().children.clone();
+                {
+                    let node = self.arena.get_mut(id).unwrap();
+                    node.children = grandchildren.clone();
+                }
+                for &gc in &grandchildren {
+                    self.arena.get_mut(gc).unwrap().parent = Some(id);
+                }
+                self.arena.get_mut(only_child).unwrap().children.clear();
+                self.arena.remove(only_child);
+                self.rebalance_ratios(id);
+                continue;
+            }
+
             self.arena.get_mut(only_child).unwrap().parent = parent_id;
 
             match parent_id {
@@ -585,6 +658,59 @@ impl Workspace {
             }
         }
     }
+}
+
+const EPSILON: f64 = 0.5;
+
+/// Remove a reserved edge strip from a monitor rect (in local coordinates).
+///
+/// `strip` is expected to span the monitor's full width (top/bottom bars) or
+/// full height (left/right bars) and sit flush against one edge. Anything
+/// that doesn't look like an edge strip is ignored.
+fn remove_edge_strip(monitor: Rect, strip: Rect) -> Rect {
+    let overlaps_x = strip.x < monitor.x + monitor.width && strip.x + strip.width > monitor.x;
+    let overlaps_y = strip.y < monitor.y + monitor.height && strip.y + strip.height > monitor.y;
+    if !overlaps_x || !overlaps_y {
+        return monitor;
+    }
+
+    let spans_width = strip.x <= monitor.x + EPSILON
+        && strip.x + strip.width >= monitor.x + monitor.width - EPSILON;
+    let spans_height = strip.y <= monitor.y + EPSILON
+        && strip.y + strip.height >= monitor.y + monitor.height - EPSILON;
+
+    if spans_width {
+        let cut = (strip.y + strip.height).min(monitor.y + monitor.height);
+        if strip.y <= monitor.y + EPSILON && cut < monitor.y + monitor.height {
+            // strip across the top edge
+            let remaining = monitor.y + monitor.height - cut;
+            return Rect::new(monitor.x, cut, monitor.width, remaining.max(0.0));
+        }
+        let cut = strip.y.max(monitor.y);
+        if strip.y + strip.height >= monitor.y + monitor.height - EPSILON && cut > monitor.y {
+            // strip across the bottom edge
+            let remaining = cut - monitor.y;
+            return Rect::new(monitor.x, monitor.y, monitor.width, remaining.max(0.0));
+        }
+        return monitor;
+    }
+
+    if spans_height {
+        let cut = (strip.x + strip.width).min(monitor.x + monitor.width);
+        if strip.x <= monitor.x + EPSILON && cut < monitor.x + monitor.width {
+            // strip along the left edge
+            let remaining = monitor.x + monitor.width - cut;
+            return Rect::new(cut, monitor.y, remaining.max(0.0), monitor.height);
+        }
+        let cut = strip.x.max(monitor.x);
+        if strip.x + strip.width >= monitor.x + monitor.width - EPSILON && cut > monitor.x {
+            // strip along the right edge
+            let remaining = cut - monitor.x;
+            return Rect::new(monitor.x, monitor.y, remaining.max(0.0), monitor.height);
+        }
+    }
+
+    monitor
 }
 
 #[cfg(test)]
