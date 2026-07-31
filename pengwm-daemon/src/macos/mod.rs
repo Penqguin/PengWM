@@ -4,4 +4,3 @@ pub mod cg_display;
 pub mod event_tap;
 pub mod ns_workspace;
 pub mod virtual_desktop;
-pub mod workspace_bar;

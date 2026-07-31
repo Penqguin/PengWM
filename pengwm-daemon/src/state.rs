@@ -1,8 +1,11 @@
 use crate::adapter::OsAdapter;
+use crate::bar_server::BarSender;
 use crate::config::keybinds::KeybindConfig;
-use crate::config::Settings;
+use crate::config::{BarConfig, BarPosition, Settings};
 use crate::event_loop::DaemonEvent;
-use pengwm_core::command::{Command, DaemonResponse};
+use pengwm_core::command::{
+    BarMessage, BarState, BarWorkspace, Command, DaemonResponse, LayoutMode,
+};
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::Workspace;
@@ -24,9 +27,16 @@ pub struct StateManager {
     event_tx: mpsc::Sender<DaemonEvent>,
     gap_outer: f64,
     gap_inner: f64,
+    max_tiles: usize,
     keybinds: Arc<Mutex<KeybindConfig>>,
     restricted_apps: Vec<String>,
-    workspace_bar_enabled: bool,
+    bar_sender: BarSender,
+    bar_config: BarConfig,
+    bar_visible: bool,
+    bar_spawned: bool,
+    /// Pids whose windows are never managed by the WM — currently the spawned
+    /// `pengwm-bar` process, whose window must not be tiled.
+    excluded_pids: Vec<i32>,
     last_layout_rects: HashMap<WindowId, Rect>,
     drag_window: Option<WindowId>,
     drag_overlap_target: Option<WindowId>,
@@ -39,6 +49,8 @@ impl StateManager {
         event_tx: mpsc::Sender<DaemonEvent>,
         keybinds: Arc<Mutex<KeybindConfig>>,
         mut os: Box<dyn OsAdapter>,
+        bar_sender: BarSender,
+        bar_pid: Option<i32>,
     ) -> Self {
         let displays = os.active_displays();
         let mut workspaces = Vec::new();
@@ -78,7 +90,9 @@ impl StateManager {
         }
 
         let settings = Settings::load();
-        let workspace_bar_enabled = settings.workspace_bar.enabled;
+        let bar_config = settings.bar.clone();
+        let bar_visible = settings.bar.visible;
+        let excluded_pids = bar_pid.into_iter().collect::<Vec<_>>();
         let mut state = Self {
             workspaces,
             active_workspaces,
@@ -89,9 +103,14 @@ impl StateManager {
             event_tx,
             gap_outer: settings.gap_outer.max(0) as f64,
             gap_inner: settings.gap_inner.max(0) as f64,
+            max_tiles: settings.max_tiles.max(1),
             keybinds,
             restricted_apps: settings.restricted_apps,
-            workspace_bar_enabled,
+            bar_sender,
+            bar_config,
+            bar_visible,
+            bar_spawned: !excluded_pids.is_empty(),
+            excluded_pids,
             last_layout_rects: HashMap::new(),
             drag_window: None,
             drag_overlap_target: None,
@@ -105,8 +124,30 @@ impl StateManager {
             }
         }
 
-        state.refresh_workspace_bar();
+        state.apply_bar_reservation();
+        state.bar_sender.send(if state.bar_visible {
+            BarMessage::Show
+        } else {
+            BarMessage::Hide
+        });
+        state.publish_bar_state();
         state
+    }
+
+    /// First workspace after `start` (wrapping) with room for another window.
+    /// Returns `None` when every workspace is at capacity.
+    fn find_next_workspace_with_capacity(&self, start: usize) -> Option<usize> {
+        let n = self.workspaces.len();
+        if n == 0 {
+            return None;
+        }
+        for offset in 1..=n {
+            let idx = (start + offset) % n;
+            if self.workspaces[idx].window_count() < self.max_tiles {
+                return Some(idx);
+            }
+        }
+        None
     }
 
     fn active_workspace_idx(&self) -> usize {
@@ -129,16 +170,45 @@ impl StateManager {
     }
 
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
+        if self.excluded_pids.contains(&pid) {
+            log::debug!("Ignoring window {} from excluded pid {}", window_id, pid);
+            return;
+        }
         if let std::collections::hash_map::Entry::Vacant(e) = self.window_pids.entry(window_id) {
             e.insert(pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
         }
-        let target = self.active_workspace_idx();
-        let ws = &mut self.workspaces[target];
-        if ws.find_window(window_id).is_some() {
+        let preferred = self.active_workspace_idx();
+        if self.workspaces[preferred].find_window(window_id).is_some() {
             return;
         }
 
+        let target = if self.workspaces[preferred].window_count() >= self.max_tiles {
+            match self.find_next_workspace_with_capacity(preferred) {
+                Some(idx) => {
+                    log::info!(
+                        "Workspace {} full ({} >= {}), routing new window to workspace {}",
+                        preferred,
+                        self.workspaces[preferred].window_count(),
+                        self.max_tiles,
+                        idx
+                    );
+                    idx
+                }
+                None => {
+                    log::warn!(
+                        "All workspaces at capacity ({}), leaving window {} untracked",
+                        self.max_tiles,
+                        window_id
+                    );
+                    return;
+                }
+            }
+        } else {
+            preferred
+        };
+
+        let ws = &mut self.workspaces[target];
         if !self.restricted_apps.is_empty() {
             if let Some(bundle_id) = self.os.app_bundle_id(pid) {
                 if self.restricted_apps.contains(&bundle_id) {
@@ -150,7 +220,7 @@ impl StateManager {
 
         ws.add_window(window_id, None);
         self.apply_layout(target);
-        self.refresh_workspace_bar();
+        self.publish_bar_state();
     }
 
     pub fn on_window_destroyed(&mut self, window_id: WindowId) {
@@ -168,7 +238,7 @@ impl StateManager {
             windows.retain(|w| *w != window_id);
             !windows.is_empty()
         });
-        self.refresh_workspace_bar();
+        self.publish_bar_state();
     }
 
     pub fn on_window_focused(&mut self, window_id: WindowId) {
@@ -182,7 +252,7 @@ impl StateManager {
                         self.hide_workspace(prev_idx);
                     }
                 }
-                self.refresh_workspace_bar();
+                self.publish_bar_state();
                 return;
             }
         }
@@ -283,6 +353,10 @@ impl StateManager {
 
     pub fn on_app_launched(&mut self, pid: i32) {
         log::info!("App launched: pid={}", pid);
+        if self.excluded_pids.contains(&pid) {
+            log::debug!("Skipping excluded app launch: pid={}", pid);
+            return;
+        }
         self.os.attach_observer(pid);
         for window_id in self.os.poll_windows_for_pid(pid) {
             self.window_pids.insert(window_id, pid);
@@ -304,7 +378,7 @@ impl StateManager {
                     .try_send(DaemonEvent::WindowDestroyed(window_id));
             }
         }
-        self.refresh_workspace_bar();
+        self.publish_bar_state();
     }
 
     pub fn on_app_activated(&mut self, pid: i32) {
@@ -313,7 +387,7 @@ impl StateManager {
         if let Some(window_id) = self.os.focused_window_for_pid(pid) {
             self.on_window_focused(window_id);
         } else {
-            self.refresh_workspace_bar();
+            self.publish_bar_state();
         }
     }
 
@@ -332,7 +406,8 @@ impl StateManager {
         let idx = self.workspaces.len();
         self.active_workspaces.insert(display_id, idx);
         self.workspaces.push(ws);
-        self.refresh_workspace_bar();
+        self.apply_bar_reservation();
+        self.publish_bar_state();
     }
 
     pub fn on_monitor_removed(&mut self, _display_id: u32) {
@@ -367,7 +442,8 @@ impl StateManager {
             self.active_workspaces
                 .insert(self.workspaces[0].monitor_id, 0);
         }
-        self.refresh_workspace_bar();
+        self.apply_bar_reservation();
+        self.publish_bar_state();
     }
 
     pub fn on_monitor_resized(&mut self, display_id: u32) {
@@ -384,7 +460,8 @@ impl StateManager {
                 }
             }
         }
-        self.refresh_workspace_bar();
+        self.apply_bar_reservation();
+        self.publish_bar_state();
     }
 
     pub fn on_command(&mut self, cmd: Command, tx: mpsc::Sender<DaemonResponse>) {
@@ -432,6 +509,12 @@ impl StateManager {
                 ws.toggle_monocle();
                 self.apply_layout(idx);
             }
+            Command::SetLayout { mode } => {
+                let idx = self.active_workspace_idx();
+                let ws = &mut self.workspaces[idx];
+                ws.monocle = mode == LayoutMode::Accordion;
+                self.apply_layout(idx);
+            }
             Command::SetGapOuter { pixels } => {
                 self.gap_outer = pixels.max(0) as f64;
                 self.apply_layout(self.active_workspace_idx());
@@ -439,6 +522,23 @@ impl StateManager {
             Command::SetGapInner { pixels } => {
                 self.gap_inner = pixels.max(0) as f64;
                 self.apply_layout(self.active_workspace_idx());
+            }
+            Command::ToggleBar => {
+                self.bar_visible = !self.bar_visible;
+                log::info!(
+                    "Bar toggled: {}",
+                    if self.bar_visible {
+                        "visible"
+                    } else {
+                        "hidden"
+                    }
+                );
+                self.bar_sender.send(if self.bar_visible {
+                    BarMessage::Show
+                } else {
+                    BarMessage::Hide
+                });
+                self.apply_bar_reservation();
             }
             Command::ReloadConfig => {
                 self.reload_config();
@@ -458,13 +558,17 @@ impl StateManager {
                 return;
             }
         }
-        self.refresh_workspace_bar();
+        let _ = tx.try_send(DaemonResponse::Ack);
+        self.publish_bar_state();
     }
 
     fn focus_command(&mut self, direction: Direction) {
         let idx = self.active_workspace_idx();
         let ws = &mut self.workspaces[idx];
         ws.focus_neighbor(direction);
+        if let Some(wid) = ws.focused_window_id() {
+            self.os.focus_window(wid);
+        }
     }
 
     fn swap_command(&mut self, direction: Direction) {
@@ -481,12 +585,28 @@ impl StateManager {
         }
         let window_id = self.workspaces[current].focused_window_id();
         if let Some(wid) = window_id {
+            let dest = if self.workspaces[target].window_count() >= self.max_tiles {
+                match self.find_next_workspace_with_capacity(target) {
+                    Some(idx) => idx,
+                    None => {
+                        log::warn!(
+                            "No workspace has room for {} (cap {}), move aborted",
+                            wid,
+                            self.max_tiles
+                        );
+                        self.publish_bar_state();
+                        return;
+                    }
+                }
+            } else {
+                target
+            };
             self.workspaces[current].remove_window(wid);
             self.apply_layout(current);
-            self.workspaces[target].add_window(wid, None);
-            self.apply_layout(target);
+            self.workspaces[dest].add_window(wid, None);
+            self.apply_layout(dest);
         }
-        self.refresh_workspace_bar();
+        self.publish_bar_state();
     }
 
     fn reload_config(&mut self) {
@@ -500,10 +620,36 @@ impl StateManager {
         let updated_settings = Settings::load();
         self.gap_outer = updated_settings.gap_outer.max(0) as f64;
         self.gap_inner = updated_settings.gap_inner.max(0) as f64;
+        self.max_tiles = updated_settings.max_tiles.max(1);
         self.restricted_apps = updated_settings.restricted_apps;
-        self.workspace_bar_enabled = updated_settings.workspace_bar.enabled;
+        self.bar_config = updated_settings.bar.clone();
+        self.bar_visible = updated_settings.bar.visible;
+        let enabled = updated_settings.bar.enabled;
         self.apply_layout(self.active_workspace_idx());
-        self.refresh_workspace_bar();
+        self.bar_sender.send(BarMessage::Reload);
+        if enabled && !self.bar_spawned {
+            // Bar disabled at startup but enabled now — a restart is required
+            // to spawn it (the daemon reads `enabled` at startup).
+            log::info!(
+                "bar.enabled flipped to true at runtime; restart the daemon to spawn pengwm-bar"
+            );
+        }
+        if !enabled && self.bar_spawned {
+            log::info!("bar.enabled flipped to false; exiting pengwm-bar");
+            self.bar_sender.send(BarMessage::Exit);
+            self.bar_spawned = false;
+            self.bar_visible = false;
+            self.apply_bar_reservation();
+            self.publish_bar_state();
+            return;
+        }
+        self.bar_sender.send(if self.bar_visible {
+            BarMessage::Show
+        } else {
+            BarMessage::Hide
+        });
+        self.apply_bar_reservation();
+        self.publish_bar_state();
         log::info!(
             "Config reloaded (gaps: {}/{})",
             self.gap_outer,
@@ -548,43 +694,75 @@ impl StateManager {
         }
     }
 
-    fn refresh_workspace_bar(&mut self) {
-        if !self.workspace_bar_enabled {
-            return;
+    /// Global-coordinate rect of the bar strip on the primary display, or
+    /// `None` when the bar is hidden or no display geometry is available.
+    fn bar_reserved_rect(&self) -> Option<Rect> {
+        if !self.bar_visible {
+            return None;
         }
-
-        let active_idx = self.active_workspace_idx();
-        let active_monitor = self.workspaces[active_idx].monitor_id;
-
-        let info: Vec<(&str, bool)> = self
-            .workspaces
-            .iter()
-            .map(|ws| {
-                let is_active = ws.monitor_id == active_monitor
-                    && self
-                        .active_workspaces
-                        .get(&ws.monitor_id)
-                        .map(|&idx| {
-                            idx < self.workspaces.len() && std::ptr::eq(&self.workspaces[idx], ws)
-                        })
-                        .unwrap_or(false);
-                (ws.name.as_str(), is_active)
-            })
-            .collect();
-
+        let primary = self.os.primary_display_id();
         let display = self
             .os
             .active_displays()
             .into_iter()
-            .find(|d| d.id == active_monitor)
-            .or_else(|| self.os.active_displays().into_iter().next());
+            .find(|d| d.id == primary)?;
+        let t = self.bar_config.thickness.max(1) as f64;
+        let (ox, oy) = (display.origin.0 as f64, display.origin.1 as f64);
+        let (w, h) = (display.size.0 as f64, display.size.1 as f64);
+        Some(match self.bar_config.position {
+            BarPosition::Top => Rect::new(ox, oy, w, t),
+            BarPosition::Bottom => Rect::new(ox, oy + h - t, w, t),
+            BarPosition::Left => Rect::new(ox, oy, t, h),
+            BarPosition::Right => Rect::new(ox + w - t, oy, t, h),
+        })
+    }
 
-        if let Some(display) = display {
-            self.os
-                .update_workspace_indicator(&info, display.size.0 as f64, display.size.1 as f64);
-        } else {
-            self.os.update_workspace_indicator(&info, 1920.0, 1080.0);
+    /// Push the current bar strip geometry into every workspace (only
+    /// workspaces on the primary display are reserved) and re-lay-out.
+    fn apply_bar_reservation(&mut self) {
+        let rect = self.bar_reserved_rect();
+        let primary = self.os.primary_display_id();
+        for i in 0..self.workspaces.len() {
+            let ws = &mut self.workspaces[i];
+            ws.set_reserved_rect(if ws.monitor_id == primary { rect } else { None });
         }
+        for i in 0..self.workspaces.len() {
+            self.apply_layout(i);
+        }
+    }
+
+    /// Build a fresh `BarState` snapshot and broadcast it to the bar.
+    fn publish_bar_state(&mut self) {
+        let active_idx = self.active_workspace_idx();
+        let active_monitor = self.workspaces[active_idx].monitor_id;
+        let split_direction = self.workspaces[active_idx].focused_split_direction();
+
+        let workspaces: Vec<BarWorkspace> = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(i, ws)| {
+                let is_active = ws.monitor_id == active_monitor
+                    && self
+                        .active_workspaces
+                        .get(&ws.monitor_id)
+                        .map(|&idx| idx == i)
+                        .unwrap_or(false);
+                BarWorkspace {
+                    name: ws.name.clone(),
+                    monitor_id: ws.monitor_id,
+                    window_count: ws.window_count(),
+                    active: is_active,
+                }
+            })
+            .collect();
+
+        self.bar_sender.send(BarMessage::State(BarState {
+            workspaces,
+            active_workspace: active_idx,
+            split_direction,
+            rect: self.bar_reserved_rect(),
+        }));
     }
 }
 
@@ -596,6 +774,7 @@ mod state_tests {
     use crate::adapter::DisplayInfo;
     use crate::adapter_test::TestAdapter;
     use crate::config::keybinds::KeybindConfig;
+    use pengwm_core::tree::SplitDirection;
 
     fn make_adapter(display_count: u32) -> TestAdapter {
         let mut adapter = TestAdapter::new();
@@ -636,7 +815,14 @@ mod state_tests {
         let (tx, _) = mpsc::channel(64);
         let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
         let adapter = make_adapter(display_count);
-        StateManager::new(tx, keybinds, Box::new(adapter))
+        let (bar_tx, _) = mpsc::channel(64);
+        StateManager::new(
+            tx,
+            keybinds,
+            Box::new(adapter),
+            BarSender::from_channel(bar_tx),
+            None,
+        )
     }
 
     #[test]
@@ -722,6 +908,21 @@ mod state_tests {
     }
 
     #[test]
+    fn focus_command_focuses_window_via_adapter() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        assert_eq!(sm.workspaces[0].focused_window_id(), Some(200));
+        sm.focus_command(Direction::Right);
+        assert_eq!(sm.workspaces[0].focused_window_id(), Some(100));
+        assert_eq!(
+            sm.os.focused_window_for_pid(42),
+            Some(100),
+            "adapter should be told to focus the new window"
+        );
+    }
+
+    #[test]
     fn swap_command_triggers_layout() {
         let mut sm = setup(1);
         sm.on_window_created(100, 42);
@@ -766,6 +967,103 @@ mod state_tests {
     }
 
     #[test]
+    fn created_window_overflows_to_next_workspace() {
+        let mut sm = setup(2);
+        sm.max_tiles = 2;
+        sm.workspaces[0].add_window(100, None);
+        sm.workspaces[0].add_window(200, None);
+        sm.workspaces[1].add_window(300, None);
+
+        sm.on_window_created(400, 42);
+
+        assert!(sm.workspaces[0].find_window(400).is_none());
+        assert!(
+            sm.workspaces[1].find_window(400).is_some(),
+            "full ws-0 should overflow into ws-1"
+        );
+        assert_eq!(sm.workspaces[0].window_count(), 2);
+        assert_eq!(sm.workspaces[1].window_count(), 2);
+    }
+
+    #[test]
+    fn created_window_all_workspaces_full_stays_untracked() {
+        let mut sm = setup(2);
+        sm.max_tiles = 2;
+        sm.workspaces[0].add_window(100, None);
+        sm.workspaces[0].add_window(200, None);
+        sm.workspaces[1].add_window(300, None);
+        sm.workspaces[1].add_window(500, None);
+
+        sm.on_window_created(400, 42);
+
+        assert_eq!(sm.workspaces[0].find_window(400), None);
+        assert_eq!(sm.workspaces[1].find_window(400), None);
+        assert_eq!(sm.window_pids.get(&400), Some(&42), "still pid-tracked");
+    }
+
+    #[test]
+    fn created_window_overflow_wraps_to_first_workspace() {
+        let mut sm = setup(2);
+        sm.max_tiles = 2;
+        sm.workspaces[1].add_window(300, None);
+        sm.workspaces[1].add_window(500, None);
+        sm.workspaces[0].add_window(100, None);
+        sm.pid_to_windows.insert(42, vec![300]);
+
+        sm.on_window_created(400, 42);
+
+        assert_eq!(sm.active_workspace_idx(), 1, "ws-1 should be active");
+        assert!(
+            sm.workspaces[0].find_window(400).is_some(),
+            "full ws-1 should wrap around into ws-0"
+        );
+    }
+
+    #[test]
+    fn move_to_full_workspace_redirects_to_next_with_room() {
+        let mut sm = setup(2);
+        sm.max_tiles = 2;
+        sm.workspaces
+            .push(Workspace::new("ws-3".into(), 3, (3840, 0), (1920, 1080)));
+        sm.active_workspaces.insert(3, 2);
+        sm.workspaces[0].add_window(100, None);
+        sm.workspaces[1].add_window(300, None);
+        sm.workspaces[1].add_window(500, None);
+        sm.pid_to_windows.insert(42, vec![100]);
+        sm.on_window_focused(100);
+
+        sm.move_focused_to_workspace(1);
+
+        assert_eq!(sm.workspaces[0].window_count(), 0);
+        assert_eq!(sm.workspaces[1].window_count(), 2);
+        assert!(
+            sm.workspaces[2].find_window(100).is_some(),
+            "move to full ws-1 should land in ws-3"
+        );
+    }
+
+    #[test]
+    fn move_to_full_workspace_aborts_when_no_room_anywhere() {
+        let mut sm = setup(2);
+        sm.max_tiles = 2;
+        sm.workspaces[0].add_window(100, None);
+        sm.workspaces[0].add_window(200, None);
+        sm.workspaces[1].add_window(300, None);
+        sm.workspaces[1].add_window(500, None);
+        sm.pid_to_windows.insert(42, vec![100]);
+        sm.on_window_focused(100);
+
+        sm.move_focused_to_workspace(1);
+
+        assert!(
+            sm.workspaces[0].find_window(100).is_some(),
+            "window should stay put when all workspaces are full"
+        );
+        assert_eq!(sm.workspaces[0].window_count(), 2);
+        assert_eq!(sm.workspaces[1].window_count(), 2);
+    }
+
+    #[test]
     fn toggle_layout_switches_monocle() {
         let mut sm = setup(1);
         assert!(!sm.workspaces[0].monocle);
@@ -791,5 +1089,122 @@ mod state_tests {
         sm.on_command(Command::QueryState, rtx);
         let resp = rx.blocking_recv();
         assert!(resp.is_some());
+    }
+
+    #[test]
+    fn bar_reserved_rect_top_strip_on_primary_display() {
+        let mut sm = setup(1);
+        sm.bar_config = BarConfig {
+            position: BarPosition::Top,
+            thickness: 24,
+            visible: true,
+            enabled: true,
+        };
+        sm.bar_visible = true;
+        let rect = sm.bar_reserved_rect().unwrap();
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (0.0, 0.0, 1920.0, 24.0)
+        );
+    }
+
+    #[test]
+    fn bar_reserved_rect_bottom_and_right() {
+        let mut sm = setup(1);
+        sm.bar_visible = true;
+        sm.bar_config = BarConfig {
+            position: BarPosition::Bottom,
+            thickness: 30,
+            visible: true,
+            enabled: true,
+        };
+        let rect = sm.bar_reserved_rect().unwrap();
+        assert_eq!((rect.x, rect.y), (0.0, 1080.0 - 30.0));
+        assert_eq!((rect.width, rect.height), (1920.0, 30.0));
+
+        sm.bar_config.position = BarPosition::Right;
+        sm.bar_config.thickness = 40;
+        let rect = sm.bar_reserved_rect().unwrap();
+        assert_eq!((rect.x, rect.y), (1920.0 - 40.0, 0.0));
+        assert_eq!((rect.width, rect.height), (40.0, 1080.0));
+    }
+
+    #[test]
+    fn bar_reserved_rect_none_when_hidden() {
+        let mut sm = setup(1);
+        sm.bar_visible = false;
+        assert_eq!(sm.bar_reserved_rect(), None);
+    }
+
+    #[test]
+    fn apply_bar_reservation_reserves_primary_workspace() {
+        let mut sm = setup(2);
+        sm.bar_visible = true;
+        sm.bar_config = BarConfig {
+            position: BarPosition::Top,
+            thickness: 20,
+            visible: true,
+            enabled: true,
+        };
+        sm.apply_bar_reservation();
+        // ws-0 is on display 1 (primary), ws-1 on display 2.
+        assert!(
+            sm.workspaces[0].reserved_rect().is_some(),
+            "primary monitor workspace should be reserved"
+        );
+        assert!(
+            sm.workspaces[1].reserved_rect().is_none(),
+            "secondary monitor workspace should not be reserved"
+        );
+        sm.bar_visible = false;
+        sm.apply_bar_reservation();
+        assert!(sm.workspaces[0].reserved_rect().is_none());
+    }
+
+    #[test]
+    fn toggle_bar_command_flips_visibility_and_reservation() {
+        let mut sm = setup(1);
+        let was_visible = sm.bar_visible;
+        let (rtx, _) = mpsc::channel(1);
+        sm.on_command(Command::ToggleBar, rtx);
+        assert_ne!(sm.bar_visible, was_visible);
+        // Reservations match the new visibility.
+        assert_eq!(sm.bar_reserved_rect().is_some(), sm.bar_visible);
+    }
+
+    #[test]
+    fn publish_bar_state_reports_active_workspace_and_split() {
+        let (tx, _) = mpsc::channel(64);
+        let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
+        let mut adapter = make_adapter(1);
+        adapter.frontmost = Some(42);
+        let (bar_tx, mut bar_rx) = mpsc::channel(64);
+        let mut sm = StateManager::new(
+            tx,
+            keybinds,
+            Box::new(adapter),
+            BarSender::from_channel(bar_tx),
+            None,
+        );
+
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        // Drain the startup + creation publishes, keep the latest.
+        let mut last: Option<BarMessage> = None;
+        while let Ok(msg) = bar_rx.try_recv() {
+            last = Some(msg);
+        }
+        let state = match last {
+            Some(BarMessage::State(s)) => s,
+            other => panic!("expected a State publish, got {:?}", other),
+        };
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].window_count, 2);
+        assert!(state.workspaces[0].active);
+        assert_eq!(
+            state.split_direction,
+            Some(SplitDirection::Vertical),
+            "two windows on a widescreen monitor split vertically"
+        );
     }
 }

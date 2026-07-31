@@ -152,20 +152,44 @@ pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
     })
 }
 
+/// Activate the owning application so its windows come to the front.
+fn activate_app(pid: i32) -> bool {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        Some(app) => app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows),
+        None => false,
+    }
+}
+
 /// # Safety
 ///
 /// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
-/// element is valid for the duration of the call.
-pub unsafe fn focus_window(element: AXUIElementRef) {
+/// element is valid for the duration of the call and that `pid` references a running
+/// process with Accessibility permissions.
+pub unsafe fn focus_window(element: AXUIElementRef, pid: i32) {
+    activate_app(pid);
+
     let raise_name = CFString::new(kAXRaiseAction);
     AXUIElementPerformAction(element, raise_name.as_concrete_TypeRef());
 
-    let focused_name = CFString::new(kAXFocusedAttribute);
+    let main_name = CFString::new(kAXMainAttribute);
     AXUIElementSetAttributeValue(
         element,
-        focused_name.as_concrete_TypeRef(),
+        main_name.as_concrete_TypeRef(),
         kCFBooleanTrue as CFTypeRef,
     );
+
+    let app = AXUIElementCreateApplication(pid);
+    if app.is_null() {
+        return;
+    }
+    let focused_name = CFString::new(kAXFocusedWindowAttribute);
+    AXUIElementSetAttributeValue(
+        app,
+        focused_name.as_concrete_TypeRef(),
+        element as CFTypeRef,
+    );
+    CFRelease(app as CFTypeRef);
 }
 
 /// # Safety
@@ -214,9 +238,11 @@ pub unsafe fn focused_window_for_pid(pid: i32) -> Option<WindowId> {
     if err != kAXErrorSuccess || value.is_null() {
         return None;
     }
-    let window_id = value as u64;
+    // The value is an AXUIElementRef for the focused window — resolve its
+    // window id rather than casting the pointer itself.
+    let window_id = ax_window_id_from_element(value as AXUIElementRef);
     CFRelease(value);
-    Some(window_id)
+    window_id
 }
 
 pub fn frontmost_pid() -> Option<i32> {

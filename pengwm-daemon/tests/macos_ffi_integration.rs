@@ -60,7 +60,7 @@ fn macos_ffi_integration() {
         }
 
         // Focus the window
-        unsafe { ax_element::focus_window(element) };
+        unsafe { ax_element::focus_window(element, front_pid) };
     }
 
     // 6. Check is_manageable on application element

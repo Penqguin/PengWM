@@ -54,7 +54,8 @@ impl ObserverContext {
     /// Uses CFEqual for reliable comparison (handles toll-free bridging).
     pub fn find_window_id_by_element(&self, element: AXUIElementRef) -> Option<WindowId> {
         for (&wid, &(cached_elem, _)) in self.cache_get().iter() {
-            let equal: bool = unsafe { CFEqual(cached_elem as CFTypeRef, element as CFTypeRef) != 0 };
+            let equal: bool =
+                unsafe { CFEqual(cached_elem as CFTypeRef, element as CFTypeRef) != 0 };
             if equal {
                 return Some(wid);
             }

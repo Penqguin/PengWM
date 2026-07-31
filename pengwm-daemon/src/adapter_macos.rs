@@ -6,7 +6,6 @@ use crate::macos::ax_element;
 use crate::macos::ax_observer::{ObserverContext, ObserverRegistry};
 use crate::macos::cg_display;
 use crate::macos::ns_workspace;
-use crate::macos::workspace_bar::WorkspaceBar;
 use accessibility_sys::AXUIElementRef;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
@@ -21,7 +20,6 @@ const OFFSCREEN: Rect = Rect {
 pub struct MacOsAdapter {
     observer_registry: ObserverRegistry,
     ctx: Box<ObserverContext>,
-    workspace_bar: WorkspaceBar,
 }
 
 impl MacOsAdapter {
@@ -29,7 +27,6 @@ impl MacOsAdapter {
         Self {
             observer_registry: ObserverRegistry::new(),
             ctx: Box::new(ObserverContext::new(callback)),
-            workspace_bar: WorkspaceBar::new(),
         }
     }
 
@@ -138,6 +135,20 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
+    fn focus_window(&mut self, window_id: WindowId) {
+        let (element, pid) = match self.cache_get_element(window_id) {
+            Some(v) => v,
+            None => {
+                log::warn!(
+                    "focus_window: element not found in cache for window {}",
+                    window_id
+                );
+                return;
+            }
+        };
+        unsafe { ax_element::focus_window(element, pid) };
+    }
+
     fn close_window(&mut self, window_id: WindowId) {
         if let Some((element, _pid)) = self.cache_get_element(window_id) {
             unsafe { ax_element::close_window(element) };
@@ -175,24 +186,5 @@ impl OsAdapter for MacOsAdapter {
         Self: Sized,
     {
         MacOsAdapter::with_callback(callback)
-    }
-
-    fn update_workspace_indicator(
-        &mut self,
-        workspaces: &[(&str, bool)],
-        display_width: f64,
-        display_height: f64,
-    ) {
-        let items: Vec<_> = workspaces
-            .iter()
-            .map(
-                |(name, active)| crate::macos::workspace_bar::WorkspaceBarItem {
-                    name: name.to_string(),
-                    active: *active,
-                },
-            )
-            .collect();
-        self.workspace_bar
-            .update(&items, display_width, display_height);
     }
 }

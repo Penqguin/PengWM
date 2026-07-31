@@ -97,7 +97,7 @@ fn extract_pid(notification: &NSNotification) -> Option<i32> {
 }
 
 use objc2::msg_send;
-use objc2::runtime::{NSObject, AnyClass};
+use objc2::runtime::{AnyClass, NSObject};
 
 /// Returns the height of the menu bar on the primary display, in points.
 /// Returns 0 if the menu bar is auto-hidden.

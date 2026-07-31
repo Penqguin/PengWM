@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use std::collections::{HashMap, HashSet};
 
 use crate::adapter::{DisplayInfo, OsAdapter};
@@ -15,6 +13,7 @@ pub struct TestAdapter {
     pub window_rects: HashMap<WindowId, Rect>,
     pub displays: Vec<DisplayInfo>,
     pub focused_windows: HashMap<i32, WindowId>,
+    pub last_focused: Option<WindowId>,
     pub observers: HashSet<i32>,
     pub bundle_ids: HashMap<i32, String>,
 }
@@ -29,6 +28,7 @@ impl TestAdapter {
             window_rects: HashMap::new(),
             displays: Vec::new(),
             focused_windows: HashMap::new(),
+            last_focused: None,
             observers: HashSet::new(),
             bundle_ids: HashMap::new(),
         }
@@ -74,6 +74,13 @@ impl OsAdapter for TestAdapter {
         }
     }
 
+    fn focus_window(&mut self, window_id: WindowId) {
+        self.last_focused = Some(window_id);
+        if let Some(pid) = self.window_pids.get(&window_id) {
+            self.focused_windows.insert(*pid, window_id);
+        }
+    }
+
     fn hide_windows(&mut self, window_ids: &[WindowId]) {
         let offscreen = Rect {
             x: -9999.0,
@@ -103,13 +110,5 @@ impl OsAdapter for TestAdapter {
         Self: Sized,
     {
         TestAdapter::new()
-    }
-
-    fn update_workspace_indicator(
-        &mut self,
-        _workspaces: &[(&str, bool)],
-        _display_width: f64,
-        _display_height: f64,
-    ) {
     }
 }

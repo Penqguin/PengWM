@@ -1,27 +1,73 @@
 pub mod keybinds;
 pub mod watcher;
 
+pub use pengwm_core::command::BarPosition;
 use serde::{Deserialize, Serialize};
 
+/// Configuration for the `pengwm-bar` process. The bar reads this same
+/// table itself for its theme; the daemon only needs the geometry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceBarConfig {
+pub struct BarConfig {
+    #[serde(default)]
+    pub position: BarPosition,
+    #[serde(default = "default_thickness")]
+    pub thickness: i32,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    /// Whether the daemon spawns the `pengwm-bar` process at startup at all.
+    #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
-impl Default for WorkspaceBarConfig {
+fn default_thickness() -> i32 {
+    32
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for BarConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            position: BarPosition::Top,
+            thickness: 32,
+            visible: true,
+            enabled: true,
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default = "default_gap")]
     pub gap_outer: i32,
+    #[serde(default = "default_gap_inner")]
     pub gap_inner: i32,
+    #[serde(default = "default_max_tiles")]
     pub max_tiles: usize,
+    #[serde(default = "default_mod_key")]
     pub mod_key: String,
+    #[serde(default)]
     pub restricted_apps: Vec<String>,
-    pub workspace_bar: WorkspaceBarConfig,
+    #[serde(default)]
+    pub bar: BarConfig,
+}
+
+fn default_gap() -> i32 {
+    10
+}
+
+fn default_gap_inner() -> i32 {
+    5
+}
+
+fn default_max_tiles() -> usize {
+    4
+}
+
+fn default_mod_key() -> String {
+    "cmd".into()
 }
 
 impl Default for Settings {
@@ -32,7 +78,7 @@ impl Default for Settings {
             max_tiles: 4,
             mod_key: "cmd".into(),
             restricted_apps: Vec::new(),
-            workspace_bar: WorkspaceBarConfig::default(),
+            bar: BarConfig::default(),
         }
     }
 }

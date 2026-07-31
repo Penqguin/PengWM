@@ -10,6 +10,7 @@ pub trait OsAdapter {
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;
     fn set_window_rect(&mut self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;
+    fn focus_window(&mut self, window_id: WindowId);
     fn close_window(&mut self, window_id: WindowId);
     fn hide_windows(&mut self, window_ids: &[WindowId]);
     fn attach_observer(&mut self, pid: i32);
@@ -18,12 +19,6 @@ pub trait OsAdapter {
     fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
     where
         Self: Sized;
-    fn update_workspace_indicator(
-        &mut self,
-        workspaces: &[(&str, bool)],
-        display_width: f64,
-        display_height: f64,
-    );
 }
 
 #[derive(Clone)]
