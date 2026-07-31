@@ -59,7 +59,7 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindCon
                 "  Keybind interception won't work. CLI commands via `pengwm` will still work."
             );
             eprintln!();
-            eprintln!("  To fix this, add pengwm-daemon to:");
+            eprintln!("  To fix this, add pengwm to:");
             eprintln!("    System Settings → Privacy & Security → Accessibility");
             eprintln!();
 
@@ -84,7 +84,7 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindCon
 
         // The run loop source is retained by the run loop; do not release it.
 
-        eprintln!("✓ Global keybind tap active (Cmd+h/j/k/l, arrows, etc.)");
+        eprintln!("✓ Global keybind tap active (Alt+h/j/k/l, arrows, etc.)");
         log::info!("CGEventTap started successfully");
     }
 }

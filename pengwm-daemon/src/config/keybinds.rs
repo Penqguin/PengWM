@@ -1,4 +1,4 @@
-use pengwm_core::command::Command;
+use pengwm_core::command::{Command, LayoutMode};
 use pengwm_core::tree::Direction;
 
 pub type ModifierFlags = u64;
@@ -24,31 +24,31 @@ pub struct KeybindConfig {
 impl Default for KeybindConfig {
     fn default() -> Self {
         let bindings = vec![
-            // Focus movement: cmd-h/j/k/l (vim-style)
+            // Focus movement: alt-h/j/k/l (vim-style)
             Keybind {
                 keycode: 0x04,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Left,
                 },
             },
             Keybind {
                 keycode: 0x26,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Down,
                 },
             },
             Keybind {
                 keycode: 0x28,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Up,
                 },
             },
             Keybind {
                 keycode: 0x25,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Right,
                 },
@@ -56,164 +56,179 @@ impl Default for KeybindConfig {
             // Arrow keys as alternative
             Keybind {
                 keycode: 0x7B,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Left,
                 },
             },
             Keybind {
                 keycode: 0x7D,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Down,
                 },
             },
             Keybind {
                 keycode: 0x7E,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Up,
                 },
             },
             Keybind {
                 keycode: 0x7C,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Right,
                 },
             },
-            // Swap: cmd-shift-h/j/k/l
+            // Move window: alt-shift-h/j/k/l (swap places and resize)
             Keybind {
                 keycode: 0x04,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindow {
                     direction: Direction::Left,
                 },
             },
             Keybind {
                 keycode: 0x26,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindow {
                     direction: Direction::Down,
                 },
             },
             Keybind {
                 keycode: 0x28,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindow {
                     direction: Direction::Up,
                 },
             },
             Keybind {
                 keycode: 0x25,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindow {
                     direction: Direction::Right,
                 },
             },
-            // Workspace switching: cmd-1..9
+            // Workspace switching: alt-1..9
             Keybind {
                 keycode: 0x12,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 1 },
             },
             Keybind {
                 keycode: 0x13,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 2 },
             },
             Keybind {
                 keycode: 0x14,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 3 },
             },
             Keybind {
                 keycode: 0x15,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 4 },
             },
             Keybind {
                 keycode: 0x17,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 5 },
             },
             Keybind {
                 keycode: 0x16,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 6 },
             },
             Keybind {
                 keycode: 0x1A,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 7 },
             },
             Keybind {
                 keycode: 0x1B,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 8 },
             },
             Keybind {
                 keycode: 0x19,
-                modifiers: MODIFIER_CMD,
+                modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 9 },
             },
-            // Move window to workspace: cmd-shift-1..9
+            // Move window to workspace: alt-shift-1..9
             Keybind {
                 keycode: 0x12,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 1 },
             },
             Keybind {
                 keycode: 0x13,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 2 },
             },
             Keybind {
                 keycode: 0x14,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 3 },
             },
             Keybind {
                 keycode: 0x15,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 4 },
             },
             Keybind {
                 keycode: 0x17,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 5 },
             },
             Keybind {
                 keycode: 0x16,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 6 },
             },
             Keybind {
                 keycode: 0x1A,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 7 },
             },
             Keybind {
                 keycode: 0x1B,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 8 },
             },
             Keybind {
                 keycode: 0x19,
-                modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
+                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 9 },
             },
-            // Toggle layout: cmd-f
+            // Layout: alt-/ tile, alt-, accordion (monocle)
             Keybind {
-                keycode: 0x03,
-                modifiers: MODIFIER_CMD,
-                action: Command::ToggleLayout,
+                keycode: 0x2C,
+                modifiers: MODIFIER_ALT,
+                action: Command::SetLayout {
+                    mode: LayoutMode::Tile,
+                },
+            },
+            Keybind {
+                keycode: 0x2B,
+                modifiers: MODIFIER_ALT,
+                action: Command::SetLayout {
+                    mode: LayoutMode::Accordion,
+                },
             },
             // Reload config: cmd-shift-r
             Keybind {
                 keycode: 0x0F,
                 modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
                 action: Command::ReloadConfig,
+            },
+            // Toggle bar: alt-b
+            Keybind {
+                keycode: 0x0B,
+                modifiers: MODIFIER_ALT,
+                action: Command::ToggleBar,
             },
         ];
         KeybindConfig { bindings }
@@ -309,6 +324,8 @@ pub fn key_name_to_keycode(name: &str) -> u16 {
         "right" => 0x7C,
         "down" => 0x7D,
         "up" => 0x7E,
+        "," => 0x2B,
+        "/" => 0x2C,
         "space" => 0x31,
         "tab" => 0x30,
         "escape" => 0x35,
@@ -366,6 +383,13 @@ pub fn parse_action(s: &str) -> Option<Command> {
             direction: Direction::Down,
         }),
         "toggle-layout" => Some(Command::ToggleLayout),
+        "toggle-bar" => Some(Command::ToggleBar),
+        "layout-tile" => Some(Command::SetLayout {
+            mode: LayoutMode::Tile,
+        }),
+        "layout-accordion" => Some(Command::SetLayout {
+            mode: LayoutMode::Accordion,
+        }),
         "reload-config" => Some(Command::ReloadConfig),
         _ => {
             if let Some(n) = s.strip_prefix("workspace-") {
@@ -434,25 +458,25 @@ mod tests {
         assert!(config
             .bindings
             .iter()
-            .any(|b| b.keycode == 0x04 && b.modifiers == MODIFIER_CMD));
+            .any(|b| b.keycode == 0x04 && b.modifiers == MODIFIER_ALT));
         assert!(config
             .bindings
             .iter()
-            .any(|b| b.keycode == 0x26 && b.modifiers == MODIFIER_CMD));
+            .any(|b| b.keycode == 0x26 && b.modifiers == MODIFIER_ALT));
         assert!(config
             .bindings
             .iter()
-            .any(|b| b.keycode == 0x28 && b.modifiers == MODIFIER_CMD));
+            .any(|b| b.keycode == 0x28 && b.modifiers == MODIFIER_ALT));
         assert!(config
             .bindings
             .iter()
-            .any(|b| b.keycode == 0x25 && b.modifiers == MODIFIER_CMD));
+            .any(|b| b.keycode == 0x25 && b.modifiers == MODIFIER_ALT));
     }
 
     #[test]
     fn default_has_swap_modifiers() {
         let config = KeybindConfig::default();
-        let mods = MODIFIER_CMD | MODIFIER_SHIFT;
+        let mods = MODIFIER_ALT | MODIFIER_SHIFT;
         assert!(config
             .bindings
             .iter()
@@ -477,7 +501,7 @@ mod tests {
     #[test]
     fn default_has_move_to_workspace() {
         let config = KeybindConfig::default();
-        let mods = MODIFIER_CMD | MODIFIER_SHIFT;
+        let mods = MODIFIER_ALT | MODIFIER_SHIFT;
         assert!(config
             .bindings
             .iter()
@@ -485,18 +509,47 @@ mod tests {
     }
 
     #[test]
-    fn default_has_toggle_layout() {
+    fn default_has_layout_switching() {
         let config = KeybindConfig::default();
-        assert!(config
-            .bindings
-            .iter()
-            .any(|b| matches!(b.action, Command::ToggleLayout)));
+        assert!(config.bindings.iter().any(|b| matches!(
+            &b.action,
+            Command::SetLayout {
+                mode: LayoutMode::Tile
+            }
+        )));
+        assert!(config.bindings.iter().any(|b| matches!(
+            &b.action,
+            Command::SetLayout {
+                mode: LayoutMode::Accordion
+            }
+        )));
+    }
+
+    #[test]
+    fn default_layout_bindings_on_slash_and_comma() {
+        let config = KeybindConfig::default();
+        assert!(config.bindings.iter().any(|b| b.keycode == 0x2C
+            && b.modifiers == MODIFIER_ALT
+            && matches!(
+                &b.action,
+                Command::SetLayout {
+                    mode: LayoutMode::Tile
+                }
+            )));
+        assert!(config.bindings.iter().any(|b| b.keycode == 0x2B
+            && b.modifiers == MODIFIER_ALT
+            && matches!(
+                &b.action,
+                Command::SetLayout {
+                    mode: LayoutMode::Accordion
+                }
+            )));
     }
 
     #[test]
     fn find_keybind_matches() {
         let config = KeybindConfig::default();
-        let result = find_keybind(0x04, MODIFIER_CMD, &config);
+        let result = find_keybind(0x04, MODIFIER_ALT, &config);
         assert!(matches!(
             result,
             Some(Command::Focus {
@@ -515,8 +568,27 @@ mod tests {
     #[test]
     fn find_keybind_wrong_modifiers() {
         let config = KeybindConfig::default();
-        let result = find_keybind(0x04, MODIFIER_ALT, &config);
+        let result = find_keybind(0x04, MODIFIER_CMD, &config);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_keybind_layout_switch() {
+        let config = KeybindConfig::default();
+        let tile = find_keybind(0x2C, MODIFIER_ALT, &config);
+        assert!(matches!(
+            tile,
+            Some(Command::SetLayout {
+                mode: LayoutMode::Tile
+            })
+        ));
+        let accordion = find_keybind(0x2B, MODIFIER_ALT, &config);
+        assert!(matches!(
+            accordion,
+            Some(Command::SetLayout {
+                mode: LayoutMode::Accordion
+            })
+        ));
     }
 
     #[test]
@@ -539,6 +611,12 @@ mod tests {
     fn key_name_to_keycode_digits() {
         assert_eq!(key_name_to_keycode("1"), 0x12);
         assert_eq!(key_name_to_keycode("9"), 0x19);
+    }
+
+    #[test]
+    fn key_name_to_keycode_punctuation() {
+        assert_eq!(key_name_to_keycode(","), 0x2B);
+        assert_eq!(key_name_to_keycode("/"), 0x2C);
     }
 
     #[test]
@@ -638,11 +716,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_action_layout_modes() {
+        assert!(matches!(
+            parse_action("layout-tile"),
+            Some(Command::SetLayout {
+                mode: LayoutMode::Tile
+            })
+        ));
+        assert!(matches!(
+            parse_action("layout-accordion"),
+            Some(Command::SetLayout {
+                mode: LayoutMode::Accordion
+            })
+        ));
+    }
+
+    #[test]
     fn parse_action_reload_config() {
         assert!(matches!(
             parse_action("reload-config"),
             Some(Command::ReloadConfig)
         ));
+    }
+
+    #[test]
+    fn parse_action_toggle_bar() {
+        assert!(matches!(
+            parse_action("toggle-bar"),
+            Some(Command::ToggleBar)
+        ));
+    }
+
+    #[test]
+    fn default_has_toggle_bar() {
+        let config = KeybindConfig::default();
+        assert!(config.bindings.iter().any(|b| {
+            b.keycode == 0x0B
+                && b.modifiers == MODIFIER_ALT
+                && matches!(b.action, Command::ToggleBar)
+        }));
     }
 
     #[test]
