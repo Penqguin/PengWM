@@ -558,6 +558,51 @@ fn split_direction_walks_up_nested_split() {
 }
 
 #[test]
+fn apply_split_direction_pends_when_window_focused() {
+    let mut ws = make_workspace();
+    let a = ws.add_window(100, None);
+    let _b = ws.add_window(200, None);
+    ws.focus_window(a);
+    ws.apply_split_direction(SplitDirection::Horizontal);
+    let c = ws.add_window(300, None);
+    let parent = ws.arena.get(c).unwrap().parent.unwrap();
+    assert!(
+        matches!(
+            &ws.arena.get(parent).unwrap().data,
+            NodeData::Split {
+                direction: SplitDirection::Horizontal,
+                ..
+            }
+        ),
+        "pending split direction drives the next window's parent"
+    );
+}
+
+#[test]
+fn apply_split_direction_reorients_focused_split() {
+    let mut ws = make_workspace();
+    let a = ws.add_window(100, None);
+    let _b = ws.add_window(200, None);
+    let root_split = ws.arena.get(a).unwrap().parent.unwrap();
+    assert!(matches!(
+        &ws.arena.get(root_split).unwrap().data,
+        NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ..
+        }
+    ));
+    ws.focused_node = Some(root_split);
+    ws.apply_split_direction(SplitDirection::Horizontal);
+    assert!(matches!(
+        &ws.arena.get(root_split).unwrap().data,
+        NodeData::Split {
+            direction: SplitDirection::Horizontal,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn command_toggle_bar_roundtrips() {
     let cmd = crate::command::Command::ToggleBar;
     let json = serde_json::to_string(&cmd).unwrap();
@@ -574,6 +619,7 @@ fn bar_state_roundtrips() {
             monitor_id: 1,
             window_count: 2,
             active: true,
+            windows: vec!["Safari".into(), "Terminal".into()],
         }],
         active_workspace: 0,
         split_direction: Some(SplitDirection::Vertical),

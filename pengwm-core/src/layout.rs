@@ -1,3 +1,4 @@
+use crate::config::BarPosition;
 use crate::tree::{Arena, NodeData, NodeId, SplitDirection, WindowId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -65,6 +66,48 @@ pub fn inset_rect(rect: Rect, gap: f64) -> Rect {
         y: rect.y + gap,
         width: (rect.width - double).max(0.0),
         height: (rect.height - double).max(0.0),
+    }
+}
+
+/// The window whose rect contains the point (`x`, `y`), ignoring `exclude`.
+/// `None` when no other window contains the point. Drives drag-to-swap
+/// overlap detection over a layout output.
+pub fn window_at_point(
+    rects: &HashMap<WindowId, Rect>,
+    x: f64,
+    y: f64,
+    exclude: WindowId,
+) -> Option<WindowId> {
+    rects.iter().find_map(|(&window_id, rect)| {
+        if window_id == exclude {
+            return None;
+        }
+        if x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height {
+            Some(window_id)
+        } else {
+            None
+        }
+    })
+}
+
+/// The global-coordinate rect of a bar strip spanning one edge of a display.
+/// `position` picks the edge; `thickness` is the strip's width (left/right) or
+/// height (top/bottom). One answer shared by the daemon's reservation and the
+/// bar's self-positioning so the two processes can't drift apart.
+pub fn bar_strip_rect(
+    origin: (i32, i32),
+    size: (u32, u32),
+    position: BarPosition,
+    thickness: i32,
+) -> Rect {
+    let t = thickness.max(1) as f64;
+    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+    let (w, h) = (size.0 as f64, size.1 as f64);
+    match position {
+        BarPosition::Top => Rect::new(ox, oy, w, t),
+        BarPosition::Bottom => Rect::new(ox, oy + h - t, w, t),
+        BarPosition::Left => Rect::new(ox, oy, t, h),
+        BarPosition::Right => Rect::new(ox + w - t, oy, t, h),
     }
 }
 
@@ -580,5 +623,53 @@ mod tests {
         let local = Rect::new(10.0, 20.0, 100.0, 50.0);
         let global = screen_local_to_global(local, (1440, 0));
         assert_eq!(global, Rect::new(1450.0, 20.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn window_at_point_hits_containing_window() {
+        let mut rects = HashMap::new();
+        rects.insert(1, Rect::new(0.0, 0.0, 100.0, 100.0));
+        rects.insert(2, Rect::new(100.0, 0.0, 100.0, 100.0));
+        assert_eq!(window_at_point(&rects, 50.0, 50.0, 99), Some(1));
+        assert_eq!(window_at_point(&rects, 150.0, 50.0, 99), Some(2));
+    }
+
+    #[test]
+    fn window_at_point_ignores_excluded_and_misses() {
+        let mut rects = HashMap::new();
+        rects.insert(1, Rect::new(0.0, 0.0, 100.0, 100.0));
+        rects.insert(2, Rect::new(100.0, 0.0, 100.0, 100.0));
+        assert_eq!(window_at_point(&rects, 150.0, 50.0, 1), Some(2));
+        assert_eq!(window_at_point(&rects, 250.0, 50.0, 1), None);
+    }
+
+    #[test]
+    fn bar_strip_rect_on_every_edge() {
+        use crate::config::BarPosition;
+        let (origin, size) = ((1440, 0), (1920u32, 1080u32));
+        assert_eq!(
+            bar_strip_rect(origin, size, BarPosition::Top, 32),
+            Rect::new(1440.0, 0.0, 1920.0, 32.0)
+        );
+        assert_eq!(
+            bar_strip_rect(origin, size, BarPosition::Bottom, 32),
+            Rect::new(1440.0, 1080.0 - 32.0, 1920.0, 32.0)
+        );
+        assert_eq!(
+            bar_strip_rect(origin, size, BarPosition::Left, 24),
+            Rect::new(1440.0, 0.0, 24.0, 1080.0)
+        );
+        assert_eq!(
+            bar_strip_rect(origin, size, BarPosition::Right, 24),
+            Rect::new(1440.0 + 1920.0 - 24.0, 0.0, 24.0, 1080.0)
+        );
+    }
+
+    #[test]
+    fn bar_strip_rect_clamps_thickness_to_one() {
+        assert_eq!(
+            bar_strip_rect((0, 0), (100, 100), BarPosition::Top, 0),
+            Rect::new(0.0, 0.0, 100.0, 1.0)
+        );
     }
 }

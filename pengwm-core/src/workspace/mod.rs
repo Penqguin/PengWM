@@ -16,7 +16,7 @@ pub struct Workspace {
     pub monitor_id: u32,
     pub focused_node: Option<NodeId>,
     pub monocle: bool,
-    pub pending_split: Option<SplitDirection>,
+    pending_split: Option<SplitDirection>,
     root: Option<NodeId>,
     arena: Arena,
     monitor_origin: (i32, i32),
@@ -281,25 +281,7 @@ impl Workspace {
         output
     }
 
-    /// Return offscreen rects for every window. Used when switching workspaces.
-    pub fn hide(&self) -> HashMap<WindowId, Rect> {
-        let mut result = HashMap::new();
-        for node in self.arena.nodes.values() {
-            if let NodeData::Window { window_id, .. } = &node.data {
-                result.insert(*window_id, OFFSCREEN);
-            }
-        }
-        result
-    }
-
-    // -----------------------------------------------------------------------
-    // Accessors for external callers (replaces direct field access)
-    // -----------------------------------------------------------------------
-
-    pub fn monitor_origin(&self) -> (i32, i32) {
-        self.monitor_origin
-    }
-
+    /// Global-coordinate origin of the monitor this workspace tiles on.
     pub fn set_monitor_origin(&mut self, origin: (i32, i32)) {
         self.monitor_origin = origin;
     }
@@ -319,7 +301,7 @@ impl Workspace {
     }
 
     /// True if the focused node is a Window leaf (not a Split container).
-    pub fn focused_is_window(&self) -> bool {
+    fn focused_is_window(&self) -> bool {
         self.focused_node.is_some_and(|nid| {
             self.arena
                 .get(nid)
@@ -327,8 +309,20 @@ impl Workspace {
         })
     }
 
+    /// Set the split direction for the next window added (when a Window is
+    /// focused) or re-orient the focused Split container (when one is focused).
+    /// The invariant — "a split direction only applies to a Split container,
+    /// otherwise it's pending for the next window" — lives here with the tree.
+    pub fn apply_split_direction(&mut self, direction: SplitDirection) {
+        if self.focused_is_window() {
+            self.pending_split = Some(direction);
+        } else {
+            self.set_split_direction(direction);
+        }
+    }
+
     /// Change the direction of the focused Split and flatten if redundant.
-    pub fn set_split_direction(&mut self, direction: SplitDirection) {
+    fn set_split_direction(&mut self, direction: SplitDirection) {
         if let Some(node_id) = self.focused_node {
             if let NodeData::Split {
                 direction: ref mut dir,
@@ -383,10 +377,6 @@ impl Workspace {
     pub fn update_monitor_geometry(&mut self, origin: (i32, i32), size: (u32, u32)) {
         self.monitor_origin = origin;
         self.monitor_size = size;
-    }
-
-    pub fn is_on_monitor(&self, display_id: u32) -> bool {
-        self.monitor_id == display_id
     }
 
     /// Reserve a region of the monitor (in global coordinates) that windows
