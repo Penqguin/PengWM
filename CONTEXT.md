@@ -38,6 +38,10 @@ The observer side of the seam accepts `Box<dyn Fn(DaemonEvent) + Send>` (callbac
 
 Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturizedNotification` / app-level `kAXApplicationHiddenNotification` fire immediately, and a ~1s `on_tick` reconcile queries `window_is_hidden` per tracked window as a fallback for missed notifications. Both untile the window (like a close) while keeping pid tracking so `on_window_shown` can retile it where it came from.
 
+**HiddenTracker** — The state owned by `StateManager` that remembers where each hidden/minimized window came from (`HashMap<WindowId, usize>` + `last_reconcile`). Exposes `hide_window` / `take_hidden` / `pending_for_reconcile(is_hidden)` so reconcile is testable via a `Fn(WindowId)->bool` predicate without `as_any_mut` downcast to `TestAdapter`.
+
+**DragState** — The drag-to-swap gesture state owned by `StateManager` (`drag_window`, `overlap_target`, `overlap_start`, `last_move`). `on_moved` calls `layout::window_at_point` to update the overlap target; `on_tick` returns `DragTickAction::Swap | SnapBack | None` so `StateManager` owns `apply_layout` and workspace mutation. Keeps `last_layout_rects` borrowed from `StateManager` to avoid duplicating the rect map.
+
 **WindowElementCache** — A `HashMap<WindowId, AXUIElementRef>` owned by the unified macOS adapter. Populated on `kAXWindowCreatedNotification` (caller does `CFRetain`), evicted on `kAXUIElementDestroyedNotification` (caller does `CFRelease`). Makes `set_window_rect` O(1) instead of O(n) and seals CFRef memory lifecycle. Maintains a reverse `WindowId → i32` pid map so `set_window_rect` and `close_window` do not require a pid parameter from callers.
 
 ## Architecture Boundaries

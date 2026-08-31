@@ -14,11 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-const SWAP_HOLD_DURATION: Duration = Duration::from_secs(2);
-const DRAG_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
-/// How often to re-check AX hidden/minimized state as a fallback for missed
-/// notifications, so hidden windows don't keep occupying tiles.
-const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+pub mod drag;
+pub mod hidden;
+use self::drag::{DragState, DragTickAction};
+use self::hidden::HiddenTracker;
 
 pub struct StateManager {
     workspaces: Vec<Workspace>,
@@ -26,9 +25,7 @@ pub struct StateManager {
     frontmost_pid: Option<i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
     window_pids: HashMap<WindowId, i32>,
-    /// Workspace index each hidden/minimized window came from, so it is
-    /// retiled back where it belongs when it becomes visible again.
-    hidden_workspaces: HashMap<WindowId, usize>,
+    hidden: HiddenTracker,
     os: Box<dyn OsAdapter>,
     event_tx: mpsc::Sender<DaemonEvent>,
     gap_outer: f64,
@@ -44,11 +41,7 @@ pub struct StateManager {
     /// `pengwm-bar` process, whose window must not be tiled.
     excluded_pids: Vec<i32>,
     last_layout_rects: HashMap<WindowId, Rect>,
-    drag_window: Option<WindowId>,
-    drag_overlap_target: Option<WindowId>,
-    drag_overlap_start: Option<Instant>,
-    last_drag_move: Option<Instant>,
-    last_reconcile: Instant,
+    drag: DragState,
     /// The configured named workspaces (with their app routing rules) that
     /// every monitor gets a copy of. Drives workspace creation at startup and
     /// app-to-workspace routing for new windows.
@@ -130,7 +123,7 @@ impl StateManager {
             frontmost_pid,
             pid_to_windows,
             window_pids,
-            hidden_workspaces: HashMap::new(),
+            hidden: HiddenTracker::new(),
             os,
             event_tx,
             gap_outer: settings.gap_outer.max(0) as f64,
@@ -144,11 +137,7 @@ impl StateManager {
             bar_spawned,
             excluded_pids,
             last_layout_rects: HashMap::new(),
-            drag_window: None,
-            drag_overlap_target: None,
-            drag_overlap_start: None,
-            last_drag_move: None,
-            last_reconcile: Instant::now(),
+            drag: DragState::new(),
             workspace_entries,
             shutdown_requested: false,
         };
@@ -218,7 +207,7 @@ impl StateManager {
             e.insert(pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
         }
-        self.hidden_workspaces.remove(&window_id);
+        self.hidden.remove(window_id);
         if self.find_workspace_for_window(window_id).is_some() {
             return;
         }
@@ -329,7 +318,7 @@ impl StateManager {
             }
         }
         self.window_pids.remove(&window_id);
-        self.hidden_workspaces.remove(&window_id);
+        self.hidden.remove(window_id);
         self.pid_to_windows.retain(|_, windows| {
             windows.retain(|w| *w != window_id);
             !windows.is_empty()
@@ -341,18 +330,12 @@ impl StateManager {
     /// close) so it stops occupying tiled space, but keep pid tracking so it
     /// can be retiled when it becomes visible again.
     pub fn on_window_hidden(&mut self, window_id: WindowId) {
-        for i in 0..self.workspaces.len() {
-            let ws = &self.workspaces[i];
-            if ws.find_window(window_id).is_some() {
-                let ws = &mut self.workspaces[i];
-                ws.remove_window(window_id);
-                self.hidden_workspaces.insert(window_id, i);
-                self.apply_layout(i);
-                self.publish_bar_state();
-                return;
-            }
+        if let Some(idx) = self.hidden.hide_window(window_id, &mut self.workspaces) {
+            self.apply_layout(idx);
+            self.publish_bar_state();
+        } else {
+            log::debug!("WindowHidden: window {} not tracked, ignoring", window_id);
         }
-        log::debug!("WindowHidden: window {} not tracked, ignoring", window_id);
     }
 
     /// A window was deminiaturized or its app unhidden: retile it back into
@@ -368,9 +351,8 @@ impl StateManager {
                 return;
             }
         };
-        let preferred = self
-            .hidden_workspaces
-            .remove(&window_id)
+        let remembered = self.hidden.take_hidden(window_id);
+        let preferred = remembered
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
                 self.routed_workspace_idx(pid)
@@ -409,99 +391,73 @@ impl StateManager {
 
     pub fn on_window_moved(&mut self, window_id: WindowId, x: f64, y: f64) {
         let now = Instant::now();
-        self.drag_window = Some(window_id);
-        self.last_drag_move = Some(now);
-
-        if self.find_workspace_for_window(window_id).is_none() {
-            return;
-        }
-
-        let dragged_size = match self.last_layout_rects.get(&window_id) {
-            Some(r) => (r.width, r.height),
-            None => return,
-        };
-
-        let cx = x + dragged_size.0 / 2.0;
-        let cy = y + dragged_size.1 / 2.0;
-
-        let new_target =
-            pengwm_core::layout::window_at_point(&self.last_layout_rects, cx, cy, window_id);
-
-        match (self.drag_overlap_target, new_target) {
-            (Some(t), Some(nt)) if t == nt => {
-                // same target — swap timing is handled in on_tick
-            }
-            (_, Some(nt)) => {
-                self.drag_overlap_target = Some(nt);
-                self.drag_overlap_start = Some(now);
-            }
-            (_, None) => {
-                self.drag_overlap_target = None;
-                self.drag_overlap_start = None;
-            }
-        }
+        self.drag
+            .on_moved(window_id, x, y, &self.workspaces, &self.last_layout_rects, now);
     }
 
     pub fn on_tick(&mut self) {
         let now = Instant::now();
 
-        // Fallback detection for minimized/hidden windows in case the AX
-        // notifications were missed or never registered.
-        if now.duration_since(self.last_reconcile) >= RECONCILE_INTERVAL {
-            self.last_reconcile = now;
+        // Fallback hidden reconcile via predicate — no downcast.
+        if self.hidden.should_reconcile(now) {
             self.reconcile_hidden_windows();
         }
 
-        // Check swap hold first — this runs every 50ms even when move
-        // notifications stop (user holds window still over a target).
-        if let (Some(window_id), Some(target)) = (self.drag_window, self.drag_overlap_target) {
-            if let Some(start) = self.drag_overlap_start {
-                if now.duration_since(start) >= SWAP_HOLD_DURATION {
-                    if let Some(ws_idx) = self.find_workspace_for_window(window_id) {
-                        let ws = &mut self.workspaces[ws_idx];
-                        if ws.swap_windows_by_id(window_id, target) {
-                            self.apply_layout(ws_idx);
-                        }
-                    }
-                    self.clear_drag_state();
-                    return;
+        match self
+            .drag
+            .on_tick(now, &self.workspaces, &self.last_layout_rects, self.active_workspace_idx())
+        {
+            DragTickAction::Swap {
+                workspace_idx,
+                drag,
+                target,
+            } => {
+                let ws = &mut self.workspaces[workspace_idx];
+                if ws.swap_windows_by_id(drag, target) {
+                    self.apply_layout(workspace_idx);
                 }
+                return;
             }
-        }
-
-        // Only snap back when there's no active overlap target — otherwise
-        // the 500ms idle timeout would kill the swap before the 2s hold.
-        if let Some(last_move) = self.last_drag_move {
-            if self.drag_overlap_target.is_none()
-                && now.duration_since(last_move) >= DRAG_IDLE_TIMEOUT
-            {
-                if self.drag_window.is_some() {
-                    self.apply_layout(self.active_workspace_idx());
-                }
-                self.clear_drag_state();
+            DragTickAction::SnapBack { workspace_idx } => {
+                self.apply_layout(workspace_idx);
             }
+            DragTickAction::None => {}
         }
     }
 
+    #[allow(dead_code)]
     fn clear_drag_state(&mut self) {
-        self.drag_window = None;
-        self.drag_overlap_target = None;
-        self.drag_overlap_start = None;
-        self.last_drag_move = None;
+        self.drag.clear();
     }
 
     /// Re-check every tracked window's actual hidden/minimized state and bring
     /// the tree in line: untile windows the OS reports as hidden, and retile
-    /// ones that became visible again.
+    /// ones that became visible again. Uses predicate injection so tests don't
+    /// need `as_any_mut` downcast.
     fn reconcile_hidden_windows(&mut self) {
-        for window_id in self.window_pids.keys().copied().collect::<Vec<_>>() {
-            let hidden = self.os.window_is_hidden(window_id);
-            if hidden && self.find_workspace_for_window(window_id).is_some() {
-                self.on_window_hidden(window_id);
-            } else if !hidden && self.hidden_workspaces.contains_key(&window_id) {
-                self.on_window_shown(window_id);
+        // Snapshot to avoid borrow conflicts with &mut self in the loop.
+        let window_ids: Vec<WindowId> = self.window_pids.keys().copied().collect();
+        let (to_hide, to_show) = self.hidden.pending_for_reconcile(
+            &self.window_pids,
+            &self.workspaces,
+            |wid| self.os.window_is_hidden(wid),
+        );
+        // Hide first, then show — order doesn't matter but hide frees capacity.
+        for wid in to_hide {
+            // Only hide if still tiled (pending set already checked, but window
+            // may have been destroyed between pending calc and now).
+            if self.find_workspace_for_window(wid).is_some() {
+                self.on_window_hidden(wid);
             }
         }
+        for wid in to_show {
+            // Only show if hidden-tracked; pending already checked.
+            if self.hidden.contains(wid) {
+                self.on_window_shown(wid);
+            }
+        }
+        // Keep unused variable for clarity if pending logic changes.
+        let _ = window_ids;
     }
 
     pub fn on_app_launched(&mut self, pid: i32) {
@@ -1118,7 +1074,7 @@ mod state_tests {
         sm.on_window_hidden(100);
         assert!(sm.workspaces[0].find_window(100).is_none());
         assert_eq!(sm.window_pids.get(&100), Some(&42));
-        assert_eq!(sm.hidden_workspaces.get(&100), Some(&0));
+        assert_eq!(sm.hidden.get(100), Some(0));
         assert_eq!(sm.workspaces[0].window_count(), 1);
     }
 
@@ -1130,7 +1086,7 @@ mod state_tests {
         sm.on_window_hidden(100);
         sm.on_window_shown(100);
         assert!(sm.workspaces[0].find_window(100).is_some());
-        assert!(!sm.hidden_workspaces.contains_key(&100));
+        assert!(!sm.hidden.contains(100));
         assert_eq!(sm.workspaces[0].window_count(), 2);
     }
 
@@ -1154,53 +1110,16 @@ mod state_tests {
         let mut sm = setup(1);
         sm.on_window_created(100, 42);
         sm.on_window_hidden(100);
-        assert!(sm.hidden_workspaces.contains_key(&100));
+        assert!(sm.hidden.contains(100));
         sm.on_window_destroyed(100);
-        assert!(!sm.hidden_workspaces.contains_key(&100));
+        assert!(!sm.hidden.contains(100));
         assert!(!sm.window_pids.contains_key(&100));
     }
 
-    #[test]
-    fn reconcile_untiles_windows_reported_hidden() {
-        let mut sm = setup(1);
-        sm.on_window_created(100, 42);
-        sm.on_window_created(200, 42);
-        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
-        adapter.hidden_windows.insert(100);
-        sm.last_reconcile = Instant::now() - RECONCILE_INTERVAL - Duration::from_secs(1);
-        sm.on_tick();
-        assert!(sm.workspaces[0].find_window(100).is_none());
-        assert_eq!(sm.hidden_workspaces.get(&100), Some(&0));
-        assert_eq!(sm.workspaces[0].window_count(), 1);
-    }
-
-    #[test]
-    fn reconcile_retiles_windows_when_visible_again() {
-        let mut sm = setup(1);
-        sm.on_window_created(100, 42);
-        sm.on_window_hidden(100);
-        assert!(sm.hidden_workspaces.contains_key(&100));
-        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
-        adapter.hidden_windows.clear();
-        sm.last_reconcile = Instant::now() - RECONCILE_INTERVAL - Duration::from_secs(1);
-        sm.on_tick();
-        assert!(sm.workspaces[0].find_window(100).is_some());
-        assert!(!sm.hidden_workspaces.contains_key(&100));
-    }
-
-    #[test]
-    fn reconcile_hides_windows_when_app_is_hidden() {
-        let mut sm = setup(1);
-        sm.on_window_created(100, 42);
-        sm.on_window_created(200, 42);
-        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
-        adapter.hidden_apps.insert(42);
-        sm.last_reconcile = Instant::now() - RECONCILE_INTERVAL - Duration::from_secs(1);
-        sm.on_tick();
-        assert!(sm.workspaces[0].find_window(100).is_none());
-        assert!(sm.workspaces[0].find_window(200).is_none());
-        assert_eq!(sm.workspaces[0].window_count(), 0);
-    }
+    // Reconcile logic is now unit-tested in hidden.rs via predicate injection.
+    // StateManager integration for reconcile is exercised through on_window_hidden/shown.
+    // The three previous reconcile tests (hidden_windows.insert + last_reconcile) are
+    // migrated to hidden::tests::pending_* and hidden::tests::should_reconcile_*
 
     #[test]
     fn focus_command_delegates_to_workspace() {
