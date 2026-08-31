@@ -1,9 +1,9 @@
 use std::ffi::c_void;
 
-use crate::adapter::{DisplayInfo, OsAdapter};
+use crate::adapter::{DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter};
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
-use crate::macos::ax_observer::{ObserverContext, ObserverRegistry};
+use crate::macos::ax_observer::{ObserverContext, ObserverRegistry as AxObserverRegistry};
 use crate::macos::cg_display;
 use crate::macos::ns_workspace;
 use accessibility_sys::*;
@@ -18,14 +18,14 @@ const OFFSCREEN: Rect = Rect {
 };
 
 pub struct MacOsAdapter {
-    observer_registry: ObserverRegistry,
+    observer_registry: AxObserverRegistry,
     ctx: Box<ObserverContext>,
 }
 
 impl MacOsAdapter {
     pub fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self {
         Self {
-            observer_registry: ObserverRegistry::new(),
+            observer_registry: AxObserverRegistry::new(),
             ctx: Box::new(ObserverContext::new(callback)),
         }
     }
@@ -60,7 +60,7 @@ impl OsAdapter for MacOsAdapter {
         ax_element::frontmost_pid()
     }
 
-    fn poll_windows_for_pid(&mut self, pid: i32) -> Vec<WindowId> {
+    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId> {
         let windows = unsafe { ax_element::windows_for_pid(pid) };
         let mut result = Vec::new();
         for (element, window_id) in windows {
@@ -95,7 +95,7 @@ impl OsAdapter for MacOsAdapter {
         cg_display::primary_display_id()
     }
 
-    fn set_window_rect(&mut self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
         let (element, pid) = self.cache_get_element(window_id).ok_or_else(|| {
             anyhow::anyhow!("element not found in cache for window {}", window_id)
         })?;
@@ -135,7 +135,7 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
-    fn focus_window(&mut self, window_id: WindowId) {
+    fn focus_window(&self, window_id: WindowId) {
         let (element, pid) = match self.cache_get_element(window_id) {
             Some(v) => v,
             None => {
@@ -149,7 +149,7 @@ impl OsAdapter for MacOsAdapter {
         unsafe { ax_element::focus_window(element, pid) };
     }
 
-    fn close_window(&mut self, window_id: WindowId) {
+    fn close_window(&self, window_id: WindowId) {
         if let Some((element, _pid)) = self.cache_get_element(window_id) {
             unsafe { ax_element::close_window(element) };
             // Remove from cache regardless — the element is no longer valid
@@ -161,7 +161,7 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
-    fn hide_windows(&mut self, window_ids: &[WindowId]) {
+    fn hide_windows(&self, window_ids: &[WindowId]) {
         for &wid in window_ids {
             if let Err(e) = self.set_window_rect(wid, OFFSCREEN) {
                 log::warn!("hide_windows: failed to hide window {}: {}", wid, e);
@@ -192,14 +192,6 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
-    fn attach_observer(&mut self, pid: i32) {
-        self.observer_registry.attach(pid, &self.ctx);
-    }
-
-    fn detach_observer(&mut self, pid: i32) {
-        self.observer_registry.detach(pid);
-    }
-
     fn app_bundle_id(&self, pid: i32) -> Option<String> {
         ns_workspace::bundle_id_for_pid(pid)
     }
@@ -208,14 +200,28 @@ impl OsAdapter for MacOsAdapter {
         ns_workspace::localized_name_for_pid(pid)
     }
 
-    fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
-    where
-        Self: Sized,
-    {
-        MacOsAdapter::with_callback(callback)
+    #[cfg(test)]
+    fn inject_window(&self, _pid: i32, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("inject_window only for TestAdapter")
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
+    #[cfg(test)]
+    fn inject_app_name(&self, _pid: i32, _name: String) {
+        unimplemented!("inject_app_name only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn inject_bundle_id(&self, _pid: i32, _bundle: String) {
+        unimplemented!("inject_bundle_id only for TestAdapter")
+    }
+}
+
+impl AdapterObserverRegistry for MacOsAdapter {
+    fn attach_observer(&mut self, pid: i32) {
+        self.observer_registry.attach(pid, &self.ctx);
+    }
+
+    fn detach_observer(&mut self, pid: i32) {
+        self.observer_registry.detach(pid);
     }
 }

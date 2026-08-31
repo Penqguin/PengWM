@@ -14,27 +14,29 @@
 
 ## Platform Abstraction
 
-**OsAdapter** — The trait seam between platform-independent state logic and macOS-specific FFI. Two implementations: `MacOsAdapter` (prod) and `TestAdapter` (tests). The narrowed interface:
+**OsAdapter** — The trait seam between platform-independent state logic and macOS-specific FFI. Two implementations: `MacOsAdapter` (prod) and `TestAdapter` (tests). Narrowed into two traits — window/display query+actuation vs observer lifecycle:
 
 ```rust
-pub trait OsAdapter {
+pub trait ObserverRegistry { fn attach_observer(&mut self, pid: i32); fn detach_observer(&mut self, pid: i32); }
+pub trait OsAdapter: ObserverRegistry {
     fn running_app_pids(&self) -> Vec<i32>;
     fn frontmost_pid(&self) -> Option<i32>;
-    fn poll_windows_for_pid(&mut self, pid: i32) -> Vec<WindowId>;  // inserts into cache
+    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId>;  // &self interior mut (cache insert); was &mut
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;
-    fn set_window_rect(&mut self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;  // no pid
-    fn close_window(&mut self, window_id: WindowId);  // no pid
-    fn hide_windows(&mut self, window_ids: &[WindowId]);  // batch offscreen
-    fn window_is_hidden(&self, window_id: WindowId) -> bool;  // kAXMinimized/kAXHidden (window + app); drives the periodic reconcile
-    fn attach_observer(&mut self, pid: i32);
-    fn detach_observer(&mut self, pid: i32);
-    fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self;  // replaces mpsc hardcode
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;  // &self interior (WindowElementCache)
+    fn close_window(&self, window_id: WindowId);
+    fn hide_windows(&self, window_ids: &[WindowId]);
+    fn window_is_hidden(&self, window_id: WindowId) -> bool;  // kAXMinimized/kAXHidden; drives reconcile
+    fn app_bundle_id(&self, pid: i32) -> Option<String>;
+    fn app_name(&self, pid: i32) -> Option<String>;
+    // test injectors (cfg(test)) replace as_any_mut downcast:
+    // inject_window / inject_app_name / inject_bundle_id
 }
 ```
 
-The observer side of the seam accepts `Box<dyn Fn(DaemonEvent) + Send>` (callback, not hardcoded mpsc sender).
+`MacOsAdapter::with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self` is an inherent constructor (not on the trait) and the observer callback is `Box<dyn Fn(DaemonEvent) + Send>` not a hard-coded mpsc sender. No `as_any_mut` — tests use `OsAdapter::inject_*` instead of downcasting to `TestAdapter`.
 
 Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturizedNotification` / app-level `kAXApplicationHiddenNotification` fire immediately, and a ~1s `on_tick` reconcile queries `window_is_hidden` per tracked window as a fallback for missed notifications. Both untile the window (like a close) while keeping pid tracking so `on_window_shown` can retile it where it came from.
 

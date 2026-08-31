@@ -831,11 +831,12 @@ mod state_tests {
         adapter.running_apps = vec![42];
         adapter
             .windows
+            .borrow_mut()
             .entry(42)
             .or_default()
             .extend(vec![100, 200]);
-        adapter.window_pids.insert(100, 42);
-        adapter.window_pids.insert(200, 42);
+        adapter.window_pids.borrow_mut().insert(100, 42);
+        adapter.window_pids.borrow_mut().insert(200, 42);
         adapter
     }
 
@@ -1408,8 +1409,8 @@ mod state_tests {
         let (tx, _) = mpsc::channel(64);
         let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
         let mut adapter = make_adapter(1);
-        adapter.app_names.insert(42, "Safari".into());
-        adapter.bundle_ids.insert(42, "com.apple.Safari".into());
+        adapter.app_names.borrow_mut().insert(42, "Safari".into());
+        adapter.bundle_ids.borrow_mut().insert(42, "com.apple.Safari".into());
         let (bar_tx, mut bar_rx) = mpsc::channel(64);
         let mut sm = StateManager::new(
             tx,
@@ -1440,9 +1441,8 @@ mod state_tests {
     #[test]
     fn on_window_created_routes_configured_app_to_its_workspace() {
         let mut sm = setup(1);
-        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
-        adapter.bundle_ids.insert(77, "com.google.Chrome".into());
-        adapter.app_names.insert(77, "Chrome".into());
+        sm.os.inject_bundle_id(77, "com.google.Chrome".into());
+        sm.os.inject_app_name(77, "Chrome".into());
 
         sm.on_window_created(777, 77);
 
@@ -1457,8 +1457,7 @@ mod state_tests {
     #[test]
     fn on_window_created_routing_matches_app_name_case_insensitively() {
         let mut sm = setup(1);
-        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
-        adapter.app_names.insert(88, "spotify".into());
+        sm.os.inject_app_name(88, "spotify".into());
 
         sm.on_window_created(888, 88);
 

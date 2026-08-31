@@ -172,7 +172,7 @@ mod tests {
     fn configured_name_matches_bundle_case_insensitive() {
         let r = Router::new(4);
         let mut adapter = TestAdapter::new();
-        adapter.bundle_ids.insert(10, "com.google.Chrome".into());
+        adapter.inject_bundle_id(10, "com.google.Chrome".into());
         let entries = entries_default();
         let name = r
             .configured_workspace_name_for_pid(10, &adapter, &entries)
@@ -184,7 +184,7 @@ mod tests {
     fn configured_name_matches_app_name() {
         let r = Router::new(4);
         let mut adapter = TestAdapter::new();
-        adapter.app_names.insert(10, "spotify".into());
+        adapter.inject_app_name(10, "spotify".into());
         let entries = entries_default();
         let name = r
             .configured_workspace_name_for_pid(10, &adapter, &entries)
@@ -196,7 +196,7 @@ mod tests {
     fn routed_idx_on_active_monitor() {
         let r = Router::new(4);
         let mut adapter = TestAdapter::new();
-        adapter.bundle_ids.insert(10, "com.apple.Safari".into());
+        adapter.inject_bundle_id(10, "com.apple.Safari".into());
         let entries = entries_default();
         let wss = vec![
             Workspace::new("Development".into(), 1, (0, 0), (1920, 1080)),
