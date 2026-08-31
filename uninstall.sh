@@ -73,7 +73,7 @@ if [[ -f "$AGENT_PLIST" ]]; then
   echo "Removed $AGENT_PLIST"
 fi
 
-for bin in pengwm pengwm-bar; do
+for bin in pengwm pengwm-bar pengwm-menubar; do
   if [[ -f "$PREFIX/$bin" ]]; then
     rm -f "$PREFIX/$bin"
     echo "Removed $PREFIX/$bin"
@@ -89,7 +89,7 @@ if [[ -d "$CONFIG_DIR" ]] && [[ "$KEEP_CONFIG" == "0" ]]; then
   fi
 fi
 
-if [[ "$STOPPED_AGENT" == "1" ]] || [[ -f "$PREFIX/pengwm" ]] || [[ -f "$PREFIX/pengwm-bar" ]]; then
+if [[ "$STOPPED_AGENT" == "1" ]] || [[ -f "$PREFIX/pengwm" ]] || [[ -f "$PREFIX/pengwm-bar" ]] || [[ -f "$PREFIX/pengwm-menubar" ]]; then
   echo "PengWM uninstalled."
 else
   echo "PengWM does not appear to be installed."

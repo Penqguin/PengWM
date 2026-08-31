@@ -72,6 +72,8 @@ uninstall() {
   echo "Removed $PREFIX/pengwm"
   rm -f "$PREFIX/pengwm-bar"
   echo "Removed $PREFIX/pengwm-bar"
+  rm -f "$PREFIX/pengwm-menubar"
+  echo "Removed $PREFIX/pengwm-menubar"
   echo "PengWM uninstalled."
 }
 
@@ -82,6 +84,8 @@ install_binaries() {
   echo "Installed $PREFIX/pengwm"
   install -m 0755 "$SCRIPT_DIR/target/release/pengwm-bar" "$PREFIX/pengwm-bar"
   echo "Installed $PREFIX/pengwm-bar"
+  install -m 0755 "$SCRIPT_DIR/target/release/pengwm-menubar" "$PREFIX/pengwm-menubar"
+  echo "Installed $PREFIX/pengwm-menubar"
 }
 
 install_agent() {
