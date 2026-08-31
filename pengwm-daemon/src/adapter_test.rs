@@ -5,6 +5,7 @@ use crate::event_loop::DaemonEvent;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
+#[derive(Default)]
 pub struct TestAdapter {
     pub running_apps: Vec<i32>,
     pub frontmost: Option<i32>,
@@ -23,21 +24,7 @@ pub struct TestAdapter {
 
 impl TestAdapter {
     pub fn new() -> Self {
-        Self {
-            running_apps: Vec::new(),
-            frontmost: None,
-            windows: HashMap::new(),
-            window_pids: HashMap::new(),
-            window_rects: HashMap::new(),
-            displays: Vec::new(),
-            focused_windows: HashMap::new(),
-            last_focused: None,
-            observers: HashSet::new(),
-            bundle_ids: HashMap::new(),
-            app_names: HashMap::new(),
-            hidden_windows: HashSet::new(),
-            hidden_apps: HashSet::new(),
-        }
+        Self::default()
     }
 }
 

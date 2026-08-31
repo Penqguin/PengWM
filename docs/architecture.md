@@ -15,7 +15,7 @@
 macOS Events ─┐
 CLI Commands ─┤── mpsc::channel ──▶ StateManager ──▶ Workspace    ──▶ OsAdapter
 Keybinds ─────┘                                    .layout()      .set_window_rect
-                                                    .hide()        .hide_windows
+                                                    .all_windows() .hide_windows
 ```
 
 ## Layered Interface
@@ -33,8 +33,9 @@ StateManager
   │     siblings, converts to global coordinates. Monocle mode produces
   │     one fullscreen rect + offscreen rects for siblings.
   │
-  └─ ws.hide()  →  HashMap<WindowId, Rect>
-        Offscreen rects for all windows (workspace switch).
+  └─ ws.all_windows()  →  Vec<WindowId>
+        Window set to hide on workspace switch (StateManager batches them
+        to OsAdapter::hide_windows).
 ```
 
 The `Rect` values are in global coordinates — `StateManager` passes them
@@ -76,7 +77,7 @@ Two implementations:
 Thin coordinator:
 
 ```
-event → StateManager → mutate Workspace → call .layout() / .hide()
+event → StateManager → mutate Workspace → call .layout()
                                        → call OsAdapter methods
 ```
 
@@ -93,14 +94,14 @@ Splits are n-ary (3+ children in one split direction). Redundant splits
 ## Workspace Emulation
 
 Workspaces are emulated — each workspace is an independent tree on the same
-monitor. When a workspace is hidden, `Workspace::hide()` returns offscreen
-rects (x: -9999) for all its windows.
+monitor. When a workspace is hidden, `StateManager` sends its `all_windows()`
+to `OsAdapter::hide_windows`, which batches them offscreen (x: -9999).
 
 ## Data Flow
 
 ```
 CLI:  pengwm focus left
-        ──▶ clap parse
+        ──▶ clap parse (thin adapter)
         ──▶ Command::Focus { direction: Left }
         ──▶ serde_json::to_string
         ──▶ UnixStream::connect("/tmp/pengwm.sock")
@@ -110,15 +111,21 @@ Daemon: UnixListener::accept
         ──▶ thread::spawn
         ──▶ read bytes
         ──▶ serde_json::from_slice<Command>
-        ──▶ mpsc::Sender::blocking_send(DaemonEvent::Command(cmd, resp_tx))
+        ──▶ mpsc::Sender::blocking_send(DaemonEvent::Command(cmd, Some(resp_tx)))
 
 StateManager: recv DaemonEvent
-        ──▶ on_command(cmd, resp_tx)
+        ──▶ on_command(cmd, reply_slot)
         ──▶ mutate Workspace tree
         ──▶ workspace.layout(gap_inner, gap_outer) → HashMap<WindowId, Rect>
         ──▶ os.set_window_rect(window_id, rect) for each entry
-        ──▶ resp_tx.send(Ack)
+        ──▶ if let Some(tx) = reply_slot { tx.send(Ack) }
 ```
+
+Every command source feeds the same `Command` vocabulary. The CLI parses clap
+subcommands; the keybind surface parses action strings (`Command::parse_action`)
+for the TOML config. The reply slot is nullable — only the IPC client gets one.
+Keybinds and the config watcher send `DaemonEvent::Command(cmd, None)`, so they
+never allocate a throwaway response channel.
 
 ## Crate Layout
 

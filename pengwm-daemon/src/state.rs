@@ -1068,7 +1068,7 @@ mod state_tests {
     fn on_window_destroyed_removes_tracking_and_window() {
         let mut sm = setup(1);
         sm.on_window_destroyed(100);
-        assert!(sm.window_pids.get(&100).is_none());
+        assert!(!sm.window_pids.contains_key(&100));
         assert!(sm.workspaces[0].find_window(100).is_none());
     }
 
@@ -1098,8 +1098,8 @@ mod state_tests {
         // Start with pid 42 having windows 100, 200
         assert!(sm.window_pids.contains_key(&100));
         sm.on_app_terminated(42);
-        assert!(sm.window_pids.get(&100).is_none());
-        assert!(sm.window_pids.get(&200).is_none());
+        assert!(!sm.window_pids.contains_key(&100));
+        assert!(!sm.window_pids.contains_key(&200));
     }
 
     #[test]
@@ -1157,7 +1157,7 @@ mod state_tests {
         assert!(sm.hidden_workspaces.contains_key(&100));
         sm.on_window_destroyed(100);
         assert!(!sm.hidden_workspaces.contains_key(&100));
-        assert!(sm.window_pids.get(&100).is_none());
+        assert!(!sm.window_pids.contains_key(&100));
     }
 
     #[test]

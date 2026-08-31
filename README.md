@@ -41,10 +41,10 @@ mod_key = "cmd"
 restricted_apps = []
 
 [bar]
+enabled = true
 position = "top"
 thickness = 32
 visible = true
-enabled = true
 theme = "tokyo-night"
 ```
 
@@ -62,28 +62,30 @@ alt-down  = "focus-down"
 alt-up    = "focus-up"
 alt-right = "focus-right"
 
-alt-shift-h     = "swap-left"
-alt-shift-j     = "swap-down"
-alt-shift-k     = "swap-up"
-alt-shift-l     = "swap-right"
-alt-shift-left  = "swap-left"
-alt-shift-down  = "swap-down"
-alt-shift-up    = "swap-up"
-alt-shift-right = "swap-right"
+alt-shift-h     = "move-window-left"
+alt-shift-j     = "move-window-down"
+alt-shift-k     = "move-window-up"
+alt-shift-l     = "move-window-right"
+alt-shift-left  = "move-window-left"
+alt-shift-down  = "move-window-down"
+alt-shift-up    = "move-window-up"
+alt-shift-right = "move-window-right"
 
 alt-1 = "workspace-1"
-alt-shift-1 = "move-to-workspace-1"
-alt-/ = "layout-tile"
-alt-, = "layout-accordion"
+alt-shift-1 = "move-window-to-workspace-1"
+alt-/ = "set-layout-tile"
+alt-, = "set-layout-accordion"
 alt-b = "toggle-bar"
 cmd-shift-r = "reload-config"
 ```
 
 **Modifiers:** `cmd`, `alt`/`option`, `ctrl`/`control`, `shift` (join with `-`).
 
-**Actions:** `focus-{left,right,up,down}`, `swap-{left,right,up,down}`,
-`workspace-{1..9}`, `move-to-workspace-{1..9}`, `layout-tile`, `layout-accordion`,
-`toggle-layout`, `toggle-bar`, `reload-config`.
+**Actions:** `focus-{left,right,up,down}`, `move-window-{left,right,up,down}`,
+`workspace-{id}`, `move-window-to-workspace-{id}`, `split-horizontal`, `split-vertical`,
+`close`, `set-layout-tile`, `set-layout-accordion`, `set-gap-outer-{pixels}`,
+`set-gap-inner-{pixels}`, `toggle-layout`, `toggle-bar`, `reload-config`, `query-state`,
+`quit`.
 
 ## Status Bar
 
@@ -92,6 +94,24 @@ daemon spawns automatically. It shows a split-direction icon and clickable
 workspace pills on the primary display, themed tokyo-night by default. See
 [docs/configuration.md](docs/configuration.md) for the `[bar]` table, themes,
 and corner-radius options.
+
+## Workspaces
+
+On startup PengWM creates five named workspaces — **Development**, **Browsing**,
+**Notes**, **Music**, **Messaging** — on every monitor. Each routes the windows
+of its configured apps into it (match by bundle id or app name, case-insensitive),
+so apps land in the workspace you use them in. Override or replace them with
+`[[workspaces]]` tables in config.toml; see
+[docs/configuration.md](docs/configuration.md).
+
+## Menubar
+
+`pengwm-menubar` is a menu-bar icon (spawned automatically by the daemon) that
+lists every workspace and the apps with windows in it. Clicking a workspace
+switches to it. Enable/disable with `[menubar] enabled = true|false` in
+config.toml. It subscribes to the same push socket as the status bar and
+rebuilds its menu from the latest state each time it opens. Choosing **Quit
+PengWM Menubar** shuts everything down — daemon, status bar, and menubar.
 
 ## CLI Usage
 
@@ -107,6 +127,7 @@ pengwm set-gap-outer <pixels>
 pengwm set-gap-inner <pixels>
 pengwm reload-config
 pengwm state
+pengwm quit
 ```
 
 ## Project Structure
@@ -115,6 +136,7 @@ pengwm state
 pengwm-core/       Pure data types, layout engine, workspace logic (no macOS deps)
 pengwm-daemon/     The `pengwm` binary — daemon, CLI client, macOS FFI
 pengwm-bar/        The `pengwm-bar` status bar — egui/eframe frontend
+pengwm-menubar/    The `pengwm-menubar` menu-bar icon — workspace/app list
 ```
 
 See [docs/](docs/) for full architecture, configuration, and command reference.
@@ -185,7 +207,7 @@ holds all macOS FFI and ships as the single `pengwm` binary: run it with no
 arguments to start the daemon, or pass a subcommand to control a running
 daemon. Key abstractions:
 
-- **Workspace::layout() / hide()** — produce global-coordinate window rects
+- **Workspace::layout()** — produces global-coordinate window rects
   from the tree. Tree internals (`NodeId`, `Arena`) are private.
 - **OsAdapter trait** — the seam between state logic and macOS FFI.
   Two implementations: `MacOsAdapter` (real) and `TestAdapter` (mock).
