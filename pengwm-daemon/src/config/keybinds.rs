@@ -357,58 +357,7 @@ pub fn parse_modifiers(s: &str) -> ModifierFlags {
 }
 
 pub fn parse_action(s: &str) -> Option<Command> {
-    match s {
-        "focus-left" => Some(Command::Focus {
-            direction: Direction::Left,
-        }),
-        "focus-right" => Some(Command::Focus {
-            direction: Direction::Right,
-        }),
-        "focus-up" => Some(Command::Focus {
-            direction: Direction::Up,
-        }),
-        "focus-down" => Some(Command::Focus {
-            direction: Direction::Down,
-        }),
-        "swap-left" => Some(Command::MoveWindow {
-            direction: Direction::Left,
-        }),
-        "swap-right" => Some(Command::MoveWindow {
-            direction: Direction::Right,
-        }),
-        "swap-up" => Some(Command::MoveWindow {
-            direction: Direction::Up,
-        }),
-        "swap-down" => Some(Command::MoveWindow {
-            direction: Direction::Down,
-        }),
-        "toggle-layout" => Some(Command::ToggleLayout),
-        "toggle-bar" => Some(Command::ToggleBar),
-        "layout-tile" => Some(Command::SetLayout {
-            mode: LayoutMode::Tile,
-        }),
-        "layout-accordion" => Some(Command::SetLayout {
-            mode: LayoutMode::Accordion,
-        }),
-        "reload-config" => Some(Command::ReloadConfig),
-        _ => {
-            if let Some(n) = s.strip_prefix("workspace-") {
-                if let Ok(n) = n.parse::<u32>() {
-                    if (1..=9).contains(&n) {
-                        return Some(Command::Workspace { id: n });
-                    }
-                }
-            }
-            if let Some(n) = s.strip_prefix("move-to-workspace-") {
-                if let Ok(n) = n.parse::<u32>() {
-                    if (1..=9).contains(&n) {
-                        return Some(Command::MoveWindowToWorkspace { id: n });
-                    }
-                }
-            }
-            None
-        }
-    }
+    Command::parse_action(s)
 }
 
 pub fn from_toml_value(value: &toml::Value) -> KeybindConfig {
@@ -666,88 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_action_focus() {
-        assert!(matches!(
-            parse_action("focus-left"),
-            Some(Command::Focus {
-                direction: Direction::Left
-            })
-        ));
-        assert!(matches!(
-            parse_action("focus-right"),
-            Some(Command::Focus {
-                direction: Direction::Right
-            })
-        ));
-    }
-
-    #[test]
-    fn parse_action_swap() {
-        assert!(matches!(
-            parse_action("swap-left"),
-            Some(Command::MoveWindow {
-                direction: Direction::Left
-            })
-        ));
-    }
-
-    #[test]
-    fn parse_action_workspace() {
-        assert!(matches!(
-            parse_action("workspace-3"),
-            Some(Command::Workspace { id: 3 })
-        ));
-    }
-
-    #[test]
-    fn parse_action_move_to_workspace() {
-        assert!(matches!(
-            parse_action("move-to-workspace-5"),
-            Some(Command::MoveWindowToWorkspace { id: 5 })
-        ));
-    }
-
-    #[test]
-    fn parse_action_toggle_layout() {
-        assert!(matches!(
-            parse_action("toggle-layout"),
-            Some(Command::ToggleLayout)
-        ));
-    }
-
-    #[test]
-    fn parse_action_layout_modes() {
-        assert!(matches!(
-            parse_action("layout-tile"),
-            Some(Command::SetLayout {
-                mode: LayoutMode::Tile
-            })
-        ));
-        assert!(matches!(
-            parse_action("layout-accordion"),
-            Some(Command::SetLayout {
-                mode: LayoutMode::Accordion
-            })
-        ));
-    }
-
-    #[test]
-    fn parse_action_reload_config() {
-        assert!(matches!(
-            parse_action("reload-config"),
-            Some(Command::ReloadConfig)
-        ));
-    }
-
-    #[test]
-    fn parse_action_toggle_bar() {
-        assert!(matches!(
-            parse_action("toggle-bar"),
-            Some(Command::ToggleBar)
-        ));
-    }
-
-    #[test]
     fn default_has_toggle_bar() {
         let config = KeybindConfig::default();
         assert!(config.bindings.iter().any(|b| {
@@ -758,21 +625,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_action_invalid() {
-        assert!(parse_action("do-the-hokey-pokey").is_none());
-    }
-
-    #[test]
-    fn parse_action_workspace_out_of_range() {
-        assert!(parse_action("workspace-0").is_none());
-        assert!(parse_action("workspace-10").is_none());
-    }
-
-    #[test]
     fn from_toml_valid() {
         let toml_str = r#"
 cmd-h = "focus-left"
-cmd-shift-j = "swap-down"
+cmd-shift-j = "move-window-down"
 cmd-1 = "workspace-1"
 "#;
         let value: toml::Value = toml::from_str(toml_str).unwrap();

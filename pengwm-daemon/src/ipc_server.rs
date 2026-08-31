@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::event_loop::DaemonEvent;
 
-pub const DEFAULT_SOCKET_PATH: &str = "/tmp/pengwm.sock";
+pub use pengwm_core::ipc::COMMAND_SOCKET_PATH as DEFAULT_SOCKET_PATH;
 
 pub fn start_ipc_server(event_tx: mpsc::Sender<DaemonEvent>) {
     start_ipc_server_with_path(event_tx, DEFAULT_SOCKET_PATH);
@@ -69,7 +69,7 @@ fn handle_client(
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
     if event_tx
-        .blocking_send(DaemonEvent::Command(cmd, resp_tx))
+        .blocking_send(DaemonEvent::Command(cmd, Some(resp_tx)))
         .is_err()
     {
         return;

@@ -6,7 +6,7 @@ use crate::macos::ax_element;
 use crate::macos::ax_observer::{ObserverContext, ObserverRegistry};
 use crate::macos::cg_display;
 use crate::macos::ns_workspace;
-use accessibility_sys::AXUIElementRef;
+use accessibility_sys::*;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
@@ -169,6 +169,29 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
+    fn window_is_hidden(&self, window_id: WindowId) -> bool {
+        let (element, pid) = match self.cache_get_element(window_id) {
+            Some(v) => v,
+            None => return false,
+        };
+        unsafe {
+            // Per-window state: minimized to the Dock or hidden in place.
+            if ax_element::bool_attribute(element, kAXMinimizedAttribute)
+                || ax_element::bool_attribute(element, kAXHiddenAttribute)
+            {
+                return true;
+            }
+            // The whole app hidden (Cmd-H) hides the window too.
+            let app = AXUIElementCreateApplication(pid);
+            if app.is_null() {
+                return false;
+            }
+            let hidden = ax_element::bool_attribute(app, kAXHiddenAttribute);
+            core_foundation::base::CFRelease(app as core_foundation::base::CFTypeRef);
+            hidden
+        }
+    }
+
     fn attach_observer(&mut self, pid: i32) {
         self.observer_registry.attach(pid, &self.ctx);
     }
@@ -181,10 +204,18 @@ impl OsAdapter for MacOsAdapter {
         ns_workspace::bundle_id_for_pid(pid)
     }
 
+    fn app_name(&self, pid: i32) -> Option<String> {
+        ns_workspace::localized_name_for_pid(pid)
+    }
+
     fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
     where
         Self: Sized,
     {
         MacOsAdapter::with_callback(callback)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

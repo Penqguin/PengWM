@@ -14,7 +14,9 @@ fn cli_binary_dispatches_to_server() {
         if let Some(pengwm_daemon::event_loop::DaemonEvent::Command(_cmd, resp_tx)) =
             rx.blocking_recv()
         {
-            let _ = resp_tx.try_send(pengwm_core::command::DaemonResponse::Ack);
+            let _ = resp_tx
+                .expect("IPC command carries a reply slot")
+                .try_send(pengwm_core::command::DaemonResponse::Ack);
         }
     });
 

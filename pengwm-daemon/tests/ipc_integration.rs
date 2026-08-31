@@ -57,7 +57,9 @@ fn ipc_send_command_receives_event() {
                 "expected Split(Horizontal), got {:?}",
                 received_cmd
             );
-            // Simulate the state manager: the daemon acks every handled command.
+            // The IPC client always gets a reply slot; simulate the state manager
+            // acking the handled command.
+            let resp_tx = resp_tx.expect("IPC command carries a reply slot");
             resp_tx.try_send(DaemonResponse::Ack).unwrap();
         }
         other => panic!("expected DaemonEvent::Command, got {:?}", other),
@@ -89,7 +91,9 @@ fn cli_roundtrip_receives_ack() {
     // command and send an Ack back through the response channel.
     let consumer = thread::spawn(move || {
         if let Some(DaemonEvent::Command(_cmd, resp_tx)) = event_rx.blocking_recv() {
-            let _ = resp_tx.try_send(DaemonResponse::Ack);
+            let _ = resp_tx
+                .expect("IPC command carries a reply slot")
+                .try_send(DaemonResponse::Ack);
         }
     });
 
@@ -127,6 +131,7 @@ fn bar_socket_receives_cached_state_on_connect() {
             monitor_id: 1,
             window_count: 2,
             active: true,
+            windows: vec!["Safari".into(), "Terminal".into()],
         }],
         active_workspace: 0,
         split_direction: Some(SplitDirection::Vertical),

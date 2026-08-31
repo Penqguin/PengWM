@@ -5,7 +5,7 @@ use std::thread;
 
 use pengwm_core::command::BarMessage;
 
-pub const BAR_SOCKET_PATH: &str = "/tmp/pengwm-bar.sock";
+pub use pengwm_core::ipc::BAR_SOCKET_PATH;
 
 #[derive(Clone)]
 pub struct BarSender {

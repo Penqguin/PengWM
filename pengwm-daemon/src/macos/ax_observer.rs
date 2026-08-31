@@ -62,6 +62,15 @@ impl ObserverContext {
         }
         None
     }
+
+    /// All cached window ids belonging to a pid (used for app-level events
+    /// like hide/show, where the notification element is the application).
+    pub fn window_ids_for_pid(&self, pid: i32) -> Vec<WindowId> {
+        self.cache_get()
+            .iter()
+            .filter_map(|(&wid, &(_, p))| if p == pid { Some(wid) } else { None })
+            .collect()
+    }
 }
 
 unsafe impl Send for ObserverContext {}
@@ -124,20 +133,36 @@ impl ObserverRegistry {
 
         // Individual window destroyed notifications are registered per-window
         // in observer_callback and register_window_destroyed — see below.
-        let notifications = [
+        // WindowCreated and FocusedWindowChanged are essential; app-level
+        // hide/show are best-effort (failure must not tear down the observer,
+        // since the per-window state is reconciled periodically anyway).
+        let essential = [
             kAXWindowCreatedNotification,
             kAXFocusedWindowChangedNotification,
+        ];
+        let optional = [
+            kAXApplicationHiddenNotification,
+            kAXApplicationShownNotification,
         ];
 
         let ctx_ptr = ctx as *const ObserverContext as *mut c_void;
 
         let mut all_succeeded = true;
-        for &notif_name in &notifications {
+        for &notif_name in essential.iter().chain(optional.iter()) {
             let name = CFString::new(notif_name);
             let err = unsafe {
                 AXObserverAddNotification(observer, app, name.as_concrete_TypeRef(), ctx_ptr)
             };
             if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
+                if optional.contains(&notif_name) {
+                    log::debug!(
+                        "AXObserverAddNotification optional notif {} skipped for pid {}: {}",
+                        notif_name,
+                        pid,
+                        error_string(err)
+                    );
+                    continue;
+                }
                 log::warn!(
                     "AXObserverAddNotification failed for pid {} notif {}: {}",
                     pid,
@@ -290,6 +315,29 @@ unsafe extern "C" fn observer_callback(
         return;
     }
 
+    // App-level hide/show (Cmd-H) fires on the application element, not a
+    // window — there is no window id to extract. Stop tracking all of the
+    // app's windows and retile them when the app is shown again.
+    #[allow(non_upper_case_globals)]
+    if notif_str.as_str() == kAXApplicationHiddenNotification
+        || notif_str.as_str() == kAXApplicationShownNotification
+    {
+        let hidden = notif_str.as_str() == kAXApplicationHiddenNotification;
+        log::debug!(
+            "{} for pid {}",
+            if hidden { "AppHidden" } else { "AppShown" },
+            pid
+        );
+        for window_id in ctx.window_ids_for_pid(pid) {
+            ctx.call_event(if hidden {
+                DaemonEvent::WindowHidden(window_id)
+            } else {
+                DaemonEvent::WindowShown(window_id)
+            });
+        }
+        return;
+    }
+
     let window_id = match ax_element::ax_window_id_from_element(element) {
         Some(id) => id,
         None => {
@@ -348,6 +396,39 @@ unsafe extern "C" fn observer_callback(
                 );
             }
 
+            // Register per-window minimize/restore notifications so a
+            // miniaturized window stops occupying tiled space and is retiled
+            // on deminiaturize.
+            let mini_name = CFString::new(kAXWindowMiniaturizedNotification);
+            let mini_err = AXObserverAddNotification(
+                observer,
+                element,
+                mini_name.as_concrete_TypeRef(),
+                refcon,
+            );
+            if mini_err != kAXErrorSuccess && mini_err != kAXErrorNotificationAlreadyRegistered {
+                log::debug!(
+                    "kAXWindowMiniaturizedNotification registration skipped for window {}: {}",
+                    window_id,
+                    error_string(mini_err)
+                );
+            }
+            let demini_name = CFString::new(kAXWindowDeminiaturizedNotification);
+            let demini_err = AXObserverAddNotification(
+                observer,
+                element,
+                demini_name.as_concrete_TypeRef(),
+                refcon,
+            );
+            if demini_err != kAXErrorSuccess && demini_err != kAXErrorNotificationAlreadyRegistered
+            {
+                log::debug!(
+                    "kAXWindowDeminiaturizedNotification registration skipped for window {}: {}",
+                    window_id,
+                    error_string(demini_err)
+                );
+            }
+
             ctx.call_event(DaemonEvent::WindowCreated(window_id, pid));
         }
         kAXFocusedWindowChangedNotification => {
@@ -358,6 +439,14 @@ unsafe extern "C" fn observer_callback(
             if let Some(rect) = unsafe { crate::macos::ax_element::get_window_rect(element) } {
                 ctx.call_event(DaemonEvent::WindowMoved(window_id, rect.x, rect.y));
             }
+        }
+        kAXWindowMiniaturizedNotification => {
+            log::debug!("WindowHidden (miniaturized): {}", window_id);
+            ctx.call_event(DaemonEvent::WindowHidden(window_id));
+        }
+        kAXWindowDeminiaturizedNotification => {
+            log::debug!("WindowShown (deminiaturized): {}", window_id);
+            ctx.call_event(DaemonEvent::WindowShown(window_id));
         }
         _ => {}
     }

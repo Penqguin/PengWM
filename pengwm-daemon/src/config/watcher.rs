@@ -48,8 +48,7 @@ pub fn watch(event_tx: tokio_mpsc::Sender<DaemonEvent>) {
         for event in rx {
             match event {
                 Ok(event) if matches!(event.kind, EventKind::Modify(_)) => {
-                    let (rtx, _) = tokio_mpsc::channel(1);
-                    let _ = event_tx.try_send(DaemonEvent::Command(Command::ReloadConfig, rtx));
+                    let _ = event_tx.try_send(DaemonEvent::Command(Command::ReloadConfig, None));
                 }
                 Ok(event) => {
                     log::trace!("Ignoring non-modify file event: {:?}", event.kind);

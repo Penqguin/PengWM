@@ -1,7 +1,7 @@
 use crate::adapter::OsAdapter;
 use crate::bar_server::BarSender;
 use crate::config::keybinds::KeybindConfig;
-use crate::config::{BarConfig, BarPosition, Settings};
+use crate::config::{BarConfig, Settings, WorkspaceEntry};
 use crate::event_loop::DaemonEvent;
 use pengwm_core::command::{
     BarMessage, BarState, BarWorkspace, Command, DaemonResponse, LayoutMode,
@@ -16,6 +16,9 @@ use tokio::sync::mpsc;
 
 const SWAP_HOLD_DURATION: Duration = Duration::from_secs(2);
 const DRAG_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
+/// How often to re-check AX hidden/minimized state as a fallback for missed
+/// notifications, so hidden windows don't keep occupying tiles.
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct StateManager {
     workspaces: Vec<Workspace>,
@@ -23,6 +26,9 @@ pub struct StateManager {
     frontmost_pid: Option<i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
     window_pids: HashMap<WindowId, i32>,
+    /// Workspace index each hidden/minimized window came from, so it is
+    /// retiled back where it belongs when it becomes visible again.
+    hidden_workspaces: HashMap<WindowId, usize>,
     os: Box<dyn OsAdapter>,
     event_tx: mpsc::Sender<DaemonEvent>,
     gap_outer: f64,
@@ -42,6 +48,14 @@ pub struct StateManager {
     drag_overlap_target: Option<WindowId>,
     drag_overlap_start: Option<Instant>,
     last_drag_move: Option<Instant>,
+    last_reconcile: Instant,
+    /// The configured named workspaces (with their app routing rules) that
+    /// every monitor gets a copy of. Drives workspace creation at startup and
+    /// app-to-workspace routing for new windows.
+    workspace_entries: Vec<WorkspaceEntry>,
+    /// Set when `Command::Quit` is handled; the event loop polls this and
+    /// returns so the daemon process can exit.
+    shutdown_requested: bool,
 }
 
 impl StateManager {
@@ -51,6 +65,7 @@ impl StateManager {
         mut os: Box<dyn OsAdapter>,
         bar_sender: BarSender,
         bar_pid: Option<i32>,
+        excluded_pids: Vec<i32>,
     ) -> Self {
         let displays = os.active_displays();
         let mut workspaces = Vec::new();
@@ -58,15 +73,27 @@ impl StateManager {
         let mut window_pids: HashMap<WindowId, i32> = HashMap::new();
         let mut active_workspaces = HashMap::new();
 
-        for (i, display) in displays.iter().enumerate() {
-            active_workspaces.insert(display.id, i);
-            let ws = Workspace::new(
-                format!("ws-{}", i + 1),
-                display.id,
-                display.origin,
-                display.size,
-            );
-            workspaces.push(ws);
+        let settings = Settings::load();
+        // Empty list means the user opted out of named workspaces; fall back to
+        // the defaults rather than creating no workspaces at all.
+        let workspace_entries = if settings.workspaces.is_empty() {
+            crate::config::default_workspaces()
+        } else {
+            settings.workspaces.clone()
+        };
+
+        for display in &displays {
+            let base = workspaces.len();
+            active_workspaces.insert(display.id, base);
+            for entry in &workspace_entries {
+                let ws = Workspace::new(
+                    entry.name.clone(),
+                    display.id,
+                    display.origin,
+                    display.size,
+                );
+                workspaces.push(ws);
+            }
         }
 
         if workspaces.is_empty() {
@@ -76,6 +103,7 @@ impl StateManager {
                 (0, 0),
                 (1920, 1080),
             ));
+            active_workspaces.insert(os.primary_display_id(), 0);
         }
 
         let frontmost_pid = os.frontmost_pid();
@@ -89,16 +117,20 @@ impl StateManager {
             }
         }
 
-        let settings = Settings::load();
         let bar_config = settings.bar.clone();
-        let bar_visible = settings.bar.visible;
-        let excluded_pids = bar_pid.into_iter().collect::<Vec<_>>();
+        let bar_spawned = bar_pid.is_some();
+        let excluded_pids = bar_pid
+            .into_iter()
+            .chain(excluded_pids)
+            .collect::<Vec<_>>();
+        let bar_visible = settings.bar.visible && bar_spawned;
         let mut state = Self {
             workspaces,
             active_workspaces,
             frontmost_pid,
             pid_to_windows,
             window_pids,
+            hidden_workspaces: HashMap::new(),
             os,
             event_tx,
             gap_outer: settings.gap_outer.max(0) as f64,
@@ -109,13 +141,16 @@ impl StateManager {
             bar_sender,
             bar_config,
             bar_visible,
-            bar_spawned: !excluded_pids.is_empty(),
+            bar_spawned,
             excluded_pids,
             last_layout_rects: HashMap::new(),
             drag_window: None,
             drag_overlap_target: None,
             drag_overlap_start: None,
             last_drag_move: None,
+            last_reconcile: Instant::now(),
+            workspace_entries,
+            shutdown_requested: false,
         };
 
         for i in 0..state.workspaces.len() {
@@ -134,15 +169,20 @@ impl StateManager {
         state
     }
 
-    /// First workspace after `start` (wrapping) with room for another window.
-    /// Returns `None` when every workspace is at capacity.
+    /// First workspace after `start` (wrapping within the same monitor) with
+    /// room for another window. Returns `None` when every workspace on that
+    /// monitor is at capacity.
     fn find_next_workspace_with_capacity(&self, start: usize) -> Option<usize> {
         let n = self.workspaces.len();
         if n == 0 {
             return None;
         }
+        let monitor = self.workspaces[start].monitor_id;
         for offset in 1..=n {
             let idx = (start + offset) % n;
+            if self.workspaces[idx].monitor_id != monitor {
+                continue;
+            }
             if self.workspaces[idx].window_count() < self.max_tiles {
                 return Some(idx);
             }
@@ -178,11 +218,66 @@ impl StateManager {
             e.insert(pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
         }
-        let preferred = self.active_workspace_idx();
-        if self.workspaces[preferred].find_window(window_id).is_some() {
+        self.hidden_workspaces.remove(&window_id);
+        if self.find_workspace_for_window(window_id).is_some() {
             return;
         }
 
+        let preferred = self
+            .routed_workspace_idx(pid)
+            .unwrap_or_else(|| self.active_workspace_idx());
+        self.add_window_to_workspace(window_id, pid, preferred);
+        self.publish_bar_state();
+    }
+
+    /// Flat workspace index a new window from `pid` should land in: the
+    /// configured workspace for the app (by bundle id or name) on the active
+    /// monitor. `None` when the app isn't assigned to any workspace.
+    fn routed_workspace_idx(&self, pid: i32) -> Option<usize> {
+        let active = self.active_workspace_idx();
+        if active >= self.workspaces.len() {
+            return None;
+        }
+        let monitor = self.workspaces[active].monitor_id;
+        let name = self.configured_workspace_name_for_pid(pid)?;
+        self.workspaces
+            .iter()
+            .position(|ws| ws.name == *name && ws.monitor_id == monitor)
+    }
+
+    /// Name of the configured workspace `pid`'s app is assigned to, matched
+    /// case-insensitively against bundle id first, then app display name.
+    fn configured_workspace_name_for_pid(&self, pid: i32) -> Option<&str> {
+        if self.workspace_entries.is_empty() {
+            return None;
+        }
+        let bundle = self.os.app_bundle_id(pid);
+        let app_name = self.os.app_name(pid);
+        self.workspace_entries
+            .iter()
+            .find(|entry| {
+                entry.apps.iter().any(|app| {
+                    bundle.as_deref().is_some_and(|b| b.eq_ignore_ascii_case(app))
+                        || app_name
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(app))
+                })
+            })
+            .map(|entry| entry.name.as_str())
+    }
+
+    /// Route `window_id` into a workspace and retile. Prefers `preferred`,
+    /// overflowing to the next workspace with capacity. Returns the target
+    /// workspace index, or `None` when every workspace is full.
+    fn add_window_to_workspace(
+        &mut self,
+        window_id: WindowId,
+        pid: i32,
+        preferred: usize,
+    ) -> Option<usize> {
+        if self.workspaces[preferred].find_window(window_id).is_some() {
+            return Some(preferred);
+        }
         let target = if self.workspaces[preferred].window_count() >= self.max_tiles {
             match self.find_next_workspace_with_capacity(preferred) {
                 Some(idx) => {
@@ -201,7 +296,7 @@ impl StateManager {
                         self.max_tiles,
                         window_id
                     );
-                    return;
+                    return None;
                 }
             }
         } else {
@@ -220,7 +315,7 @@ impl StateManager {
 
         ws.add_window(window_id, None);
         self.apply_layout(target);
-        self.publish_bar_state();
+        Some(target)
     }
 
     pub fn on_window_destroyed(&mut self, window_id: WindowId) {
@@ -234,11 +329,59 @@ impl StateManager {
             }
         }
         self.window_pids.remove(&window_id);
+        self.hidden_workspaces.remove(&window_id);
         self.pid_to_windows.retain(|_, windows| {
             windows.retain(|w| *w != window_id);
             !windows.is_empty()
         });
         self.publish_bar_state();
+    }
+
+    /// A window was minimized or its app hidden: drop it from the tree (like a
+    /// close) so it stops occupying tiled space, but keep pid tracking so it
+    /// can be retiled when it becomes visible again.
+    pub fn on_window_hidden(&mut self, window_id: WindowId) {
+        for i in 0..self.workspaces.len() {
+            let ws = &self.workspaces[i];
+            if ws.find_window(window_id).is_some() {
+                let ws = &mut self.workspaces[i];
+                ws.remove_window(window_id);
+                self.hidden_workspaces.insert(window_id, i);
+                self.apply_layout(i);
+                self.publish_bar_state();
+                return;
+            }
+        }
+        log::debug!("WindowHidden: window {} not tracked, ignoring", window_id);
+    }
+
+    /// A window was deminiaturized or its app unhidden: retile it back into
+    /// the workspace it came from (or the active one).
+    pub fn on_window_shown(&mut self, window_id: WindowId) {
+        if self.find_workspace_for_window(window_id).is_some() {
+            return;
+        }
+        let pid = match self.window_pids.get(&window_id) {
+            Some(&p) => p,
+            None => {
+                log::debug!("WindowShown: unknown window {}, ignoring", window_id);
+                return;
+            }
+        };
+        let preferred = self
+            .hidden_workspaces
+            .remove(&window_id)
+            .filter(|&idx| idx < self.workspaces.len())
+            .unwrap_or_else(|| {
+                self.routed_workspace_idx(pid)
+                    .unwrap_or_else(|| self.active_workspace_idx())
+            });
+        if self
+            .add_window_to_workspace(window_id, pid, preferred)
+            .is_some()
+        {
+            self.publish_bar_state();
+        }
     }
 
     pub fn on_window_focused(&mut self, window_id: WindowId) {
@@ -281,19 +424,8 @@ impl StateManager {
         let cx = x + dragged_size.0 / 2.0;
         let cy = y + dragged_size.1 / 2.0;
 
-        let new_target = self
-            .last_layout_rects
-            .iter()
-            .find(|(&wid, rect)| {
-                if wid == window_id {
-                    return false;
-                }
-                cx >= rect.x
-                    && cx <= rect.x + rect.width
-                    && cy >= rect.y
-                    && cy <= rect.y + rect.height
-            })
-            .map(|(&wid, _)| wid);
+        let new_target =
+            pengwm_core::layout::window_at_point(&self.last_layout_rects, cx, cy, window_id);
 
         match (self.drag_overlap_target, new_target) {
             (Some(t), Some(nt)) if t == nt => {
@@ -312,6 +444,13 @@ impl StateManager {
 
     pub fn on_tick(&mut self) {
         let now = Instant::now();
+
+        // Fallback detection for minimized/hidden windows in case the AX
+        // notifications were missed or never registered.
+        if now.duration_since(self.last_reconcile) >= RECONCILE_INTERVAL {
+            self.last_reconcile = now;
+            self.reconcile_hidden_windows();
+        }
 
         // Check swap hold first — this runs every 50ms even when move
         // notifications stop (user holds window still over a target).
@@ -349,6 +488,20 @@ impl StateManager {
         self.drag_overlap_target = None;
         self.drag_overlap_start = None;
         self.last_drag_move = None;
+    }
+
+    /// Re-check every tracked window's actual hidden/minimized state and bring
+    /// the tree in line: untile windows the OS reports as hidden, and retile
+    /// ones that became visible again.
+    fn reconcile_hidden_windows(&mut self) {
+        for window_id in self.window_pids.keys().copied().collect::<Vec<_>>() {
+            let hidden = self.os.window_is_hidden(window_id);
+            if hidden && self.find_workspace_for_window(window_id).is_some() {
+                self.on_window_hidden(window_id);
+            } else if !hidden && self.hidden_workspaces.contains_key(&window_id) {
+                self.on_window_shown(window_id);
+            }
+        }
     }
 
     pub fn on_app_launched(&mut self, pid: i32) {
@@ -401,11 +554,17 @@ impl StateManager {
             Some(d) => (d.origin, d.size),
             None => return,
         };
-        let name = format!("ws-{}", self.workspaces.len() + 1);
-        let ws = Workspace::new(name, display_id, origin, size);
-        let idx = self.workspaces.len();
-        self.active_workspaces.insert(display_id, idx);
-        self.workspaces.push(ws);
+        let entries = if self.workspace_entries.is_empty() {
+            crate::config::default_workspaces()
+        } else {
+            self.workspace_entries.clone()
+        };
+        let base = self.workspaces.len();
+        self.active_workspaces.insert(display_id, base);
+        for entry in &entries {
+            self.workspaces
+                .push(Workspace::new(entry.name.clone(), display_id, origin, size));
+        }
         self.apply_bar_reservation();
         self.publish_bar_state();
     }
@@ -464,18 +623,17 @@ impl StateManager {
         self.publish_bar_state();
     }
 
-    pub fn on_command(&mut self, cmd: Command, tx: mpsc::Sender<DaemonResponse>) {
+    /// Handle one `Command` from any surface (IPC, keybind, config watcher).
+    /// `tx` is `None` for fire-and-forget sources; the reply is only sent when
+    /// a caller is waiting on it.
+    pub fn on_command(&mut self, cmd: Command, tx: Option<mpsc::Sender<DaemonResponse>>) {
         match cmd {
             Command::Focus { direction } => self.focus_command(direction),
             Command::MoveWindow { direction } => self.swap_command(direction),
             Command::Split { direction } => {
                 let idx = self.active_workspace_idx();
                 let ws = &mut self.workspaces[idx];
-                if ws.focused_is_window() {
-                    ws.pending_split = Some(direction);
-                } else {
-                    ws.set_split_direction(direction);
-                }
+                ws.apply_split_direction(direction);
                 self.apply_layout(idx);
             }
             Command::Workspace { id } => {
@@ -524,21 +682,25 @@ impl StateManager {
                 self.apply_layout(self.active_workspace_idx());
             }
             Command::ToggleBar => {
-                self.bar_visible = !self.bar_visible;
-                log::info!(
-                    "Bar toggled: {}",
-                    if self.bar_visible {
-                        "visible"
+                if self.bar_spawned {
+                    self.bar_visible = !self.bar_visible;
+                    log::info!(
+                        "Bar toggled: {}",
+                        if self.bar_visible {
+                            "visible"
+                        } else {
+                            "hidden"
+                        }
+                    );
+                    self.bar_sender.send(if self.bar_visible {
+                        BarMessage::Show
                     } else {
-                        "hidden"
-                    }
-                );
-                self.bar_sender.send(if self.bar_visible {
-                    BarMessage::Show
+                        BarMessage::Hide
+                    });
+                    self.apply_bar_reservation();
                 } else {
-                    BarMessage::Hide
-                });
-                self.apply_bar_reservation();
+                    log::info!("Bar not running; toggle ignored");
+                }
             }
             Command::ReloadConfig => {
                 self.reload_config();
@@ -554,12 +716,36 @@ impl StateManager {
                         focused_window: ws.focused_window_id(),
                     })
                     .collect();
-                let _ = tx.try_send(DaemonResponse::State { workspaces: info });
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(DaemonResponse::State { workspaces: info });
+                }
+                return;
+            }
+            Command::Quit => {
+                // Ack the caller (menubar / `pengwm quit`), then shut the bar
+                // down too so quitting the menubar stops everything. A short
+                // sleep lets the bar-server and IPC threads flush their writes
+                // before the event loop returns and the process exits.
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(DaemonResponse::Ack);
+                }
+                log::info!("Quit requested — shutting down daemon and bar");
+                self.bar_sender.send(BarMessage::Exit);
+                std::thread::sleep(Duration::from_millis(150));
+                self.shutdown_requested = true;
                 return;
             }
         }
-        let _ = tx.try_send(DaemonResponse::Ack);
+        if let Some(tx) = tx {
+            let _ = tx.try_send(DaemonResponse::Ack);
+        }
         self.publish_bar_state();
+    }
+
+    /// True once `Command::Quit` has been handled; the event loop polls this
+    /// to know when to stop running.
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested
     }
 
     fn focus_command(&mut self, direction: Direction) {
@@ -623,8 +809,8 @@ impl StateManager {
         self.max_tiles = updated_settings.max_tiles.max(1);
         self.restricted_apps = updated_settings.restricted_apps;
         self.bar_config = updated_settings.bar.clone();
-        self.bar_visible = updated_settings.bar.visible;
         let enabled = updated_settings.bar.enabled;
+        self.bar_visible = updated_settings.bar.visible && self.bar_spawned;
         self.apply_layout(self.active_workspace_idx());
         self.bar_sender.send(BarMessage::Reload);
         if enabled && !self.bar_spawned {
@@ -695,9 +881,10 @@ impl StateManager {
     }
 
     /// Global-coordinate rect of the bar strip on the primary display, or
-    /// `None` when the bar is hidden or no display geometry is available.
+    /// `None` when the bar is hidden, not spawned, or no display geometry is
+    /// available.
     fn bar_reserved_rect(&self) -> Option<Rect> {
-        if !self.bar_visible {
+        if !self.bar_visible || !self.bar_spawned {
             return None;
         }
         let primary = self.os.primary_display_id();
@@ -706,15 +893,12 @@ impl StateManager {
             .active_displays()
             .into_iter()
             .find(|d| d.id == primary)?;
-        let t = self.bar_config.thickness.max(1) as f64;
-        let (ox, oy) = (display.origin.0 as f64, display.origin.1 as f64);
-        let (w, h) = (display.size.0 as f64, display.size.1 as f64);
-        Some(match self.bar_config.position {
-            BarPosition::Top => Rect::new(ox, oy, w, t),
-            BarPosition::Bottom => Rect::new(ox, oy + h - t, w, t),
-            BarPosition::Left => Rect::new(ox, oy, t, h),
-            BarPosition::Right => Rect::new(ox + w - t, oy, t, h),
-        })
+        Some(pengwm_core::layout::bar_strip_rect(
+            display.origin,
+            display.size,
+            self.bar_config.position,
+            self.bar_config.thickness,
+        ))
     }
 
     /// Push the current bar strip geometry into every workspace (only
@@ -748,11 +932,23 @@ impl StateManager {
                         .get(&ws.monitor_id)
                         .map(|&idx| idx == i)
                         .unwrap_or(false);
+                let windows = ws
+                    .all_windows()
+                    .into_iter()
+                    .filter_map(|wid| self.window_pids.get(&wid).copied())
+                    .map(|pid| {
+                        self.os
+                            .app_name(pid)
+                            .or_else(|| self.os.app_bundle_id(pid))
+                            .unwrap_or_else(|| "unknown".into())
+                    })
+                    .collect();
                 BarWorkspace {
                     name: ws.name.clone(),
                     monitor_id: ws.monitor_id,
                     window_count: ws.window_count(),
                     active: is_active,
+                    windows,
                 }
             })
             .collect();
@@ -774,6 +970,7 @@ mod state_tests {
     use crate::adapter::DisplayInfo;
     use crate::adapter_test::TestAdapter;
     use crate::config::keybinds::KeybindConfig;
+    use pengwm_core::config::BarPosition;
     use pengwm_core::tree::SplitDirection;
 
     fn make_adapter(display_count: u32) -> TestAdapter {
@@ -822,14 +1019,30 @@ mod state_tests {
             Box::new(adapter),
             BarSender::from_channel(bar_tx),
             None,
+            vec![],
         )
     }
 
     #[test]
     fn creates_workspaces_from_displays() {
         let sm = setup(1);
-        assert_eq!(sm.workspaces.len(), 1);
-        assert_eq!(sm.workspaces[0].monitor_id, 1);
+        // The five default named workspaces, all on the primary monitor.
+        let names: Vec<&str> = sm.workspaces.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Development", "Browsing", "Notes", "Music", "Messaging"]
+        );
+        assert!(sm.workspaces.iter().all(|w| w.monitor_id == 1));
+    }
+
+    #[test]
+    fn creates_workspace_set_per_display() {
+        let sm = setup(2);
+        assert_eq!(sm.workspaces.len(), 10);
+        assert!(sm.workspaces[..5].iter().all(|w| w.monitor_id == 1));
+        assert!(sm.workspaces[5..].iter().all(|w| w.monitor_id == 2));
+        assert_eq!(sm.active_workspaces.get(&1), Some(&0));
+        assert_eq!(sm.active_workspaces.get(&2), Some(&5));
     }
 
     #[test]
@@ -897,6 +1110,99 @@ mod state_tests {
     }
 
     #[test]
+    fn on_window_hidden_removes_from_tree_but_keeps_pid() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        assert_eq!(sm.workspaces[0].window_count(), 2);
+        sm.on_window_hidden(100);
+        assert!(sm.workspaces[0].find_window(100).is_none());
+        assert_eq!(sm.window_pids.get(&100), Some(&42));
+        assert_eq!(sm.hidden_workspaces.get(&100), Some(&0));
+        assert_eq!(sm.workspaces[0].window_count(), 1);
+    }
+
+    #[test]
+    fn on_window_shown_retiles_into_original_workspace() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        sm.on_window_hidden(100);
+        sm.on_window_shown(100);
+        assert!(sm.workspaces[0].find_window(100).is_some());
+        assert!(!sm.hidden_workspaces.contains_key(&100));
+        assert_eq!(sm.workspaces[0].window_count(), 2);
+    }
+
+    #[test]
+    fn on_window_shown_ignores_untracked_window() {
+        let mut sm = setup(1);
+        sm.on_window_shown(999);
+        assert!(sm.workspaces[0].find_window(999).is_none());
+    }
+
+    #[test]
+    fn on_window_shown_skips_window_already_tracked() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_shown(100);
+        assert_eq!(sm.workspaces[0].window_count(), 1);
+    }
+
+    #[test]
+    fn destroyed_hidden_window_cleans_hidden_workspace() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_hidden(100);
+        assert!(sm.hidden_workspaces.contains_key(&100));
+        sm.on_window_destroyed(100);
+        assert!(!sm.hidden_workspaces.contains_key(&100));
+        assert!(sm.window_pids.get(&100).is_none());
+    }
+
+    #[test]
+    fn reconcile_untiles_windows_reported_hidden() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
+        adapter.hidden_windows.insert(100);
+        sm.last_reconcile = Instant::now() - RECONCILE_INTERVAL - Duration::from_secs(1);
+        sm.on_tick();
+        assert!(sm.workspaces[0].find_window(100).is_none());
+        assert_eq!(sm.hidden_workspaces.get(&100), Some(&0));
+        assert_eq!(sm.workspaces[0].window_count(), 1);
+    }
+
+    #[test]
+    fn reconcile_retiles_windows_when_visible_again() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_hidden(100);
+        assert!(sm.hidden_workspaces.contains_key(&100));
+        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
+        adapter.hidden_windows.clear();
+        sm.last_reconcile = Instant::now() - RECONCILE_INTERVAL - Duration::from_secs(1);
+        sm.on_tick();
+        assert!(sm.workspaces[0].find_window(100).is_some());
+        assert!(!sm.hidden_workspaces.contains_key(&100));
+    }
+
+    #[test]
+    fn reconcile_hides_windows_when_app_is_hidden() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
+        adapter.hidden_apps.insert(42);
+        sm.last_reconcile = Instant::now() - RECONCILE_INTERVAL - Duration::from_secs(1);
+        sm.on_tick();
+        assert!(sm.workspaces[0].find_window(100).is_none());
+        assert!(sm.workspaces[0].find_window(200).is_none());
+        assert_eq!(sm.workspaces[0].window_count(), 0);
+    }
+
+    #[test]
     fn focus_command_delegates_to_workspace() {
         let mut sm = setup(1);
         sm.on_window_created(100, 42);
@@ -944,7 +1250,8 @@ mod state_tests {
     #[test]
     fn move_focused_to_workspace_moves_window() {
         let mut sm = setup(2);
-        assert_eq!(sm.workspaces.len(), 2);
+        // 5 named workspaces per display.
+        assert_eq!(sm.workspaces.len(), 10);
 
         // Add two windows — they go to whatever workspace active_workspace_idx() picks
         sm.on_window_created(100, 42);
@@ -987,27 +1294,37 @@ mod state_tests {
 
     #[test]
     fn created_window_all_workspaces_full_stays_untracked() {
-        let mut sm = setup(2);
+        let mut sm = setup(1);
         sm.max_tiles = 2;
-        sm.workspaces[0].add_window(100, None);
-        sm.workspaces[0].add_window(200, None);
-        sm.workspaces[1].add_window(300, None);
-        sm.workspaces[1].add_window(500, None);
+        for (i, ws) in sm.workspaces.iter_mut().enumerate() {
+            ws.add_window((1000 + i * 2) as WindowId, None);
+            ws.add_window((1001 + i * 2) as WindowId, None);
+        }
 
         sm.on_window_created(400, 42);
 
-        assert_eq!(sm.workspaces[0].find_window(400), None);
-        assert_eq!(sm.workspaces[1].find_window(400), None);
+        assert!(
+            sm.workspaces.iter().all(|ws| ws.find_window(400).is_none()),
+            "no workspace has room, so the window stays untracked"
+        );
         assert_eq!(sm.window_pids.get(&400), Some(&42), "still pid-tracked");
     }
 
     #[test]
     fn created_window_overflow_wraps_to_first_workspace() {
-        let mut sm = setup(2);
+        let mut sm = setup(1);
         sm.max_tiles = 2;
+        // Fill the active workspace (1) and every one after it, leaving only
+        // the first workspace with room, so overflow wraps around to ws-0.
         sm.workspaces[1].add_window(300, None);
         sm.workspaces[1].add_window(500, None);
-        sm.workspaces[0].add_window(100, None);
+        sm.workspaces[2].add_window(301, None);
+        sm.workspaces[2].add_window(501, None);
+        sm.workspaces[3].add_window(302, None);
+        sm.workspaces[3].add_window(502, None);
+        sm.workspaces[4].add_window(303, None);
+        sm.workspaces[4].add_window(503, None);
+        sm.active_workspaces.insert(1, 1);
         sm.pid_to_windows.insert(42, vec![300]);
 
         sm.on_window_created(400, 42);
@@ -1044,23 +1361,22 @@ mod state_tests {
 
     #[test]
     fn move_to_full_workspace_aborts_when_no_room_anywhere() {
-        let mut sm = setup(2);
+        let mut sm = setup(1);
         sm.max_tiles = 2;
-        sm.workspaces[0].add_window(100, None);
-        sm.workspaces[0].add_window(200, None);
-        sm.workspaces[1].add_window(300, None);
-        sm.workspaces[1].add_window(500, None);
-        sm.pid_to_windows.insert(42, vec![100]);
-        sm.on_window_focused(100);
+        for (i, ws) in sm.workspaces.iter_mut().enumerate() {
+            ws.add_window((1000 + i * 2) as WindowId, None);
+            ws.add_window((1001 + i * 2) as WindowId, None);
+        }
+        sm.pid_to_windows.insert(42, vec![1000]);
+        sm.on_window_focused(1000);
 
         sm.move_focused_to_workspace(1);
 
         assert!(
-            sm.workspaces[0].find_window(100).is_some(),
+            sm.workspaces[0].find_window(1000).is_some(),
             "window should stay put when all workspaces are full"
         );
-        assert_eq!(sm.workspaces[0].window_count(), 2);
-        assert_eq!(sm.workspaces[1].window_count(), 2);
+        assert!(sm.workspaces.iter().all(|ws| ws.window_count() == 2));
     }
 
     #[test]
@@ -1069,7 +1385,7 @@ mod state_tests {
         assert!(!sm.workspaces[0].monocle);
         let cmd = Command::ToggleLayout;
         let (rtx, _) = mpsc::channel(1);
-        sm.on_command(cmd, rtx);
+        sm.on_command(cmd, Some(rtx));
         assert!(sm.workspaces[0].monocle);
     }
 
@@ -1077,8 +1393,27 @@ mod state_tests {
     fn set_gap_updates_values() {
         let mut sm = setup(1);
         let (rtx, _) = mpsc::channel(1);
-        sm.on_command(Command::SetGapOuter { pixels: 20 }, rtx);
+        sm.on_command(Command::SetGapOuter { pixels: 20 }, Some(rtx));
         assert_eq!(sm.gap_outer, 20.0);
+    }
+
+    #[test]
+    fn split_command_pends_direction_for_next_window() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        let (rtx, _) = mpsc::channel(1);
+        sm.on_command(
+            Command::Split {
+                direction: SplitDirection::Horizontal,
+            },
+            Some(rtx),
+        );
+        sm.on_window_created(200, 42);
+        assert_eq!(
+            sm.workspaces[0].focused_split_direction(),
+            Some(SplitDirection::Horizontal),
+            "split issued on a focused window becomes the next window's parent direction"
+        );
     }
 
     #[test]
@@ -1086,9 +1421,59 @@ mod state_tests {
         let mut sm = setup(1);
         sm.on_window_created(100, 42);
         let (rtx, mut rx) = mpsc::channel(1);
-        sm.on_command(Command::QueryState, rtx);
+        sm.on_command(Command::QueryState, Some(rtx));
         let resp = rx.blocking_recv();
         assert!(resp.is_some());
+    }
+
+    #[test]
+    fn on_command_handles_every_variant_without_reply() {
+        // The keybind/config-watcher path sends `None` for the reply slot:
+        // every Command variant must be handled without a channel to write to.
+        let commands = [
+            Command::Focus {
+                direction: Direction::Left,
+            },
+            Command::MoveWindow {
+                direction: Direction::Right,
+            },
+            Command::Split {
+                direction: SplitDirection::Vertical,
+            },
+            Command::Workspace { id: 1 },
+            Command::MoveWindowToWorkspace { id: 2 },
+            Command::Close,
+            Command::ToggleLayout,
+            Command::SetLayout {
+                mode: LayoutMode::Accordion,
+            },
+            Command::SetGapOuter { pixels: 4 },
+            Command::SetGapInner { pixels: 2 },
+            Command::ToggleBar,
+            Command::ReloadConfig,
+            Command::QueryState,
+            Command::Quit,
+        ];
+        for cmd in commands {
+            let mut sm = setup(1);
+            sm.on_command(cmd, None);
+        }
+    }
+
+    #[test]
+    fn on_command_sends_ack_only_when_reply_slot_is_present() {
+        let mut sm = setup(1);
+        let (rtx, mut rx) = mpsc::channel(1);
+        sm.on_command(Command::ToggleLayout, Some(rtx));
+        assert!(matches!(rx.blocking_recv(), Some(DaemonResponse::Ack)));
+
+        let mut sm = setup(1);
+        let (rtx, mut rx) = mpsc::channel(1);
+        sm.on_command(Command::QueryState, Some(rtx));
+        assert!(matches!(
+            rx.blocking_recv(),
+            Some(DaemonResponse::State { .. })
+        ));
     }
 
     #[test]
@@ -1099,7 +1484,9 @@ mod state_tests {
             thickness: 24,
             visible: true,
             enabled: true,
+            ..Default::default()
         };
+        sm.bar_spawned = true;
         sm.bar_visible = true;
         let rect = sm.bar_reserved_rect().unwrap();
         assert_eq!(
@@ -1111,12 +1498,14 @@ mod state_tests {
     #[test]
     fn bar_reserved_rect_bottom_and_right() {
         let mut sm = setup(1);
+        sm.bar_spawned = true;
         sm.bar_visible = true;
         sm.bar_config = BarConfig {
             position: BarPosition::Bottom,
             thickness: 30,
             visible: true,
             enabled: true,
+            ..Default::default()
         };
         let rect = sm.bar_reserved_rect().unwrap();
         assert_eq!((rect.x, rect.y), (0.0, 1080.0 - 30.0));
@@ -1137,23 +1526,33 @@ mod state_tests {
     }
 
     #[test]
+    fn bar_reserved_rect_none_when_not_spawned() {
+        let mut sm = setup(1);
+        sm.bar_visible = true;
+        sm.bar_spawned = false;
+        assert_eq!(sm.bar_reserved_rect(), None);
+    }
+
+    #[test]
     fn apply_bar_reservation_reserves_primary_workspace() {
         let mut sm = setup(2);
+        sm.bar_spawned = true;
         sm.bar_visible = true;
         sm.bar_config = BarConfig {
             position: BarPosition::Top,
             thickness: 20,
             visible: true,
             enabled: true,
+            ..Default::default()
         };
         sm.apply_bar_reservation();
-        // ws-0 is on display 1 (primary), ws-1 on display 2.
+        // Display 1 (primary) owns workspaces 0-4, display 2 owns 5-9.
         assert!(
             sm.workspaces[0].reserved_rect().is_some(),
             "primary monitor workspace should be reserved"
         );
         assert!(
-            sm.workspaces[1].reserved_rect().is_none(),
+            sm.workspaces[5].reserved_rect().is_none(),
             "secondary monitor workspace should not be reserved"
         );
         sm.bar_visible = false;
@@ -1164,9 +1563,10 @@ mod state_tests {
     #[test]
     fn toggle_bar_command_flips_visibility_and_reservation() {
         let mut sm = setup(1);
+        sm.bar_spawned = true;
         let was_visible = sm.bar_visible;
         let (rtx, _) = mpsc::channel(1);
-        sm.on_command(Command::ToggleBar, rtx);
+        sm.on_command(Command::ToggleBar, Some(rtx));
         assert_ne!(sm.bar_visible, was_visible);
         // Reservations match the new visibility.
         assert_eq!(sm.bar_reserved_rect().is_some(), sm.bar_visible);
@@ -1185,6 +1585,7 @@ mod state_tests {
             Box::new(adapter),
             BarSender::from_channel(bar_tx),
             None,
+            vec![],
         );
 
         sm.on_window_created(100, 42);
@@ -1198,13 +1599,98 @@ mod state_tests {
             Some(BarMessage::State(s)) => s,
             other => panic!("expected a State publish, got {:?}", other),
         };
-        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces.len(), 5);
         assert_eq!(state.workspaces[0].window_count, 2);
         assert!(state.workspaces[0].active);
         assert_eq!(
             state.split_direction,
             Some(SplitDirection::Vertical),
             "two windows on a widescreen monitor split vertically"
+        );
+    }
+
+    #[test]
+    fn publish_bar_state_populates_window_app_names() {
+        let (tx, _) = mpsc::channel(64);
+        let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
+        let mut adapter = make_adapter(1);
+        adapter.app_names.insert(42, "Safari".into());
+        adapter.bundle_ids.insert(42, "com.apple.Safari".into());
+        let (bar_tx, mut bar_rx) = mpsc::channel(64);
+        let mut sm = StateManager::new(
+            tx,
+            keybinds,
+            Box::new(adapter),
+            BarSender::from_channel(bar_tx),
+            None,
+            vec![],
+        );
+
+        sm.on_window_created(100, 42);
+        sm.on_window_created(300, 43);
+        // 43 has no display name and no bundle id -> falls back to "unknown".
+        // 42 is Safari, which the default routing sends to the Browsing
+        // workspace (index 1); 43's window lands in the active workspace (0).
+        let mut last: Option<BarMessage> = None;
+        while let Ok(msg) = bar_rx.try_recv() {
+            last = Some(msg);
+        }
+        let state = match last {
+            Some(BarMessage::State(s)) => s,
+            other => panic!("expected a State publish, got {:?}", other),
+        };
+        assert_eq!(state.workspaces[0].windows, vec!["unknown"]);
+        assert_eq!(state.workspaces[1].windows, vec!["Safari"]);
+    }
+
+    #[test]
+    fn on_window_created_routes_configured_app_to_its_workspace() {
+        let mut sm = setup(1);
+        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
+        adapter.bundle_ids.insert(77, "com.google.Chrome".into());
+        adapter.app_names.insert(77, "Chrome".into());
+
+        sm.on_window_created(777, 77);
+
+        let idx = sm
+            .workspaces
+            .iter()
+            .position(|ws| ws.find_window(777).is_some())
+            .expect("routed window should be tracked");
+        assert_eq!(sm.workspaces[idx].name, "Browsing");
+    }
+
+    #[test]
+    fn on_window_created_routing_matches_app_name_case_insensitively() {
+        let mut sm = setup(1);
+        let adapter = sm.os.as_any_mut().downcast_mut::<TestAdapter>().unwrap();
+        adapter.app_names.insert(88, "spotify".into());
+
+        sm.on_window_created(888, 88);
+
+        let idx = sm
+            .workspaces
+            .iter()
+            .position(|ws| ws.find_window(888).is_some())
+            .expect("routed window should be tracked");
+        assert_eq!(sm.workspaces[idx].name, "Music");
+    }
+
+    #[test]
+    fn quit_command_requests_shutdown_and_exits_bar() {
+        let mut sm = setup(1);
+        let (bar_tx, mut bar_rx) = mpsc::channel(64);
+        sm.bar_sender = BarSender::from_channel(bar_tx);
+        let (rtx, mut rx) = mpsc::channel(1);
+
+        sm.on_command(Command::Quit, Some(rtx));
+
+        assert!(sm.shutdown_requested());
+        assert!(matches!(rx.blocking_recv(), Some(DaemonResponse::Ack)));
+        let msgs: Vec<_> = std::iter::from_fn(|| bar_rx.try_recv().ok()).collect();
+        assert!(
+            msgs.iter().any(|m| matches!(m, BarMessage::Exit)),
+            "quitting should tell the bar to exit too"
         );
     }
 }

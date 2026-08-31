@@ -3,7 +3,7 @@ use std::ptr;
 
 use accessibility_sys::*;
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
-use core_foundation::base::{CFRelease, CFRetain, CFTypeRef, TCFType};
+use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::boolean::kCFBooleanTrue;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
@@ -320,20 +320,6 @@ pub unsafe fn close_window(element: AXUIElementRef) {
     CFRelease(close_button);
 }
 
-/// # Safety
-///
-/// The caller must ensure that `pid` references a valid running process and that
-/// the Accessibility API is called from a trusted process with the necessary permissions.
-pub unsafe fn find_element(pid: i32, window_id: WindowId) -> Option<AXUIElementRef> {
-    let windows = windows_for_pid(pid);
-    for (elem, wid) in &windows {
-        if *wid == window_id {
-            return Some(*elem);
-        }
-    }
-    None
-}
-
 #[repr(C)]
 struct CGPoint {
     x: f64,
@@ -344,4 +330,20 @@ struct CGPoint {
 struct CGSize {
     width: f64,
     height: f64,
+}
+
+/// # Safety
+///
+/// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
+/// element remains valid for the duration of the call.
+pub unsafe fn bool_attribute(element: AXUIElementRef, attribute: &str) -> bool {
+    let name = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value);
+    if err != kAXErrorSuccess || value.is_null() {
+        return false;
+    }
+    let is_true = CFEqual(value, kCFBooleanTrue as CFTypeRef) != 0;
+    CFRelease(value);
+    is_true
 }

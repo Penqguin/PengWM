@@ -13,6 +13,8 @@ pub enum DaemonEvent {
     WindowDestroyed(pengwm_core::tree::WindowId),
     WindowFocused(pengwm_core::tree::WindowId),
     WindowMoved(pengwm_core::tree::WindowId, f64, f64),
+    WindowHidden(pengwm_core::tree::WindowId),
+    WindowShown(pengwm_core::tree::WindowId),
 
     AppLaunched(i32),
     AppTerminated(i32),
@@ -22,12 +24,13 @@ pub enum DaemonEvent {
     MonitorRemoved(u32),
     MonitorResized(u32),
 
+    /// A `Command` from any source. `Some(tx)` when the caller expects a
+    /// `DaemonResponse` (the CLI/IPC client); `None` for fire-and-forget
+    /// sources (keybinds, config watcher) that don't get a reply slot.
     Command(
         pengwm_core::command::Command,
-        mpsc::Sender<pengwm_core::command::DaemonResponse>,
+        Option<mpsc::Sender<pengwm_core::command::DaemonResponse>>,
     ),
-
-    Keybind(pengwm_core::command::Command),
 }
 
 pub struct EventLoop {
@@ -51,22 +54,40 @@ impl EventLoop {
             log::info!("bar.enabled=false — not spawning pengwm-bar");
             None
         };
-        let state = StateManager::new(tx.clone(), keybinds, os, bar_sender, bar_pid);
+        let menubar_pid = if settings.menubar.enabled {
+            spawn_menubar_process()
+        } else {
+            log::info!("menubar.enabled=false — not spawning pengwm-menubar");
+            None
+        };
+        let state = StateManager::new(
+            tx.clone(),
+            keybinds,
+            os,
+            bar_sender,
+            bar_pid,
+            menubar_pid.into_iter().collect::<Vec<_>>(),
+        );
         (Self { rx, state }, tx)
     }
 
     /// Run one iteration of the event loop: let the CFRunLoop process one source,
     /// then drain all queued mpsc messages. Returns `false` if the channel is
-    /// disconnected.
+    /// disconnected or a shutdown was requested.
     pub fn pump(&mut self) -> bool {
         unsafe {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, 1);
             loop {
                 match self.rx.try_recv() {
-                    Ok(event) => self.dispatch(event),
+                    Ok(event) => {
+                        self.dispatch(event);
+                        if self.state.shutdown_requested() {
+                            return false;
+                        }
+                    }
                     Err(mpsc::error::TryRecvError::Empty) => {
                         self.state.on_tick();
-                        return true;
+                        return !self.state.shutdown_requested();
                     }
                     Err(mpsc::error::TryRecvError::Disconnected) => {
                         log::error!("Event loop channel closed");
@@ -80,7 +101,8 @@ impl EventLoop {
     /// Run the event loop synchronously on the current thread.
     ///
     /// Dispatches macOS events from the CFRunLoop (AXObserver, CGEventTap, NSWorkspace)
-    /// and drains the mpsc channel between each run loop iteration.
+    /// and drains the mpsc channel between each run loop iteration. Returns when
+    /// the channel disconnects or a shutdown was requested (`Command::Quit`).
     pub fn run_sync(&mut self) {
         unsafe {
             loop {
@@ -95,13 +117,21 @@ impl EventLoop {
                 // Drain all queued mpsc messages
                 loop {
                     match self.rx.try_recv() {
-                        Ok(event) => self.dispatch(event),
+                        Ok(event) => {
+                            self.dispatch(event);
+                            if self.state.shutdown_requested() {
+                                return;
+                            }
+                        }
                         Err(mpsc::error::TryRecvError::Empty) => break,
                         Err(mpsc::error::TryRecvError::Disconnected) => {
                             log::error!("Event loop channel closed");
                             return;
                         }
                     }
+                }
+                if self.state.shutdown_requested() {
+                    return;
                 }
                 self.state.on_tick();
             }
@@ -114,6 +144,8 @@ impl EventLoop {
             DaemonEvent::WindowDestroyed(id) => self.state.on_window_destroyed(id),
             DaemonEvent::WindowFocused(id) => self.state.on_window_focused(id),
             DaemonEvent::WindowMoved(id, x, y) => self.state.on_window_moved(id, x, y),
+            DaemonEvent::WindowHidden(id) => self.state.on_window_hidden(id),
+            DaemonEvent::WindowShown(id) => self.state.on_window_shown(id),
             DaemonEvent::AppLaunched(pid) => self.state.on_app_launched(pid),
             DaemonEvent::AppTerminated(pid) => self.state.on_app_terminated(pid),
             DaemonEvent::AppActivated(pid) => self.state.on_app_activated(pid),
@@ -121,10 +153,6 @@ impl EventLoop {
             DaemonEvent::MonitorRemoved(id) => self.state.on_monitor_removed(id),
             DaemonEvent::MonitorResized(id) => self.state.on_monitor_resized(id),
             DaemonEvent::Command(cmd, rtx) => self.state.on_command(cmd, rtx),
-            DaemonEvent::Keybind(cmd) => {
-                let (rtx, _) = mpsc::channel(1);
-                self.state.on_command(cmd, rtx);
-            }
         }
     }
 }
@@ -147,16 +175,44 @@ fn spawn_bar_process() -> Option<i32> {
         v
     };
 
-    for candidate in &candidates {
+    spawn_child_process("pengwm-bar", &candidates)
+}
+
+/// Launch the `pengwm-menubar` binary as a child process and return its pid so
+/// the WM can exclude its window. Prefers a sibling of the current executable,
+/// then `$PATH`, then `PENGWM_MENUBAR_PATH`. Returns `None` when no candidate
+/// runs.
+fn spawn_menubar_process() -> Option<i32> {
+    let candidates: Vec<std::path::PathBuf> = {
+        let mut v = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                v.push(dir.join("pengwm-menubar"));
+            }
+        }
+        if let Ok(path) = std::env::var("PENGWM_MENUBAR_PATH") {
+            v.push(path.into());
+        }
+        v.push("pengwm-menubar".into());
+        v
+    };
+
+    spawn_child_process("pengwm-menubar", &candidates)
+}
+
+/// Try each candidate in order and spawn the first that runs, returning its
+/// pid. Reaps the child when the daemon exits so it doesn't linger.
+fn spawn_child_process(name: &str, candidates: &[std::path::PathBuf]) -> Option<i32> {
+    for candidate in candidates {
         match std::process::Command::new(candidate).spawn() {
             Ok(mut child) => {
                 let pid = child.id() as i32;
                 log::info!(
-                    "Spawned pengwm-bar (pid {}) from {}",
+                    "Spawned {} (pid {}) from {}",
+                    name,
                     pid,
                     candidate.display()
                 );
-                // Reap the child when the daemon exits so it doesn't linger.
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
@@ -164,13 +220,14 @@ fn spawn_bar_process() -> Option<i32> {
             }
             Err(e) => {
                 log::debug!(
-                    "Could not spawn pengwm-bar from {}: {}",
+                    "Could not spawn {} from {}: {}",
+                    name,
                     candidate.display(),
                     e
                 );
             }
         }
     }
-    log::warn!("pengwm-bar not found. Install it next to pengwm or set PENGWM_BAR_PATH.");
+    log::warn!("{} not found. Install it next to pengwm or set its _PATH env var.", name);
     None
 }

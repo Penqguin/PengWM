@@ -43,6 +43,8 @@ pub enum CliCommand {
     },
     ReloadConfig,
     State,
+    /// Stop the daemon (and the status bar with it)
+    Quit,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -101,6 +103,7 @@ impl From<CliCommand> for Command {
             CliCommand::SetGapInner { pixels } => Command::SetGapInner { pixels },
             CliCommand::ReloadConfig => Command::ReloadConfig,
             CliCommand::State => Command::QueryState,
+            CliCommand::Quit => Command::Quit,
         }
     }
 }

@@ -3,13 +3,13 @@ use std::thread;
 
 use clap::Parser;
 use pengwm_core::command::Command;
+use pengwm_core::ipc::send_command;
 use pengwm_daemon::config;
 use pengwm_daemon::event_loop;
 use pengwm_daemon::ipc_server;
 use pengwm_daemon::macos;
 
 mod cli;
-mod ipc_client;
 fn main() {
     let cli = cli::Cli::parse();
 
@@ -17,7 +17,7 @@ fn main() {
         None | Some(cli::CliCommand::Daemon) => daemon_main(),
         Some(cmd) => {
             let command: Command = cmd.into();
-            match ipc_client::send_command(&command) {
+            match send_command(&command) {
                 Ok(response) => print!("{response}"),
                 Err(e) => {
                     eprintln!("error: {e}");

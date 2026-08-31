@@ -63,6 +63,24 @@ pub fn bundle_id_for_pid(pid: i32) -> Option<String> {
     None
 }
 
+/// Resolve a process ID to its human-readable display name (e.g. "Spotify"),
+/// as shown in the Dock. Falls back to the bundle id when the localized name
+/// is unavailable.
+pub fn localized_name_for_pid(pid: i32) -> Option<String> {
+    let ws = NSWorkspace::sharedWorkspace();
+    for app in ws.runningApplications() {
+        if app.processIdentifier() == pid {
+            return Some(
+                app.localizedName()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+            )
+            .filter(|s| !s.is_empty());
+        }
+    }
+    None
+}
+
 fn add_observer(center: &NSNotificationCenter, ctx: *mut c_void, name: &NSString, event_type: u8) {
     let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
         let notif = unsafe { notification.as_ref() };

@@ -125,7 +125,7 @@ unsafe extern "C" fn event_tap_callback(
             keycode,
             command
         );
-        let _ = ctx.event_tx.try_send(DaemonEvent::Keybind(command));
+        let _ = ctx.event_tx.try_send(DaemonEvent::Command(command, None));
         return event;
     }
 

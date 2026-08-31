@@ -1,6 +1,7 @@
 use crate::event_loop::DaemonEvent;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
+use std::any::Any;
 
 pub trait OsAdapter {
     fn running_app_pids(&self) -> Vec<i32>;
@@ -13,12 +14,22 @@ pub trait OsAdapter {
     fn focus_window(&mut self, window_id: WindowId);
     fn close_window(&mut self, window_id: WindowId);
     fn hide_windows(&mut self, window_ids: &[WindowId]);
+    /// True when the window is minimized or hidden (per-window `AXHidden`,
+    /// `AXMinimized`, or its app is hidden). Used by the periodic reconcile so
+    /// hidden windows stop being tiled even when AX notifications are missed.
+    fn window_is_hidden(&self, window_id: WindowId) -> bool;
     fn attach_observer(&mut self, pid: i32);
     fn detach_observer(&mut self, pid: i32);
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
+    /// Human-readable display name for the app owning `pid` (e.g. "Safari"),
+    /// distinct from its bundle id ("com.apple.Safari"). Drives the menubar's
+    /// per-window app labels.
+    fn app_name(&self, pid: i32) -> Option<String>;
     fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
     where
         Self: Sized;
+    /// Test seam: downcast to the concrete adapter (used by daemon state tests).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 #[derive(Clone)]

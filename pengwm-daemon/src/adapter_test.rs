@@ -16,6 +16,9 @@ pub struct TestAdapter {
     pub last_focused: Option<WindowId>,
     pub observers: HashSet<i32>,
     pub bundle_ids: HashMap<i32, String>,
+    pub app_names: HashMap<i32, String>,
+    pub hidden_windows: HashSet<WindowId>,
+    pub hidden_apps: HashSet<i32>,
 }
 
 impl TestAdapter {
@@ -31,6 +34,9 @@ impl TestAdapter {
             last_focused: None,
             observers: HashSet::new(),
             bundle_ids: HashMap::new(),
+            app_names: HashMap::new(),
+            hidden_windows: HashSet::new(),
+            hidden_apps: HashSet::new(),
         }
     }
 }
@@ -93,6 +99,14 @@ impl OsAdapter for TestAdapter {
         }
     }
 
+    fn window_is_hidden(&self, window_id: WindowId) -> bool {
+        self.hidden_windows.contains(&window_id)
+            || self
+                .window_pids
+                .get(&window_id)
+                .is_some_and(|pid| self.hidden_apps.contains(pid))
+    }
+
     fn attach_observer(&mut self, pid: i32) {
         self.observers.insert(pid);
     }
@@ -105,10 +119,21 @@ impl OsAdapter for TestAdapter {
         self.bundle_ids.get(&pid).cloned()
     }
 
+    fn app_name(&self, pid: i32) -> Option<String> {
+        self.app_names
+            .get(&pid)
+            .cloned()
+            .or_else(|| self.bundle_ids.get(&pid).cloned())
+    }
+
     fn with_callback(_callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self
     where
         Self: Sized,
     {
         TestAdapter::new()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
