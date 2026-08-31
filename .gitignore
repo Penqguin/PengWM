@@ -25,3 +25,6 @@ Thumbs.db
 !.vscode/settings.json
 !.vscode/extensions.json
 !.vscode/launch.json
+
+# Build artifacts (Homebrew template expansion)
+{{HOMEBREW_PREFIX}}
