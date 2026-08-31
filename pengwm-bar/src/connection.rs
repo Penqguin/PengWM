@@ -1,12 +1,10 @@
 use eframe::egui;
-use pengwm_core::command::{BarMessage, Command};
-use std::io::{BufRead, BufReader, Read, Write};
+use pengwm_core::command::BarMessage;
+pub use pengwm_core::ipc::{send_command, BAR_SOCKET_PATH};
+use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
-
-pub const BAR_SOCKET_PATH: &str = "/tmp/pengwm-bar.sock";
-pub const COMMAND_SOCKET_PATH: &str = "/tmp/pengwm.sock";
 
 const MAX_BACKOFF: Duration = Duration::from_secs(2);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
@@ -63,28 +61,12 @@ fn read_messages(tx: &Sender<BarMessage>, ctx: &egui::Context) -> Result<(), Str
 }
 
 /// Send a `Command` to the daemon over the command socket (same wire format as
-/// `pengwm`'s own CLI client). Used for click-to-switch-workspace.
-pub fn send_command(cmd: &Command) -> Result<String, String> {
-    let body = serde_json::to_string(cmd).map_err(|e| format!("serialize: {e}"))?;
-
-    let mut stream = UnixStream::connect(COMMAND_SOCKET_PATH)
-        .map_err(|e| format!("could not connect to daemon at {COMMAND_SOCKET_PATH}: {e}"))?;
-    stream
-        .write_all(body.as_bytes())
-        .map_err(|e| format!("write: {e}"))?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|e| format!("shutdown: {e}"))?;
-
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap_or_default();
-    Ok(response)
-}
-
+/// `pengwm`'s own CLI client). Used for click-to-switch-workspace. Shared with
+/// the daemon's client in `pengwm_core::ipc`.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pengwm_core::command::BarState;
+    use pengwm_core::command::{BarState, Command};
 
     #[test]
     fn parses_newline_delimited_bar_messages() {

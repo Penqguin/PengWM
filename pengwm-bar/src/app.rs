@@ -5,7 +5,8 @@ use eframe::egui::{
     self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sense, Stroke,
     StrokeKind, Vec2,
 };
-use pengwm_core::command::{BarMessage, BarPosition, BarState, Command};
+use pengwm_core::command::{BarMessage, BarState, Command};
+use pengwm_core::config::BarPosition;
 use pengwm_core::tree::SplitDirection;
 use std::sync::mpsc::Receiver;
 
@@ -70,7 +71,7 @@ impl BarApp {
     }
 
     /// Desired bar rect in global coordinates: the daemon-reserved rect when
-    /// available, else config-derived from the current viewport.
+    /// available, else a config-derived strip across the monitor.
     fn desired_geometry(&self, ctx: &egui::Context) -> Option<(Pos2, Vec2)> {
         if let Some(rect) = self.state.as_ref().and_then(|s| s.rect) {
             return Some((
@@ -78,23 +79,37 @@ impl BarApp {
                 vec2(rect.width as f32, rect.height as f32),
             ));
         }
-        let viewport = ctx.input(|i| i.viewport_rect());
-        if viewport.is_positive() {
-            let t = self.config.thickness.max(1) as f32;
-            let (w, h) = (viewport.width(), viewport.height());
-            let (x, y, w, h) = match self.config.position {
-                BarPosition::Top => (0.0, 0.0, w, t),
-                BarPosition::Bottom => (0.0, h - t, w, t),
-                BarPosition::Left => (0.0, 0.0, t, h),
-                BarPosition::Right => (w - t, 0.0, t, h),
-            };
-            return Some((pos2(x, y), vec2(w, h)));
+        // Fallback before the daemon has pushed a rect: compute the strip
+        // against the physical monitor (global origin 0,0), not the window's
+        // own rect — a self-referential origin makes bottom/right positions
+        // land mid-screen on a freshly-created (centered) window.
+        if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+            if monitor.x > 0.0 && monitor.y > 0.0 {
+                let rect = pengwm_core::layout::bar_strip_rect(
+                    (0, 0),
+                    (monitor.x.round() as u32, monitor.y.round() as u32),
+                    self.config.position,
+                    self.config.thickness,
+                );
+                return Some((
+                    pos2(rect.x as f32, rect.y as f32),
+                    vec2(rect.width as f32, rect.height as f32),
+                ));
+            }
         }
         None
     }
 }
 
 impl eframe::App for BarApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Fully transparent: eframe's default clear (semi-transparent dark)
+        // paints the whole window as a square slab, hiding the rounded fill
+        // behind it. With a transparent clear the rounded corners show the
+        // desktop cleanly.
+        egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_messages(ctx);
 
@@ -300,6 +315,7 @@ mod tests {
                     monitor_id: 1,
                     window_count: 2,
                     active: true,
+                    windows: vec![],
                 }],
                 active_workspace: 0,
                 split_direction: Some(SplitDirection::Vertical),
