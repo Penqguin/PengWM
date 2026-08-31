@@ -18,8 +18,10 @@ pub mod bar;
 pub mod display;
 pub mod drag;
 pub mod hidden;
+pub mod router;
 use self::bar::{BarReserve, ReloadAction, ToggleAction};
 use self::display::DisplaySet;
+use self::router::Router;
 use self::drag::{DragState, DragTickAction};
 use self::hidden::HiddenTracker;
 
@@ -34,7 +36,7 @@ pub struct StateManager {
     event_tx: mpsc::Sender<DaemonEvent>,
     gap_outer: f64,
     gap_inner: f64,
-    max_tiles: usize,
+    router: Router,
     keybinds: Arc<Mutex<KeybindConfig>>,
     restricted_apps: Vec<String>,
     bar_sender: BarSender,
@@ -111,7 +113,7 @@ impl StateManager {
             event_tx,
             gap_outer: settings.gap_outer.max(0) as f64,
             gap_inner: settings.gap_inner.max(0) as f64,
-            max_tiles: settings.max_tiles.max(1),
+            router: Router::new(settings.max_tiles as usize),
             keybinds,
             restricted_apps: settings.restricted_apps,
             bar_sender,
@@ -142,40 +144,16 @@ impl StateManager {
     /// room for another window. Returns `None` when every workspace on that
     /// monitor is at capacity.
     fn find_next_workspace_with_capacity(&self, start: usize) -> Option<usize> {
-        let n = self.workspaces.len();
-        if n == 0 {
-            return None;
-        }
-        let monitor = self.workspaces[start].monitor_id;
-        for offset in 1..=n {
-            let idx = (start + offset) % n;
-            if self.workspaces[idx].monitor_id != monitor {
-                continue;
-            }
-            if self.workspaces[idx].window_count() < self.max_tiles {
-                return Some(idx);
-            }
-        }
-        None
+        self.router.find_next_with_capacity(&self.workspaces, start)
     }
 
     fn active_workspace_idx(&self) -> usize {
-        if let Some(pid) = self.frontmost_pid {
-            if let Some(windows) = self.pid_to_windows.get(&pid) {
-                for &window_id in windows {
-                    for ws in &self.workspaces {
-                        if ws.find_window(window_id).is_some() {
-                            if let Some(&idx) = self.displays.active().get(&ws.monitor_id) {
-                                if idx < self.workspaces.len() {
-                                    return idx;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        self.displays.active().values().next().copied().unwrap_or(0)
+        self.router.active_workspace_idx(
+            &self.workspaces,
+            &self.pid_to_windows,
+            self.frontmost_pid,
+            &self.displays,
+        )
     }
 
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
@@ -204,36 +182,23 @@ impl StateManager {
     /// monitor. `None` when the app isn't assigned to any workspace.
     fn routed_workspace_idx(&self, pid: i32) -> Option<usize> {
         let active = self.active_workspace_idx();
-        if active >= self.workspaces.len() {
-            return None;
-        }
-        let monitor = self.workspaces[active].monitor_id;
-        let name = self.configured_workspace_name_for_pid(pid)?;
-        self.workspaces
-            .iter()
-            .position(|ws| ws.name == *name && ws.monitor_id == monitor)
+        self.router.routed_workspace_idx(
+            pid,
+            &self.workspaces,
+            active,
+            &*self.os,
+            self.displays.entries(),
+        )
     }
 
     /// Name of the configured workspace `pid`'s app is assigned to, matched
     /// case-insensitively against bundle id first, then app display name.
     fn configured_workspace_name_for_pid(&self, pid: i32) -> Option<&str> {
-        if self.displays.entries().is_empty() {
-            return None;
-        }
-        let bundle = self.os.app_bundle_id(pid);
-        let app_name = self.os.app_name(pid);
-        self.displays
-            .entries()
-            .iter()
-            .find(|entry| {
-                entry.apps.iter().any(|app| {
-                    bundle.as_deref().is_some_and(|b| b.eq_ignore_ascii_case(app))
-                        || app_name
-                            .as_deref()
-                            .is_some_and(|n| n.eq_ignore_ascii_case(app))
-                })
-            })
-            .map(|entry| entry.name.as_str())
+        self.router.configured_workspace_name_for_pid(
+            pid,
+            &*self.os,
+            self.displays.entries(),
+        )
     }
 
     /// Route `window_id` into a workspace and retile. Prefers `preferred`,
@@ -248,14 +213,14 @@ impl StateManager {
         if self.workspaces[preferred].find_window(window_id).is_some() {
             return Some(preferred);
         }
-        let target = if self.workspaces[preferred].window_count() >= self.max_tiles {
+        let target = if self.workspaces[preferred].window_count() >= self.router.max_tiles() {
             match self.find_next_workspace_with_capacity(preferred) {
                 Some(idx) => {
                     log::info!(
                         "Workspace {} full ({} >= {}), routing new window to workspace {}",
                         preferred,
                         self.workspaces[preferred].window_count(),
-                        self.max_tiles,
+                        self.router.max_tiles(),
                         idx
                     );
                     idx
@@ -263,7 +228,7 @@ impl StateManager {
                 None => {
                     log::warn!(
                         "All workspaces at capacity ({}), leaving window {} untracked",
-                        self.max_tiles,
+                        self.router.max_tiles(),
                         window_id
                     );
                     return None;
@@ -651,14 +616,14 @@ impl StateManager {
         }
         let window_id = self.workspaces[current].focused_window_id();
         if let Some(wid) = window_id {
-            let dest = if self.workspaces[target].window_count() >= self.max_tiles {
+            let dest = if self.workspaces[target].window_count() >= self.router.max_tiles() {
                 match self.find_next_workspace_with_capacity(target) {
                     Some(idx) => idx,
                     None => {
                         log::warn!(
                             "No workspace has room for {} (cap {}), move aborted",
                             wid,
-                            self.max_tiles
+                            self.router.max_tiles()
                         );
                         self.publish_bar_state();
                         return;
@@ -686,7 +651,7 @@ impl StateManager {
         let updated_settings = Settings::load();
         self.gap_outer = updated_settings.gap_outer.max(0) as f64;
         self.gap_inner = updated_settings.gap_inner.max(0) as f64;
-        self.max_tiles = updated_settings.max_tiles.max(1);
+        self.router.set_max_tiles(updated_settings.max_tiles as usize);
         self.restricted_apps = updated_settings.restricted_apps;
         self.displays
             .set_entries(if updated_settings.workspaces.is_empty() {
@@ -1105,7 +1070,7 @@ mod state_tests {
     #[test]
     fn created_window_overflows_to_next_workspace() {
         let mut sm = setup(2);
-        sm.max_tiles = 2;
+        sm.router.set_max_tiles(2);
         sm.workspaces[0].add_window(100, None);
         sm.workspaces[0].add_window(200, None);
         sm.workspaces[1].add_window(300, None);
@@ -1124,7 +1089,7 @@ mod state_tests {
     #[test]
     fn created_window_all_workspaces_full_stays_untracked() {
         let mut sm = setup(1);
-        sm.max_tiles = 2;
+        sm.router.set_max_tiles(2);
         for (i, ws) in sm.workspaces.iter_mut().enumerate() {
             ws.add_window((1000 + i * 2) as WindowId, None);
             ws.add_window((1001 + i * 2) as WindowId, None);
@@ -1142,7 +1107,7 @@ mod state_tests {
     #[test]
     fn created_window_overflow_wraps_to_first_workspace() {
         let mut sm = setup(1);
-        sm.max_tiles = 2;
+        sm.router.set_max_tiles(2);
         // Fill the active workspace (1) and every one after it, leaving only
         // the first workspace with room, so overflow wraps around to ws-0.
         sm.workspaces[1].add_window(300, None);
@@ -1168,7 +1133,7 @@ mod state_tests {
     #[test]
     fn move_to_full_workspace_redirects_to_next_with_room() {
         let mut sm = setup(2);
-        sm.max_tiles = 2;
+        sm.router.set_max_tiles(2);
         sm.workspaces
             .push(Workspace::new("ws-3".into(), 3, (3840, 0), (1920, 1080)));
         sm.displays.active_mut().insert(3, 2);
@@ -1191,7 +1156,7 @@ mod state_tests {
     #[test]
     fn move_to_full_workspace_aborts_when_no_room_anywhere() {
         let mut sm = setup(1);
-        sm.max_tiles = 2;
+        sm.router.set_max_tiles(2);
         for (i, ws) in sm.workspaces.iter_mut().enumerate() {
             ws.add_window((1000 + i * 2) as WindowId, None);
             ws.add_window((1001 + i * 2) as WindowId, None);

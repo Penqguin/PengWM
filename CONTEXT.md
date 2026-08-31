@@ -46,6 +46,8 @@ Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturize
 
 **DisplaySet** — The display ↔ workspace registry owned by `StateManager` (`active: HashMap<u32, usize>` + `entries: Vec<WorkspaceEntry>`). Owns `active` (which flat workspace is visible per monitor) and the named-entry set; `Vec<Workspace>` stays on `StateManager` and is borrowed per call. Exposes `init_workspaces`, `on_added`, `on_removed`, `on_resized` so monitor lifecycle has locality without leaking `Workspace` creation.
 
+**Router** — The routing policy owned by `StateManager` (`max_tiles`). `find_next_with_capacity(start)` wraps within the same monitor; `configured_workspace_name_for_pid(pid, os, entries)` matches bundle/app name case-insensitively; `routed_workspace_idx(pid, active_idx, os, entries)` maps to the flat workspace index on the active monitor; `active_workspace_idx(workspaces, pid_to_windows, frontmost_pid, displays)` is the fragile frontmost heuristic now isolated for testability.
+
 **WindowElementCache** — A `HashMap<WindowId, AXUIElementRef>` owned by the unified macOS adapter. Populated on `kAXWindowCreatedNotification` (caller does `CFRetain`), evicted on `kAXUIElementDestroyedNotification` (caller does `CFRelease`). Makes `set_window_rect` O(1) instead of O(n) and seals CFRef memory lifecycle. Maintains a reverse `WindowId → i32` pid map so `set_window_rect` and `close_window` do not require a pid parameter from callers.
 
 ## Architecture Boundaries
