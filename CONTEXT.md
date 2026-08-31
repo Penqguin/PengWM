@@ -42,6 +42,10 @@ Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturize
 
 **DragState** — The drag-to-swap gesture state owned by `StateManager` (`drag_window`, `overlap_target`, `overlap_start`, `last_move`). `on_moved` calls `layout::window_at_point` to update the overlap target; `on_tick` returns `DragTickAction::Swap | SnapBack | None` so `StateManager` owns `apply_layout` and workspace mutation. Keeps `last_layout_rects` borrowed from `StateManager` to avoid duplicating the rect map.
 
+**BarReserve** — The bar reservation state owned by `StateManager` (`BarConfig`, `visible`, `spawned`). `reserved_rect(os)` is gated on `visible && spawned` (no phantom gap); `apply_reservation(workspaces, os)` pushes the strip rect into primary workspaces. `toggle()` and `on_reload(new_config)` return `ToggleAction` / `ReloadAction` so `StateManager` owns `BarSender` and `apply_layout`.
+
+**DisplaySet** — The display ↔ workspace registry owned by `StateManager` (`active: HashMap<u32, usize>` + `entries: Vec<WorkspaceEntry>`). Owns `active` (which flat workspace is visible per monitor) and the named-entry set; `Vec<Workspace>` stays on `StateManager` and is borrowed per call. Exposes `init_workspaces`, `on_added`, `on_removed`, `on_resized` so monitor lifecycle has locality without leaking `Workspace` creation.
+
 **WindowElementCache** — A `HashMap<WindowId, AXUIElementRef>` owned by the unified macOS adapter. Populated on `kAXWindowCreatedNotification` (caller does `CFRetain`), evicted on `kAXUIElementDestroyedNotification` (caller does `CFRelease`). Makes `set_window_rect` O(1) instead of O(n) and seals CFRef memory lifecycle. Maintains a reverse `WindowId → i32` pid map so `set_window_rect` and `close_window` do not require a pid parameter from callers.
 
 ## Architecture Boundaries

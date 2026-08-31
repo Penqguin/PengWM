@@ -14,14 +14,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+pub mod bar;
+pub mod display;
 pub mod drag;
 pub mod hidden;
+use self::bar::{BarReserve, ReloadAction, ToggleAction};
+use self::display::DisplaySet;
 use self::drag::{DragState, DragTickAction};
 use self::hidden::HiddenTracker;
 
 pub struct StateManager {
     workspaces: Vec<Workspace>,
-    active_workspaces: HashMap<u32, usize>,
+    displays: DisplaySet,
     frontmost_pid: Option<i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
     window_pids: HashMap<WindowId, i32>,
@@ -34,18 +38,12 @@ pub struct StateManager {
     keybinds: Arc<Mutex<KeybindConfig>>,
     restricted_apps: Vec<String>,
     bar_sender: BarSender,
-    bar_config: BarConfig,
-    bar_visible: bool,
-    bar_spawned: bool,
+    bar: BarReserve,
     /// Pids whose windows are never managed by the WM — currently the spawned
     /// `pengwm-bar` process, whose window must not be tiled.
     excluded_pids: Vec<i32>,
     last_layout_rects: HashMap<WindowId, Rect>,
     drag: DragState,
-    /// The configured named workspaces (with their app routing rules) that
-    /// every monitor gets a copy of. Drives workspace creation at startup and
-    /// app-to-workspace routing for new windows.
-    workspace_entries: Vec<WorkspaceEntry>,
     /// Set when `Command::Quit` is handled; the event loop polls this and
     /// returns so the daemon process can exit.
     shutdown_requested: bool,
@@ -60,35 +58,21 @@ impl StateManager {
         bar_pid: Option<i32>,
         excluded_pids: Vec<i32>,
     ) -> Self {
-        let displays = os.active_displays();
+        let display_infos = os.active_displays();
         let mut workspaces = Vec::new();
         let mut pid_to_windows: HashMap<i32, Vec<WindowId>> = HashMap::new();
         let mut window_pids: HashMap<WindowId, i32> = HashMap::new();
-        let mut active_workspaces = HashMap::new();
 
         let settings = Settings::load();
-        // Empty list means the user opted out of named workspaces; fall back to
-        // the defaults rather than creating no workspaces at all.
-        let workspace_entries = if settings.workspaces.is_empty() {
+        let entries = if settings.workspaces.is_empty() {
             crate::config::default_workspaces()
         } else {
             settings.workspaces.clone()
         };
+        let mut displays = DisplaySet::new(entries);
+        displays.init_workspaces(&mut workspaces, &display_infos);
 
-        for display in &displays {
-            let base = workspaces.len();
-            active_workspaces.insert(display.id, base);
-            for entry in &workspace_entries {
-                let ws = Workspace::new(
-                    entry.name.clone(),
-                    display.id,
-                    display.origin,
-                    display.size,
-                );
-                workspaces.push(ws);
-            }
-        }
-
+        // Fallback when no displays (headless test) — DisplaySet leaves workspaces empty.
         if workspaces.is_empty() {
             workspaces.push(Workspace::new(
                 "ws-1".into(),
@@ -96,7 +80,7 @@ impl StateManager {
                 (0, 0),
                 (1920, 1080),
             ));
-            active_workspaces.insert(os.primary_display_id(), 0);
+            displays.active_mut().insert(os.primary_display_id(), 0);
         }
 
         let frontmost_pid = os.frontmost_pid();
@@ -110,16 +94,15 @@ impl StateManager {
             }
         }
 
-        let bar_config = settings.bar.clone();
         let bar_spawned = bar_pid.is_some();
+        let bar = BarReserve::new(settings.bar.clone(), bar_spawned);
         let excluded_pids = bar_pid
             .into_iter()
             .chain(excluded_pids)
             .collect::<Vec<_>>();
-        let bar_visible = settings.bar.visible && bar_spawned;
         let mut state = Self {
             workspaces,
-            active_workspaces,
+            displays,
             frontmost_pid,
             pid_to_windows,
             window_pids,
@@ -132,13 +115,10 @@ impl StateManager {
             keybinds,
             restricted_apps: settings.restricted_apps,
             bar_sender,
-            bar_config,
-            bar_visible,
-            bar_spawned,
+            bar,
             excluded_pids,
             last_layout_rects: HashMap::new(),
             drag: DragState::new(),
-            workspace_entries,
             shutdown_requested: false,
         };
 
@@ -149,7 +129,7 @@ impl StateManager {
         }
 
         state.apply_bar_reservation();
-        state.bar_sender.send(if state.bar_visible {
+        state.bar_sender.send(if state.bar.is_visible() {
             BarMessage::Show
         } else {
             BarMessage::Hide
@@ -185,7 +165,7 @@ impl StateManager {
                 for &window_id in windows {
                     for ws in &self.workspaces {
                         if ws.find_window(window_id).is_some() {
-                            if let Some(&idx) = self.active_workspaces.get(&ws.monitor_id) {
+                            if let Some(&idx) = self.displays.active().get(&ws.monitor_id) {
                                 if idx < self.workspaces.len() {
                                     return idx;
                                 }
@@ -195,7 +175,7 @@ impl StateManager {
                 }
             }
         }
-        self.active_workspaces.values().next().copied().unwrap_or(0)
+        self.displays.active().values().next().copied().unwrap_or(0)
     }
 
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
@@ -237,12 +217,13 @@ impl StateManager {
     /// Name of the configured workspace `pid`'s app is assigned to, matched
     /// case-insensitively against bundle id first, then app display name.
     fn configured_workspace_name_for_pid(&self, pid: i32) -> Option<&str> {
-        if self.workspace_entries.is_empty() {
+        if self.displays.entries().is_empty() {
             return None;
         }
         let bundle = self.os.app_bundle_id(pid);
         let app_name = self.os.app_name(pid);
-        self.workspace_entries
+        self.displays
+            .entries()
             .iter()
             .find(|entry| {
                 entry.apps.iter().any(|app| {
@@ -371,7 +352,7 @@ impl StateManager {
             if self.workspaces[i].find_window(window_id).is_some() {
                 self.workspaces[i].focus_window(window_id);
                 let mon_id = self.workspaces[i].monitor_id;
-                let prev = self.active_workspaces.insert(mon_id, i);
+                let prev = self.displays.active_mut().insert(mon_id, i);
                 if let Some(prev_idx) = prev {
                     if prev_idx != i {
                         self.hide_workspace(prev_idx);
@@ -501,79 +482,26 @@ impl StateManager {
     }
 
     pub fn on_monitor_added(&mut self, display_id: u32) {
-        let info = self
-            .os
-            .active_displays()
-            .into_iter()
-            .find(|d| d.id == display_id);
-        let (origin, size) = match info {
-            Some(d) => (d.origin, d.size),
-            None => return,
-        };
-        let entries = if self.workspace_entries.is_empty() {
-            crate::config::default_workspaces()
-        } else {
-            self.workspace_entries.clone()
-        };
-        let base = self.workspaces.len();
-        self.active_workspaces.insert(display_id, base);
-        for entry in &entries {
-            self.workspaces
-                .push(Workspace::new(entry.name.clone(), display_id, origin, size));
+        if self.displays.on_added(display_id, &mut self.workspaces, &*self.os).is_none() {
+            return;
         }
         self.apply_bar_reservation();
         self.publish_bar_state();
     }
 
     pub fn on_monitor_removed(&mut self, _display_id: u32) {
-        let primary = self.os.primary_display_id();
-        let primary_origin = self
-            .os
-            .active_displays()
-            .into_iter()
-            .find(|d| d.id == primary)
-            .map(|d| d.origin)
-            .unwrap_or((0, 0));
-        for ws in &mut self.workspaces {
-            if ws.monitor_id == _display_id {
-                ws.monitor_id = primary;
-                ws.set_monitor_origin(primary_origin);
-            }
-        }
-        let active = self.os.active_displays();
-        self.workspaces
-            .retain(|ws| active.iter().any(|d| d.id == ws.monitor_id));
-        if self.workspaces.is_empty() {
-            self.workspaces.push(Workspace::new(
-                "ws-1".into(),
-                primary,
-                primary_origin,
-                (1920, 1080),
-            ));
-        }
-        self.active_workspaces
-            .retain(|_, idx| *idx < self.workspaces.len());
-        if self.active_workspaces.is_empty() {
-            self.active_workspaces
-                .insert(self.workspaces[0].monitor_id, 0);
-        }
+        self.displays
+            .on_removed(_display_id, &mut self.workspaces, &*self.os);
         self.apply_bar_reservation();
         self.publish_bar_state();
     }
 
     pub fn on_monitor_resized(&mut self, display_id: u32) {
-        let info = self
-            .os
-            .active_displays()
-            .into_iter()
-            .find(|d| d.id == display_id);
-        if let Some(display) = info {
-            for i in 0..self.workspaces.len() {
-                if self.workspaces[i].monitor_id == display_id {
-                    self.workspaces[i].update_monitor_geometry(display.origin, display.size);
-                    self.apply_layout(i);
-                }
-            }
+        let affected = self
+            .displays
+            .on_resized(display_id, &mut self.workspaces, &*self.os);
+        for idx in affected {
+            self.apply_layout(idx);
         }
         self.apply_bar_reservation();
         self.publish_bar_state();
@@ -600,7 +528,7 @@ impl StateManager {
                     if new_idx != current {
                         self.hide_workspace(current);
                         let mon_id = self.workspaces[current].monitor_id;
-                        self.active_workspaces.insert(mon_id, new_idx);
+                        self.displays.active_mut().insert(mon_id, new_idx);
                         self.apply_layout(new_idx);
                     }
                 }
@@ -638,24 +566,20 @@ impl StateManager {
                 self.apply_layout(self.active_workspace_idx());
             }
             Command::ToggleBar => {
-                if self.bar_spawned {
-                    self.bar_visible = !self.bar_visible;
-                    log::info!(
-                        "Bar toggled: {}",
-                        if self.bar_visible {
-                            "visible"
-                        } else {
-                            "hidden"
-                        }
-                    );
-                    self.bar_sender.send(if self.bar_visible {
-                        BarMessage::Show
-                    } else {
-                        BarMessage::Hide
-                    });
-                    self.apply_bar_reservation();
-                } else {
-                    log::info!("Bar not running; toggle ignored");
+                match self.bar.toggle() {
+                    ToggleAction::Show(_) => {
+                        log::info!("Bar toggled: visible");
+                        self.bar_sender.send(BarMessage::Show);
+                        self.apply_bar_reservation();
+                    }
+                    ToggleAction::Hide => {
+                        log::info!("Bar toggled: hidden");
+                        self.bar_sender.send(BarMessage::Hide);
+                        self.apply_bar_reservation();
+                    }
+                    ToggleAction::Noop => {
+                        log::info!("Bar not running; toggle ignored");
+                    }
                 }
             }
             Command::ReloadConfig => {
@@ -764,28 +688,31 @@ impl StateManager {
         self.gap_inner = updated_settings.gap_inner.max(0) as f64;
         self.max_tiles = updated_settings.max_tiles.max(1);
         self.restricted_apps = updated_settings.restricted_apps;
-        self.bar_config = updated_settings.bar.clone();
-        let enabled = updated_settings.bar.enabled;
-        self.bar_visible = updated_settings.bar.visible && self.bar_spawned;
+        self.displays
+            .set_entries(if updated_settings.workspaces.is_empty() {
+                crate::config::default_workspaces()
+            } else {
+                updated_settings.workspaces.clone()
+            });
+        let reload_action = self.bar.on_reload(updated_settings.bar.clone());
         self.apply_layout(self.active_workspace_idx());
         self.bar_sender.send(BarMessage::Reload);
-        if enabled && !self.bar_spawned {
-            // Bar disabled at startup but enabled now — a restart is required
-            // to spawn it (the daemon reads `enabled` at startup).
-            log::info!(
-                "bar.enabled flipped to true at runtime; restart the daemon to spawn pengwm-bar"
-            );
+        match reload_action {
+            ReloadAction::NeedsRestart => {
+                log::info!(
+                    "bar.enabled flipped to true at runtime; restart the daemon to spawn pengwm-bar"
+                );
+            }
+            ReloadAction::ShouldExit => {
+                log::info!("bar.enabled flipped to false; exiting pengwm-bar");
+                self.bar_sender.send(BarMessage::Exit);
+                self.apply_bar_reservation();
+                self.publish_bar_state();
+                return;
+            }
+            ReloadAction::Reapply => {}
         }
-        if !enabled && self.bar_spawned {
-            log::info!("bar.enabled flipped to false; exiting pengwm-bar");
-            self.bar_sender.send(BarMessage::Exit);
-            self.bar_spawned = false;
-            self.bar_visible = false;
-            self.apply_bar_reservation();
-            self.publish_bar_state();
-            return;
-        }
-        self.bar_sender.send(if self.bar_visible {
+        self.bar_sender.send(if self.bar.is_visible() {
             BarMessage::Show
         } else {
             BarMessage::Hide
@@ -838,35 +765,17 @@ impl StateManager {
 
     /// Global-coordinate rect of the bar strip on the primary display, or
     /// `None` when the bar is hidden, not spawned, or no display geometry is
-    /// available.
+    /// available. Delegates to `BarReserve` — the one place that knows the
+    /// spawn gate (CONTEXT.md).
     fn bar_reserved_rect(&self) -> Option<Rect> {
-        if !self.bar_visible || !self.bar_spawned {
-            return None;
-        }
-        let primary = self.os.primary_display_id();
-        let display = self
-            .os
-            .active_displays()
-            .into_iter()
-            .find(|d| d.id == primary)?;
-        Some(pengwm_core::layout::bar_strip_rect(
-            display.origin,
-            display.size,
-            self.bar_config.position,
-            self.bar_config.thickness,
-        ))
+        self.bar.reserved_rect(&*self.os)
     }
 
     /// Push the current bar strip geometry into every workspace (only
     /// workspaces on the primary display are reserved) and re-lay-out.
     fn apply_bar_reservation(&mut self) {
-        let rect = self.bar_reserved_rect();
-        let primary = self.os.primary_display_id();
-        for i in 0..self.workspaces.len() {
-            let ws = &mut self.workspaces[i];
-            ws.set_reserved_rect(if ws.monitor_id == primary { rect } else { None });
-        }
-        for i in 0..self.workspaces.len() {
+        let affected = self.bar.apply_reservation(&mut self.workspaces, &*self.os);
+        for i in affected {
             self.apply_layout(i);
         }
     }
@@ -884,7 +793,8 @@ impl StateManager {
             .map(|(i, ws)| {
                 let is_active = ws.monitor_id == active_monitor
                     && self
-                        .active_workspaces
+                        .displays
+                        .active()
                         .get(&ws.monitor_id)
                         .map(|&idx| idx == i)
                         .unwrap_or(false);
@@ -997,8 +907,8 @@ mod state_tests {
         assert_eq!(sm.workspaces.len(), 10);
         assert!(sm.workspaces[..5].iter().all(|w| w.monitor_id == 1));
         assert!(sm.workspaces[5..].iter().all(|w| w.monitor_id == 2));
-        assert_eq!(sm.active_workspaces.get(&1), Some(&0));
-        assert_eq!(sm.active_workspaces.get(&2), Some(&5));
+        assert_eq!(sm.displays.active().get(&1), Some(&0));
+        assert_eq!(sm.displays.active().get(&2), Some(&5));
     }
 
     #[test]
@@ -1243,7 +1153,7 @@ mod state_tests {
         sm.workspaces[3].add_window(502, None);
         sm.workspaces[4].add_window(303, None);
         sm.workspaces[4].add_window(503, None);
-        sm.active_workspaces.insert(1, 1);
+        sm.displays.active_mut().insert(1, 1);
         sm.pid_to_windows.insert(42, vec![300]);
 
         sm.on_window_created(400, 42);
@@ -1261,7 +1171,7 @@ mod state_tests {
         sm.max_tiles = 2;
         sm.workspaces
             .push(Workspace::new("ws-3".into(), 3, (3840, 0), (1920, 1080)));
-        sm.active_workspaces.insert(3, 2);
+        sm.displays.active_mut().insert(3, 2);
         sm.workspaces[0].add_window(100, None);
         sm.workspaces[1].add_window(300, None);
         sm.workspaces[1].add_window(500, None);
@@ -1398,15 +1308,15 @@ mod state_tests {
     #[test]
     fn bar_reserved_rect_top_strip_on_primary_display() {
         let mut sm = setup(1);
-        sm.bar_config = BarConfig {
+        *sm.bar.config_mut() = BarConfig {
             position: BarPosition::Top,
             thickness: 24,
             visible: true,
             enabled: true,
             ..Default::default()
         };
-        sm.bar_spawned = true;
-        sm.bar_visible = true;
+        sm.bar.set_spawned(true);
+        sm.bar.set_visible(true);
         let rect = sm.bar_reserved_rect().unwrap();
         assert_eq!(
             (rect.x, rect.y, rect.width, rect.height),
@@ -1417,9 +1327,9 @@ mod state_tests {
     #[test]
     fn bar_reserved_rect_bottom_and_right() {
         let mut sm = setup(1);
-        sm.bar_spawned = true;
-        sm.bar_visible = true;
-        sm.bar_config = BarConfig {
+        sm.bar.set_spawned(true);
+        sm.bar.set_visible(true);
+        *sm.bar.config_mut() = BarConfig {
             position: BarPosition::Bottom,
             thickness: 30,
             visible: true,
@@ -1430,8 +1340,8 @@ mod state_tests {
         assert_eq!((rect.x, rect.y), (0.0, 1080.0 - 30.0));
         assert_eq!((rect.width, rect.height), (1920.0, 30.0));
 
-        sm.bar_config.position = BarPosition::Right;
-        sm.bar_config.thickness = 40;
+        sm.bar.config_mut().position = BarPosition::Right;
+        sm.bar.config_mut().thickness = 40;
         let rect = sm.bar_reserved_rect().unwrap();
         assert_eq!((rect.x, rect.y), (1920.0 - 40.0, 0.0));
         assert_eq!((rect.width, rect.height), (40.0, 1080.0));
@@ -1440,24 +1350,24 @@ mod state_tests {
     #[test]
     fn bar_reserved_rect_none_when_hidden() {
         let mut sm = setup(1);
-        sm.bar_visible = false;
+        sm.bar.set_visible(false);
         assert_eq!(sm.bar_reserved_rect(), None);
     }
 
     #[test]
     fn bar_reserved_rect_none_when_not_spawned() {
         let mut sm = setup(1);
-        sm.bar_visible = true;
-        sm.bar_spawned = false;
+        sm.bar.set_visible(true);
+        sm.bar.set_spawned(false);
         assert_eq!(sm.bar_reserved_rect(), None);
     }
 
     #[test]
     fn apply_bar_reservation_reserves_primary_workspace() {
         let mut sm = setup(2);
-        sm.bar_spawned = true;
-        sm.bar_visible = true;
-        sm.bar_config = BarConfig {
+        sm.bar.set_spawned(true);
+        sm.bar.set_visible(true);
+        *sm.bar.config_mut() = BarConfig {
             position: BarPosition::Top,
             thickness: 20,
             visible: true,
@@ -1474,7 +1384,7 @@ mod state_tests {
             sm.workspaces[5].reserved_rect().is_none(),
             "secondary monitor workspace should not be reserved"
         );
-        sm.bar_visible = false;
+        sm.bar.set_visible(false);
         sm.apply_bar_reservation();
         assert!(sm.workspaces[0].reserved_rect().is_none());
     }
@@ -1482,13 +1392,13 @@ mod state_tests {
     #[test]
     fn toggle_bar_command_flips_visibility_and_reservation() {
         let mut sm = setup(1);
-        sm.bar_spawned = true;
-        let was_visible = sm.bar_visible;
+        sm.bar.set_spawned(true);
+        let was_visible = sm.bar.is_visible();
         let (rtx, _) = mpsc::channel(1);
         sm.on_command(Command::ToggleBar, Some(rtx));
-        assert_ne!(sm.bar_visible, was_visible);
+        assert_ne!(sm.bar.is_visible(), was_visible);
         // Reservations match the new visibility.
-        assert_eq!(sm.bar_reserved_rect().is_some(), sm.bar_visible);
+        assert_eq!(sm.bar_reserved_rect().is_some(), sm.bar.is_visible());
     }
 
     #[test]
