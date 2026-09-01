@@ -46,6 +46,18 @@ impl EventLoop {
             Box::new(MacOsAdapter::with_callback(Box::new(move |event| {
                 let _ = event_tx.try_send(event);
             })));
+        Self::new_with_adapter(keybinds, os, rx, tx.clone())
+    }
+
+    /// Test seam: inject a pre-built adapter (e.g. `TestAdapter`) so the loop
+    /// can be exercised without macOS FFI. The bar/menubar spawn is still
+    /// gated on `Settings::load()` so tests can control it via the config file.
+    pub fn new_with_adapter(
+        keybinds: Arc<Mutex<KeybindConfig>>,
+        os: Box<dyn OsAdapter>,
+        rx: mpsc::Receiver<DaemonEvent>,
+        tx: mpsc::Sender<DaemonEvent>,
+    ) -> (Self, mpsc::Sender<DaemonEvent>) {
         let bar_sender: BarSender = spawn_bar_server();
         let settings = crate::config::Settings::load();
         let bar_pid = if settings.bar.enabled {
@@ -104,38 +116,7 @@ impl EventLoop {
     /// and drains the mpsc channel between each run loop iteration. Returns when
     /// the channel disconnects or a shutdown was requested (`Command::Quit`).
     pub fn run_sync(&mut self) {
-        unsafe {
-            loop {
-                // Let the CFRunLoop process one source (event tap, AX callback, etc.)
-                // with a short timeout so we can drain the mpsc channel regularly.
-                CFRunLoopRunInMode(
-                    kCFRunLoopDefaultMode,
-                    0.05, // 50ms — balances latency vs CPU
-                    1,    // returnAfterSourceHandled — return after one source is handled
-                );
-
-                // Drain all queued mpsc messages
-                loop {
-                    match self.rx.try_recv() {
-                        Ok(event) => {
-                            self.dispatch(event);
-                            if self.state.shutdown_requested() {
-                                return;
-                            }
-                        }
-                        Err(mpsc::error::TryRecvError::Empty) => break,
-                        Err(mpsc::error::TryRecvError::Disconnected) => {
-                            log::error!("Event loop channel closed");
-                            return;
-                        }
-                    }
-                }
-                if self.state.shutdown_requested() {
-                    return;
-                }
-                self.state.on_tick();
-            }
-        }
+        while self.pump() {}
     }
 
     fn dispatch(&mut self, event: DaemonEvent) {
@@ -157,25 +138,28 @@ impl EventLoop {
     }
 }
 
+fn candidate_paths(binary: &str, env_var: &str) -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            v.push(dir.join(binary));
+        }
+    }
+    if let Ok(path) = std::env::var(env_var) {
+        v.push(path.into());
+    }
+    v.push(binary.into());
+    v
+}
+
 /// Launch the `pengwm-bar` binary as a child process and return its pid so the
 /// WM can exclude its window. Prefers a sibling of the current executable,
 /// then `$PATH`, then `PENGWM_BAR_PATH`. Returns `None` when no candidate runs.
 fn spawn_bar_process() -> Option<i32> {
-    let candidates: Vec<std::path::PathBuf> = {
-        let mut v = Vec::new();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                v.push(dir.join("pengwm-bar"));
-            }
-        }
-        if let Ok(path) = std::env::var("PENGWM_BAR_PATH") {
-            v.push(path.into());
-        }
-        v.push("pengwm-bar".into());
-        v
-    };
-
-    spawn_child_process("pengwm-bar", &candidates)
+    spawn_child_process(
+        "pengwm-bar",
+        &candidate_paths("pengwm-bar", "PENGWM_BAR_PATH"),
+    )
 }
 
 /// Launch the `pengwm-menubar` binary as a child process and return its pid so
@@ -183,21 +167,10 @@ fn spawn_bar_process() -> Option<i32> {
 /// then `$PATH`, then `PENGWM_MENUBAR_PATH`. Returns `None` when no candidate
 /// runs.
 fn spawn_menubar_process() -> Option<i32> {
-    let candidates: Vec<std::path::PathBuf> = {
-        let mut v = Vec::new();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                v.push(dir.join("pengwm-menubar"));
-            }
-        }
-        if let Ok(path) = std::env::var("PENGWM_MENUBAR_PATH") {
-            v.push(path.into());
-        }
-        v.push("pengwm-menubar".into());
-        v
-    };
-
-    spawn_child_process("pengwm-menubar", &candidates)
+    spawn_child_process(
+        "pengwm-menubar",
+        &candidate_paths("pengwm-menubar", "PENGWM_MENUBAR_PATH"),
+    )
 }
 
 /// Try each candidate in order and spawn the first that runs, returning its

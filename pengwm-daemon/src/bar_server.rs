@@ -49,7 +49,11 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
         };
         log::info!("Bar listener bound to {}", socket_path);
 
-        let clients: Arc<Mutex<Vec<UnixStream>>> = Arc::new(Mutex::new(Vec::new()));
+        // Per-client channels: each client gets its own writer thread owning its
+        // UnixStream. Broadcast only enqueues via try_send without holding a
+        // lock during blocking I/O, so a slow bar never stalls others.
+        let clients: Arc<Mutex<Vec<tokio::sync::mpsc::Sender<Vec<u8>>>>> =
+            Arc::new(Mutex::new(Vec::new()));
         // Cache the last Show/Hide and the last State separately so a freshly
         // connecting bar can reconstruct the full current picture.
         let last_visibility: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
@@ -62,23 +66,37 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
             thread::spawn(move || {
                 for stream in listener.incoming() {
                     match stream {
-                        Ok(stream) => {
-                            // Register the client and replay the cached messages
-                            // under the same lock as the broadcast loop so the
-                            // two writers never interleave on one stream.
-                            let mut clients = clients.lock().unwrap();
-                            let visibility = last_visibility.lock().unwrap().clone();
-                            let state = last_state.lock().unwrap().clone();
-                            clients.push(stream);
-                            if let Some(stream) = clients.last_mut() {
-                                for payload in visibility.into_iter().chain(state) {
+                        Ok(mut stream) => {
+                            let (client_tx, mut client_rx) =
+                                tokio::sync::mpsc::channel::<Vec<u8>>(32);
+                            // Writer thread owns the UnixStream
+                            thread::spawn(move || {
+                                while let Some(payload) = client_rx.blocking_recv() {
                                     if stream.write_all(&payload).is_err() {
                                         break;
                                     }
                                     let _ = stream.flush();
                                 }
+                            });
+
+                            // Replay cached payloads via the new client's channel
+                            let visibility = last_visibility.lock().unwrap().clone();
+                            let state = last_state.lock().unwrap().clone();
+                            for payload in visibility.into_iter().chain(state) {
+                                let _ = client_tx.try_send(payload);
                             }
-                            log::info!("bar connected ({} clients)", clients.len());
+
+                            clients.lock().unwrap().push(client_tx);
+                            log::info!(
+                                "bar connected ({} clients)",
+                                clients.lock().unwrap().len()
+                            );
+
+                            // Prune disconnected senders (channel closed)
+                            clients
+                                .lock()
+                                .unwrap()
+                                .retain(|tx| !tx.is_closed());
                         }
                         Err(e) => log::error!("bar socket accept error: {}", e),
                     }
@@ -99,16 +117,23 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
                 _ => {}
             }
 
-            let mut clients = clients.lock().unwrap();
-            clients.retain_mut(|stream| {
-                if let Err(e) = stream.write_all(&payload) {
-                    log::info!("bar disconnected: {}", e);
-                    false
-                } else {
-                    let _ = stream.flush();
-                    true
+            // Broadcast without holding the lock during I/O — clone the senders,
+            // then try_send to each. Slow clients drop payloads (bounded 32), but
+            // don't block others. Closed senders are pruned.
+            let senders = clients.lock().unwrap().clone();
+            let mut any_closed = false;
+            for tx in &senders {
+                if tx.try_send(payload.clone()).is_err() {
+                    // Channel full or closed — drop this payload for this client
+                    // (bar will catch up on next State push). If closed, prune.
+                    if tx.is_closed() {
+                        any_closed = true;
+                    }
                 }
-            });
+            }
+            if any_closed {
+                clients.lock().unwrap().retain(|tx| !tx.is_closed());
+            }
         }
     });
     BarSender { tx }

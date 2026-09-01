@@ -1,7 +1,8 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
+use std::sync::Arc;
 use std::thread;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 
 use crate::event_loop::DaemonEvent;
 
@@ -24,12 +25,19 @@ pub fn start_ipc_server_with_path(event_tx: mpsc::Sender<DaemonEvent>, socket_pa
 
     log::info!("UDS listener bound to {}", socket_path);
 
+    let sem = Arc::new(Semaphore::new(32));
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let tx = event_tx.clone();
                 let path = socket_path.to_owned();
+                let sem = Arc::clone(&sem);
+                let Ok(_permit) = sem.try_acquire_owned() else {
+                    log::warn!("ipc thread pool full (32), dropping connection");
+                    continue;
+                };
                 thread::spawn(move || {
+                    let _permit = _permit; // hold until handle_client returns
                     handle_client(stream, tx, &path);
                 });
             }
@@ -45,17 +53,27 @@ fn handle_client(
     event_tx: mpsc::Sender<DaemonEvent>,
     _socket_path: &str,
 ) {
-    let mut buf = vec![0u8; 4096];
-    let n = match stream.read(&mut buf) {
-        Ok(n) if n > 0 => n,
-        Ok(_) => return,
-        Err(e) => {
-            log::warn!("UDS read error: {}", e);
-            return;
+    // Read until EOF (client does shutdown(Write) after JSON). Loop so
+    // payloads larger than 4096 are not truncated.
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        match stream.read(&mut tmp) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => {
+                log::warn!("UDS read error: {}", e);
+                return;
+            }
         }
-    };
+    }
+    if buf.is_empty() {
+        return;
+    }
+    let n = buf.len();
 
-    let cmd: pengwm_core::command::Command = match serde_json::from_slice(&buf[..n]) {
+    let cmd: pengwm_core::command::Command = match serde_json::from_slice(&buf) {
         Ok(c) => c,
         Err(e) => {
             let resp = serde_json::to_string(&pengwm_core::command::DaemonResponse::Error {
