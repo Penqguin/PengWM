@@ -39,10 +39,14 @@ pub fn calculate_layout(
             output.insert(*window_id, bounding);
         }
         NodeData::Split { direction, ratios } => {
-            let child_rects = match direction {
-                SplitDirection::Horizontal => split_horizontal_n(bounding, ratios, gap_size),
-                SplitDirection::Vertical => split_vertical_n(bounding, ratios, gap_size),
-            };
+            debug_assert_eq!(
+                node.children.len(),
+                ratios.len(),
+                "split ratios len {} != children len {}",
+                ratios.len(),
+                node.children.len()
+            );
+            let child_rects = split_n(bounding, ratios, gap_size, *direction);
             for (&child_id, rect) in node.children.iter().zip(child_rects.iter()) {
                 calculate_layout(child_id, *rect, arena, output, gap_size);
             }
@@ -50,7 +54,7 @@ pub fn calculate_layout(
     }
 }
 
-pub fn screen_local_to_global(local: Rect, monitor_origin: (i32, i32)) -> Rect {
+pub(crate) fn screen_local_to_global(local: Rect, monitor_origin: (i32, i32)) -> Rect {
     Rect {
         x: local.x + monitor_origin.0 as f64,
         y: local.y + monitor_origin.1 as f64,
@@ -59,7 +63,7 @@ pub fn screen_local_to_global(local: Rect, monitor_origin: (i32, i32)) -> Rect {
     }
 }
 
-pub fn inset_rect(rect: Rect, gap: f64) -> Rect {
+pub(crate) fn inset_rect(rect: Rect, gap: f64) -> Rect {
     let double = gap * 2.0;
     Rect {
         x: rect.x + gap,
@@ -111,38 +115,55 @@ pub fn bar_strip_rect(
     }
 }
 
-fn split_horizontal_n(bounding: Rect, ratios: &[f32], gap_size: f64) -> Vec<Rect> {
-    let n = ratios.len();
-    if n == 0 {
-        return vec![];
-    }
-    if n == 1 {
-        return vec![bounding];
-    }
-
-    let total_gap = (n - 1) as f64 * gap_size;
-    let available_height = (bounding.height - total_gap).max(0.0);
-
-    let ratio_sum: f64 = ratios.iter().map(|&r| r as f64).sum();
-    let ratio_sum = if ratio_sum == 0.0 { 1.0 } else { ratio_sum };
-
-    let mut rects = Vec::with_capacity(n);
-    let mut y_offset = bounding.y;
-
-    for (i, &ratio) in ratios.iter().enumerate() {
-        let height = if i == n - 1 {
-            (bounding.y + bounding.height - y_offset).max(0.0)
-        } else {
-            (available_height * ratio as f64 / ratio_sum).max(0.0)
-        };
-        rects.push(Rect::new(bounding.x, y_offset, bounding.width, height));
-        y_offset += height + gap_size;
+/// Subtract a reserved edge strip (in monitor-local coordinates) from the
+/// monitor rect. `strip` is expected to span the full width (top/bottom) or
+/// full height (left/right) and sit flush against one edge. Anything that
+/// doesn't look like an edge strip is ignored. No EPSILON — both rects are
+/// derived from the same integer monitor geometry via `bar_strip_rect`, so
+/// exact equality holds.
+pub(crate) fn subtract_strip(monitor: Rect, strip: Rect) -> Rect {
+    let overlaps_x = strip.x < monitor.x + monitor.width && strip.x + strip.width > monitor.x;
+    let overlaps_y = strip.y < monitor.y + monitor.height && strip.y + strip.height > monitor.y;
+    if !overlaps_x || !overlaps_y {
+        return monitor;
     }
 
-    rects
+    let spans_width = strip.x == monitor.x && strip.x + strip.width == monitor.x + monitor.width;
+    let spans_height = strip.y == monitor.y && strip.y + strip.height == monitor.y + monitor.height;
+
+    if spans_width {
+        if strip.y == monitor.y && strip.y + strip.height < monitor.y + monitor.height {
+            // top edge
+            let cut = strip.y + strip.height;
+            let remaining = monitor.y + monitor.height - cut;
+            return Rect::new(monitor.x, cut, monitor.width, remaining.max(0.0));
+        }
+        if strip.y + strip.height == monitor.y + monitor.height && strip.y > monitor.y {
+            // bottom edge
+            let remaining = strip.y - monitor.y;
+            return Rect::new(monitor.x, monitor.y, monitor.width, remaining.max(0.0));
+        }
+        return monitor;
+    }
+
+    if spans_height {
+        if strip.x == monitor.x && strip.x + strip.width < monitor.x + monitor.width {
+            // left edge
+            let cut = strip.x + strip.width;
+            let remaining = monitor.x + monitor.width - cut;
+            return Rect::new(cut, monitor.y, remaining.max(0.0), monitor.height);
+        }
+        if strip.x + strip.width == monitor.x + monitor.width && strip.x > monitor.x {
+            // right edge
+            let remaining = strip.x - monitor.x;
+            return Rect::new(monitor.x, monitor.y, remaining.max(0.0), monitor.height);
+        }
+    }
+
+    monitor
 }
 
-fn split_vertical_n(bounding: Rect, ratios: &[f32], gap_size: f64) -> Vec<Rect> {
+fn split_n(bounding: Rect, ratios: &[f64], gap_size: f64, direction: SplitDirection) -> Vec<Rect> {
     let n = ratios.len();
     if n == 0 {
         return vec![];
@@ -152,24 +173,38 @@ fn split_vertical_n(bounding: Rect, ratios: &[f32], gap_size: f64) -> Vec<Rect> 
     }
 
     let total_gap = (n - 1) as f64 * gap_size;
-    let available_width = (bounding.width - total_gap).max(0.0);
-
-    let ratio_sum: f64 = ratios.iter().map(|&r| r as f64).sum();
+    let ratio_sum: f64 = ratios.iter().copied().sum();
     let ratio_sum = if ratio_sum == 0.0 { 1.0 } else { ratio_sum };
 
     let mut rects = Vec::with_capacity(n);
-    let mut x_offset = bounding.x;
-
-    for (i, &ratio) in ratios.iter().enumerate() {
-        let width = if i == n - 1 {
-            (bounding.x + bounding.width - x_offset).max(0.0)
-        } else {
-            (available_width * ratio as f64 / ratio_sum).max(0.0)
-        };
-        rects.push(Rect::new(x_offset, bounding.y, width, bounding.height));
-        x_offset += width + gap_size;
+    match direction {
+        SplitDirection::Horizontal => {
+            let available = (bounding.height - total_gap).max(0.0);
+            let mut offset = bounding.y;
+            for (i, &ratio) in ratios.iter().enumerate() {
+                let size = if i == n - 1 {
+                    (bounding.y + bounding.height - offset).max(0.0)
+                } else {
+                    (available * ratio / ratio_sum).max(0.0)
+                };
+                rects.push(Rect::new(bounding.x, offset, bounding.width, size));
+                offset += size + gap_size;
+            }
+        }
+        SplitDirection::Vertical => {
+            let available = (bounding.width - total_gap).max(0.0);
+            let mut offset = bounding.x;
+            for (i, &ratio) in ratios.iter().enumerate() {
+                let size = if i == n - 1 {
+                    (bounding.x + bounding.width - offset).max(0.0)
+                } else {
+                    (available * ratio / ratio_sum).max(0.0)
+                };
+                rects.push(Rect::new(offset, bounding.y, size, bounding.height));
+                offset += size + gap_size;
+            }
+        }
     }
-
     rects
 }
 
@@ -344,8 +379,8 @@ mod tests {
         calculate_layout(root, bounding, &arena, &mut output, 10.0);
 
         let r1 = output[&1];
-        let r2 = output[&2];
-        let r3 = output[&3];
+        let r2 = &output[&2];
+        let r3 = &output[&3];
         assert_eq!(r1.x, 10.0);
         let expected_width = (300.0 - 20.0) / 3.0;
         assert!(
@@ -671,5 +706,39 @@ mod tests {
             bar_strip_rect((0, 0), (100, 100), BarPosition::Top, 0),
             Rect::new(0.0, 0.0, 100.0, 1.0)
         );
+    }
+
+    #[test]
+    fn subtract_strip_top_cuts_correctly() {
+        let monitor = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let strip = Rect::new(0.0, 0.0, 1920.0, 32.0);
+        assert_eq!(
+            subtract_strip(monitor, strip),
+            Rect::new(0.0, 32.0, 1920.0, 1048.0)
+        );
+    }
+
+    #[test]
+    fn subtract_strip_bottom_and_side() {
+        let monitor = Rect::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(
+            subtract_strip(monitor, Rect::new(0.0, 90.0, 100.0, 10.0)),
+            Rect::new(0.0, 0.0, 100.0, 90.0)
+        );
+        assert_eq!(
+            subtract_strip(monitor, Rect::new(0.0, 0.0, 10.0, 100.0)),
+            Rect::new(10.0, 0.0, 90.0, 100.0)
+        );
+        assert_eq!(
+            subtract_strip(monitor, Rect::new(90.0, 0.0, 10.0, 100.0)),
+            Rect::new(0.0, 0.0, 90.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn subtract_strip_ignores_non_edge() {
+        let monitor = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let mid = Rect::new(10.0, 10.0, 10.0, 10.0);
+        assert_eq!(subtract_strip(monitor, mid), monitor);
     }
 }

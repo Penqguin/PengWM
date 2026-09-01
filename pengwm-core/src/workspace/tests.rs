@@ -200,8 +200,8 @@ fn remove_window_rebalance() {
     assert_eq!(ws.window_count(), 2);
     let parent = ws.arena.get(ws.root.unwrap()).unwrap();
     if let NodeData::Split { ratios, .. } = &parent.data {
-        assert!((ratios[0] - 0.5).abs() < f32::EPSILON);
-        assert!((ratios[1] - 0.5).abs() < f32::EPSILON);
+        assert!((ratios[0] - 0.5).abs() < f64::EPSILON);
+        assert!((ratios[1] - 0.5).abs() < f64::EPSILON);
     } else {
         panic!("expected split");
     }

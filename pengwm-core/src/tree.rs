@@ -39,7 +39,7 @@ pub enum NodeData {
     },
     Split {
         direction: SplitDirection,
-        ratios: Vec<f32>,
+        ratios: Vec<f64>,
     },
 }
 

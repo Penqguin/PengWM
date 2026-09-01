@@ -405,7 +405,7 @@ impl Workspace {
             reserved.width,
             reserved.height,
         );
-        remove_edge_strip(monitor, local)
+        crate::layout::subtract_strip(monitor, local)
     }
 
     /// Direction of the focused split container (the focused node itself, or
@@ -425,38 +425,32 @@ impl Workspace {
     // Private helpers (monitor)
     // -----------------------------------------------------------------------
 
+    fn is_widescreen(&self) -> bool {
+        self.monitor_size.0 > self.monitor_size.1
+    }
+
     fn next_direction(&self) -> SplitDirection {
+        let default = if self.is_widescreen() {
+            SplitDirection::Vertical
+        } else {
+            SplitDirection::Horizontal
+        };
         let focused = match self.focused_node {
             Some(id) => id,
-            None => {
-                if self.monitor_size.0 > self.monitor_size.1 {
-                    return SplitDirection::Vertical;
-                } else {
-                    return SplitDirection::Horizontal;
-                }
-            }
+            None => return default,
         };
-        match self.arena.get(focused).and_then(|n| n.parent) {
-            Some(pid) => match self.arena.get(pid).map(|p| &p.data) {
-                Some(NodeData::Split { direction: d, .. }) => match d {
-                    SplitDirection::Horizontal => SplitDirection::Vertical,
-                    SplitDirection::Vertical => SplitDirection::Horizontal,
-                },
-                _ => {
-                    if self.monitor_size.0 > self.monitor_size.1 {
-                        SplitDirection::Vertical
-                    } else {
-                        SplitDirection::Horizontal
-                    }
-                }
+        match self
+            .arena
+            .get(focused)
+            .and_then(|n| n.parent)
+            .and_then(|pid| self.arena.get(pid))
+            .map(|p| &p.data)
+        {
+            Some(NodeData::Split { direction, .. }) => match direction {
+                SplitDirection::Horizontal => SplitDirection::Vertical,
+                SplitDirection::Vertical => SplitDirection::Horizontal,
             },
-            None => {
-                if self.monitor_size.0 > self.monitor_size.1 {
-                    SplitDirection::Vertical
-                } else {
-                    SplitDirection::Horizontal
-                }
-            }
+            _ => default,
         }
     }
 
@@ -501,7 +495,7 @@ impl Workspace {
             .map(|n| n.children.len())
             .unwrap_or(0);
         if n > 0 {
-            let equal = 1.0 / n as f32;
+            let equal = 1.0 / n as f64;
             if let NodeData::Split { ref mut ratios, .. } =
                 &mut self.arena.get_mut(split_id).unwrap().data
             {
@@ -650,58 +644,6 @@ impl Workspace {
     }
 }
 
-const EPSILON: f64 = 0.5;
-
-/// Remove a reserved edge strip from a monitor rect (in local coordinates).
-///
-/// `strip` is expected to span the monitor's full width (top/bottom bars) or
-/// full height (left/right bars) and sit flush against one edge. Anything
-/// that doesn't look like an edge strip is ignored.
-fn remove_edge_strip(monitor: Rect, strip: Rect) -> Rect {
-    let overlaps_x = strip.x < monitor.x + monitor.width && strip.x + strip.width > monitor.x;
-    let overlaps_y = strip.y < monitor.y + monitor.height && strip.y + strip.height > monitor.y;
-    if !overlaps_x || !overlaps_y {
-        return monitor;
-    }
-
-    let spans_width = strip.x <= monitor.x + EPSILON
-        && strip.x + strip.width >= monitor.x + monitor.width - EPSILON;
-    let spans_height = strip.y <= monitor.y + EPSILON
-        && strip.y + strip.height >= monitor.y + monitor.height - EPSILON;
-
-    if spans_width {
-        let cut = (strip.y + strip.height).min(monitor.y + monitor.height);
-        if strip.y <= monitor.y + EPSILON && cut < monitor.y + monitor.height {
-            // strip across the top edge
-            let remaining = monitor.y + monitor.height - cut;
-            return Rect::new(monitor.x, cut, monitor.width, remaining.max(0.0));
-        }
-        let cut = strip.y.max(monitor.y);
-        if strip.y + strip.height >= monitor.y + monitor.height - EPSILON && cut > monitor.y {
-            // strip across the bottom edge
-            let remaining = cut - monitor.y;
-            return Rect::new(monitor.x, monitor.y, monitor.width, remaining.max(0.0));
-        }
-        return monitor;
-    }
-
-    if spans_height {
-        let cut = (strip.x + strip.width).min(monitor.x + monitor.width);
-        if strip.x <= monitor.x + EPSILON && cut < monitor.x + monitor.width {
-            // strip along the left edge
-            let remaining = monitor.x + monitor.width - cut;
-            return Rect::new(cut, monitor.y, remaining.max(0.0), monitor.height);
-        }
-        let cut = strip.x.max(monitor.x);
-        if strip.x + strip.width >= monitor.x + monitor.width - EPSILON && cut > monitor.x {
-            // strip along the right edge
-            let remaining = cut - monitor.x;
-            return Rect::new(monitor.x, monitor.y, remaining.max(0.0), monitor.height);
-        }
-    }
-
-    monitor
-}
 
 #[cfg(test)]
 mod tests;
