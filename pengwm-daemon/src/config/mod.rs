@@ -1,4 +1,5 @@
 pub mod keybinds;
+pub mod loader;
 pub mod watcher;
 
 pub use pengwm_core::config::{config_file_path, BarConfig, BarPosition};
@@ -148,9 +149,9 @@ fn default_max_tiles() -> usize {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            gap_outer: 10,
-            gap_inner: 5,
-            max_tiles: 4,
+            gap_outer: default_gap(),
+            gap_inner: default_gap_inner(),
+            max_tiles: default_max_tiles(),
             restricted_apps: Vec::new(),
             bar: BarConfig::default(),
             menubar: MenubarConfig::default(),

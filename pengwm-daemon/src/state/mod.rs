@@ -642,13 +642,19 @@ impl StateManager {
 
     fn reload_config(&mut self) {
         log::info!("Reloading config...");
-        let updated_keybinds = KeybindConfig::load();
+        let (updated_settings, updated_keybinds) =
+            match crate::config::loader::load() {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!("Failed to reload config: {}. Keeping previous config.", e);
+                    return;
+                }
+            };
         {
             let mut keybinds = self.keybinds.lock().expect("keybind mutex poisoned");
             *keybinds = updated_keybinds;
             log::info!("Config reloaded ({} bindings)", keybinds.bindings.len());
         }
-        let updated_settings = Settings::load();
         self.gap_outer = updated_settings.gap_outer.max(0) as f64;
         self.gap_inner = updated_settings.gap_inner.max(0) as f64;
         self.router.set_max_tiles(updated_settings.max_tiles as usize);

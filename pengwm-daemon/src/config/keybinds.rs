@@ -282,60 +282,60 @@ pub fn find_keybind(
     None
 }
 
-pub fn key_name_to_keycode(name: &str) -> u16 {
+pub fn key_name_to_keycode(name: &str) -> Option<u16> {
     match name {
-        "a" => 0x00,
-        "b" => 0x0B,
-        "c" => 0x08,
-        "d" => 0x02,
-        "e" => 0x0E,
-        "f" => 0x03,
-        "g" => 0x05,
-        "h" => 0x04,
-        "i" => 0x22,
-        "j" => 0x26,
-        "k" => 0x28,
-        "l" => 0x25,
-        "m" => 0x2E,
-        "n" => 0x2D,
-        "o" => 0x1F,
-        "p" => 0x23,
-        "q" => 0x0C,
-        "r" => 0x0F,
-        "s" => 0x01,
-        "t" => 0x11,
-        "u" => 0x20,
-        "v" => 0x09,
-        "w" => 0x0D,
-        "x" => 0x07,
-        "y" => 0x10,
-        "z" => 0x06,
-        "0" => 0x1D,
-        "1" => 0x12,
-        "2" => 0x13,
-        "3" => 0x14,
-        "4" => 0x15,
-        "5" => 0x17,
-        "6" => 0x16,
-        "7" => 0x1A,
-        "8" => 0x1B,
-        "9" => 0x19,
-        "left" => 0x7B,
-        "right" => 0x7C,
-        "down" => 0x7D,
-        "up" => 0x7E,
-        "," => 0x2B,
-        "/" => 0x2C,
-        "space" => 0x31,
-        "tab" => 0x30,
-        "escape" => 0x35,
-        "return" => 0x24,
-        "delete" => 0x33,
-        "home" => 0x73,
-        "end" => 0x77,
-        "pageup" => 0x74,
-        "pagedown" => 0x79,
-        _ => 0x00,
+        "a" => Some(0x00),
+        "b" => Some(0x0B),
+        "c" => Some(0x08),
+        "d" => Some(0x02),
+        "e" => Some(0x0E),
+        "f" => Some(0x03),
+        "g" => Some(0x05),
+        "h" => Some(0x04),
+        "i" => Some(0x22),
+        "j" => Some(0x26),
+        "k" => Some(0x28),
+        "l" => Some(0x25),
+        "m" => Some(0x2E),
+        "n" => Some(0x2D),
+        "o" => Some(0x1F),
+        "p" => Some(0x23),
+        "q" => Some(0x0C),
+        "r" => Some(0x0F),
+        "s" => Some(0x01),
+        "t" => Some(0x11),
+        "u" => Some(0x20),
+        "v" => Some(0x09),
+        "w" => Some(0x0D),
+        "x" => Some(0x07),
+        "y" => Some(0x10),
+        "z" => Some(0x06),
+        "0" => Some(0x1D),
+        "1" => Some(0x12),
+        "2" => Some(0x13),
+        "3" => Some(0x14),
+        "4" => Some(0x15),
+        "5" => Some(0x17),
+        "6" => Some(0x16),
+        "7" => Some(0x1A),
+        "8" => Some(0x1B),
+        "9" => Some(0x19),
+        "left" => Some(0x7B),
+        "right" => Some(0x7C),
+        "down" => Some(0x7D),
+        "up" => Some(0x7E),
+        "," => Some(0x2B),
+        "/" => Some(0x2C),
+        "space" => Some(0x31),
+        "tab" => Some(0x30),
+        "escape" => Some(0x35),
+        "return" => Some(0x24),
+        "delete" => Some(0x33),
+        "home" => Some(0x73),
+        "end" => Some(0x77),
+        "pageup" => Some(0x74),
+        "pagedown" => Some(0x79),
+        _ => None,
     }
 }
 
@@ -377,7 +377,10 @@ pub fn from_toml_value(value: &toml::Value) -> KeybindConfig {
         };
         let (modifier_str, key_name) = split_keybind_str(key_str);
         let modifiers = parse_modifiers(modifier_str);
-        let keycode = key_name_to_keycode(key_name);
+        let keycode = match key_name_to_keycode(key_name) {
+            Some(c) => c,
+            None => continue,
+        };
         bindings.push(Keybind {
             keycode,
             modifiers,
@@ -385,6 +388,33 @@ pub fn from_toml_value(value: &toml::Value) -> KeybindConfig {
         });
     }
     KeybindConfig { bindings }
+}
+
+pub fn try_from_toml_value(value: &toml::Value) -> Result<KeybindConfig, String> {
+    let mut bindings = Vec::new();
+    let table = match value.as_table() {
+        Some(t) => t,
+        None => return Ok(KeybindConfig { bindings }),
+    };
+    for (key_str, action_val) in table {
+        let action_str = match action_val.as_str() {
+            Some(s) => s,
+            None => return Err(format!("keybind '{key_str}' value must be a string")),
+        };
+        let action = parse_action(action_str)
+            .ok_or_else(|| format!("unknown action '{action_str}' for keybind '{key_str}'"))?;
+        let (modifier_str, key_name) = split_keybind_str(key_str);
+        let modifiers = parse_modifiers(modifier_str);
+        let keycode = key_name_to_keycode(key_name)
+            .ok_or_else(|| format!("unknown key '{key_name}' for keybind '{key_str}'"))?;
+        // Reject bindings with no modifiers and no recognized key? 0x00 already handled.
+        bindings.push(Keybind {
+            keycode,
+            modifiers,
+            action,
+        });
+    }
+    Ok(KeybindConfig { bindings })
 }
 
 fn split_keybind_str(s: &str) -> (&str, &str) {
@@ -542,35 +572,35 @@ mod tests {
 
     #[test]
     fn key_name_to_keycode_arrows() {
-        assert_eq!(key_name_to_keycode("left"), 0x7B);
-        assert_eq!(key_name_to_keycode("right"), 0x7C);
-        assert_eq!(key_name_to_keycode("up"), 0x7E);
-        assert_eq!(key_name_to_keycode("down"), 0x7D);
+        assert_eq!(key_name_to_keycode("left"), Some(0x7B));
+        assert_eq!(key_name_to_keycode("right"), Some(0x7C));
+        assert_eq!(key_name_to_keycode("up"), Some(0x7E));
+        assert_eq!(key_name_to_keycode("down"), Some(0x7D));
     }
 
     #[test]
     fn key_name_to_keycode_letters() {
-        assert_eq!(key_name_to_keycode("h"), 0x04);
-        assert_eq!(key_name_to_keycode("j"), 0x26);
-        assert_eq!(key_name_to_keycode("k"), 0x28);
-        assert_eq!(key_name_to_keycode("l"), 0x25);
+        assert_eq!(key_name_to_keycode("h"), Some(0x04));
+        assert_eq!(key_name_to_keycode("j"), Some(0x26));
+        assert_eq!(key_name_to_keycode("k"), Some(0x28));
+        assert_eq!(key_name_to_keycode("l"), Some(0x25));
     }
 
     #[test]
     fn key_name_to_keycode_digits() {
-        assert_eq!(key_name_to_keycode("1"), 0x12);
-        assert_eq!(key_name_to_keycode("9"), 0x19);
+        assert_eq!(key_name_to_keycode("1"), Some(0x12));
+        assert_eq!(key_name_to_keycode("9"), Some(0x19));
     }
 
     #[test]
     fn key_name_to_keycode_punctuation() {
-        assert_eq!(key_name_to_keycode(","), 0x2B);
-        assert_eq!(key_name_to_keycode("/"), 0x2C);
+        assert_eq!(key_name_to_keycode(","), Some(0x2B));
+        assert_eq!(key_name_to_keycode("/"), Some(0x2C));
     }
 
     #[test]
     fn key_name_to_keycode_unknown_returns_zero() {
-        assert_eq!(key_name_to_keycode("foobar"), 0x00);
+        assert_eq!(key_name_to_keycode("foobar"), None);
     }
 
     #[test]
