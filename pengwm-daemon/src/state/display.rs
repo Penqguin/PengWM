@@ -49,16 +49,56 @@ impl DisplaySet {
     ) {
         workspaces.clear();
         self.active.clear();
+        // Per-monitor affinity: entries with `monitor` set only appear on that
+        // monitor; `None` means cloned to every monitor (back-compat).
         for display in displays {
-            let base = workspaces.len();
-            self.active.insert(display.id, base);
+            let mut base_for_display: Option<usize> = None;
             for entry in &self.entries {
+                if !Self::entry_applies_to_display(entry, display) {
+                    continue;
+                }
+                if base_for_display.is_none() {
+                    base_for_display = Some(workspaces.len());
+                }
                 workspaces.push(Workspace::new(
                     entry.name.clone(),
                     display.id,
                     display.origin,
                     display.size,
                 ));
+            }
+            if let Some(base) = base_for_display {
+                self.active.insert(display.id, base);
+            }
+        }
+        // If no workspace matched any display (e.g. all had affinity for a
+        // disconnected monitor), fall back to cloning `None`-affinity or all
+        // entries onto the first display so we never start empty.
+        if workspaces.is_empty() && !displays.is_empty() {
+            let first = &displays[0];
+            for entry in &self.entries {
+                workspaces.push(Workspace::new(
+                    entry.name.clone(),
+                    first.id,
+                    first.origin,
+                    first.size,
+                ));
+            }
+            if !workspaces.is_empty() {
+                self.active.insert(first.id, 0);
+            }
+        }
+    }
+
+    pub fn entry_applies_to_display(entry: &WorkspaceEntry, display: &DisplayInfo) -> bool {
+        match &entry.monitor {
+            None => true,
+            Some(crate::config::MonitorRef::Index(id)) => *id == display.id,
+            Some(crate::config::MonitorRef::Name(name)) => {
+                // DisplayInfo has no name yet; allow numeric string match for
+                // back-compat. A real display-name resolver can be added once
+                // OsAdapter exposes display names.
+                name == &display.id.to_string()
             }
         }
     }
@@ -75,10 +115,15 @@ impl DisplaySet {
             .active_displays()
             .into_iter()
             .find(|d| d.id == display_id)?;
-        let base = workspaces.len();
-        self.active.insert(display_id, base);
         let mut created = Vec::new();
+        let mut first_for_display: Option<usize> = None;
         for entry in &self.entries {
+            if !Self::entry_applies_to_display(entry, &info) {
+                continue;
+            }
+            if first_for_display.is_none() {
+                first_for_display = Some(workspaces.len());
+            }
             workspaces.push(Workspace::new(
                 entry.name.clone(),
                 display_id,
@@ -87,6 +132,11 @@ impl DisplaySet {
             ));
             created.push(workspaces.len() - 1);
         }
+        if created.is_empty() {
+            return None;
+        }
+        self.active
+            .insert(display_id, first_for_display.unwrap());
         Some(created)
     }
 
@@ -190,10 +240,14 @@ mod tests {
             WorkspaceEntry {
                 name: "a".into(),
                 apps: vec![],
+                monitor: None,
+                autostart: vec![],
             },
             WorkspaceEntry {
                 name: "b".into(),
                 apps: vec![],
+                monitor: None,
+                autostart: vec![],
             },
         ]
     }

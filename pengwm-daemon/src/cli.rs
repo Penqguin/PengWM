@@ -41,10 +41,18 @@ pub enum CliCommand {
     SetGapInner {
         pixels: i32,
     },
+    FocusDisplay {
+        direction: DirectionArg,
+    },
+    MoveWindowToDisplay {
+        direction: DirectionArg,
+    },
     ReloadConfig,
     State,
     /// Stop the daemon (and the status bar with it)
     Quit,
+    /// Clear the persisted session state (next launch uses config defaults)
+    ClearSession,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -101,9 +109,16 @@ impl From<CliCommand> for Command {
             CliCommand::ToggleBar => Command::ToggleBar,
             CliCommand::SetGapOuter { pixels } => Command::SetGapOuter { pixels },
             CliCommand::SetGapInner { pixels } => Command::SetGapInner { pixels },
+            CliCommand::FocusDisplay { direction } => Command::FocusDisplay {
+                direction: direction.into(),
+            },
+            CliCommand::MoveWindowToDisplay { direction } => Command::MoveWindowToDisplay {
+                direction: direction.into(),
+            },
             CliCommand::ReloadConfig => Command::ReloadConfig,
             CliCommand::State => Command::QueryState,
             CliCommand::Quit => Command::Quit,
+            CliCommand::ClearSession => unreachable!("clear-session handled before IPC"),
         }
     }
 }

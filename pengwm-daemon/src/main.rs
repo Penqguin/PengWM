@@ -15,6 +15,19 @@ fn main() {
 
     match cli.command {
         None | Some(cli::CliCommand::Daemon) => daemon_main(),
+        Some(cli::CliCommand::ClearSession) => {
+            let p = pengwm_daemon::state::session::session_file_path();
+            match std::fs::remove_file(&p) {
+                Ok(_) => println!("Cleared session file {}", p.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    println!("No session file at {}", p.display())
+                }
+                Err(e) => {
+                    eprintln!("Failed to clear session file {}: {}", p.display(), e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Some(cmd) => {
             let command: Command = cmd.into();
             match send_command(&command) {
@@ -99,9 +112,23 @@ fn daemon_main() {
     eprintln!("[7/6] Starting IPC server and config watcher…");
     config::watcher::watch(tx.clone());
 
+    // Ctrl-C / SIGTERM handler: forward Quit through the same channel so
+    // the session is saved before exit.
+    {
+        let signal_tx = tx.clone();
+        let _ = ctrlc::set_handler(move || {
+            log::info!("Signal received — requesting quit");
+            let _ = signal_tx.blocking_send(pengwm_daemon::event_loop::DaemonEvent::Command(
+                pengwm_core::command::Command::Quit,
+                None,
+            ));
+        });
+    }
+
+    let ipc_tx = tx.clone();
     // Spawn the UDS listener on a background thread.
     thread::spawn(move || {
-        ipc_server::start_ipc_server(tx);
+        ipc_server::start_ipc_server(ipc_tx);
     });
 
     // The `pengwm-bar` process is spawned inside EventLoop::new (gated on

@@ -104,13 +104,18 @@ impl OsAdapter for TestAdapter {
     }
 
     fn hide_windows(&self, window_ids: &[WindowId]) {
-        let offscreen = Rect {
-            x: -9999.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        };
         for &wid in window_ids {
+            // Preserve current size if we have it, otherwise fall back to 1x1.
+            let existing = self.window_rects.borrow().get(&wid).copied();
+            let (w, h) = existing
+                .map(|r| (r.width, r.height))
+                .unwrap_or((1.0, 1.0));
+            let offscreen = Rect {
+                x: -100_000.0,
+                y: -100_000.0,
+                width: w,
+                height: h,
+            };
             self.window_rects.borrow_mut().insert(wid, offscreen);
         }
     }

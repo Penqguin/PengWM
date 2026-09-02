@@ -71,7 +71,6 @@ fn handle_client(
     if buf.is_empty() {
         return;
     }
-    let n = buf.len();
 
     let cmd: pengwm_core::command::Command = match serde_json::from_slice(&buf) {
         Ok(c) => c,

@@ -1,7 +1,7 @@
 use crate::adapter::OsAdapter;
 use crate::bar_server::BarSender;
 use crate::config::keybinds::KeybindConfig;
-use crate::config::{BarConfig, Settings, WorkspaceEntry};
+use crate::config::Settings;
 use crate::event_loop::DaemonEvent;
 use pengwm_core::command::{
     BarMessage, BarState, BarWorkspace, Command, DaemonResponse, LayoutMode,
@@ -19,6 +19,7 @@ pub mod display;
 pub mod drag;
 pub mod hidden;
 pub mod router;
+pub mod session;
 use self::bar::{BarReserve, ReloadAction, ToggleAction};
 use self::display::DisplaySet;
 use self::router::Router;
@@ -49,6 +50,10 @@ pub struct StateManager {
     /// Set when `Command::Quit` is handled; the event loop polls this and
     /// returns so the daemon process can exit.
     shutdown_requested: bool,
+    /// Deadline until which `on_window_focused` will not mutate `DisplaySet::active`.
+    /// Set on explicit workspace switches to prevent focus-notification feedback loops
+    /// that drag windows along to the new workspace.
+    switch_debounce_until: Option<Instant>,
 }
 
 impl StateManager {
@@ -66,13 +71,89 @@ impl StateManager {
         let mut window_pids: HashMap<WindowId, i32> = HashMap::new();
 
         let settings = Settings::load();
-        let entries = if settings.workspaces.is_empty() {
-            crate::config::default_workspaces()
+        // Try session restore (topology + active + gaps) when enabled.
+        // Skipped in `cargo test` so unit tests start from a deterministic
+        // fresh state; session restore is exercised via `session::tests`.
+        let maybe_session = if settings.restore_last_session && !cfg!(test) {
+            session::load_default()
         } else {
-            settings.workspaces.clone()
+            None
         };
-        let mut displays = DisplaySet::new(entries);
-        displays.init_workspaces(&mut workspaces, &display_infos);
+
+        let (entries, use_session) = if let Some(ref sess) = maybe_session {
+            if !sess.workspaces.is_empty() {
+                (sess.entries.clone(), true)
+            } else {
+                let e = if settings.workspaces.is_empty() {
+                    crate::config::default_workspaces()
+                } else {
+                    settings.workspaces.clone()
+                };
+                (e, false)
+            }
+        } else {
+            let e = if settings.workspaces.is_empty() {
+                crate::config::default_workspaces()
+            } else {
+                settings.workspaces.clone()
+            };
+            (e, false)
+        };
+
+        let mut displays = DisplaySet::new(entries.clone());
+        if use_session {
+            let sess = maybe_session.as_ref().unwrap();
+            log::info!(
+                "Restoring session: {} workspaces, {} active displays",
+                sess.workspaces.len(),
+                sess.active.len()
+            );
+            // Remap orphaned workspaces to primary and update geometry to
+            // current display infos so stale monitor sizes don't persist.
+            let primary = os.primary_display_id();
+            let primary_info = display_infos.iter().find(|d| d.id == primary);
+            let primary_origin = primary_info.map(|d| d.origin).unwrap_or((0, 0));
+            let primary_size = primary_info.map(|d| d.size).unwrap_or((1920, 1080));
+            for ws in &sess.workspaces {
+                let mut ws = ws.clone();
+                let exists = display_infos.iter().any(|d| d.id == ws.monitor_id);
+                if !exists {
+                    log::info!(
+                        "Remapping orphan workspace '{}' from monitor {} to primary {}",
+                        ws.name,
+                        ws.monitor_id,
+                        primary
+                    );
+                    ws.monitor_id = primary;
+                    ws.set_monitor_origin(primary_origin);
+                    ws.update_monitor_geometry(primary_origin, primary_size);
+                } else if let Some(info) = display_infos.iter().find(|d| d.id == ws.monitor_id) {
+                    ws.update_monitor_geometry(info.origin, info.size);
+                }
+                workspaces.push(ws);
+            }
+            // Active map: keep only entries for live displays, remap stale indices.
+            for (mon_id, idx) in &sess.active {
+                if display_infos.iter().any(|d| d.id == *mon_id) && *idx < workspaces.len() {
+                    displays.active_mut().insert(*mon_id, *idx);
+                }
+            }
+            // Ensure every live display has an active entry.
+            for info in &display_infos {
+                if !displays.active().contains_key(&info.id) {
+                    // Pick first workspace on that monitor
+                    if let Some(idx) = workspaces.iter().position(|ws| ws.monitor_id == info.id) {
+                        displays.active_mut().insert(info.id, idx);
+                    } else if !workspaces.is_empty() {
+                        displays.active_mut().insert(info.id, 0);
+                    }
+                }
+            }
+            // Restore gaps from session (override settings gaps)
+            // (handled after StateManager construction to avoid borrowing)
+        } else {
+            displays.init_workspaces(&mut workspaces, &display_infos);
+        }
 
         // Fallback when no displays (headless test) — DisplaySet leaves workspaces empty.
         if workspaces.is_empty() {
@@ -83,6 +164,48 @@ impl StateManager {
                 (1920, 1080),
             ));
             displays.active_mut().insert(os.primary_display_id(), 0);
+        }
+
+        // Autostart: only on fresh init, not when restoring a session (session
+        // already has its windows' state). Skipped in tests. Spawn each
+        // `autostart` command once per entry that has affinity for at least one
+        // active display.
+        if !use_session && !cfg!(test) {
+            for entry in &entries {
+                if entry.autostart.is_empty() {
+                    continue;
+                }
+                let applies = if entry.monitor.is_none() {
+                    !display_infos.is_empty()
+                } else {
+                    display_infos
+                        .iter()
+                        .any(|d| DisplaySet::entry_applies_to_display(entry, d))
+                };
+                if !applies {
+                    continue;
+                }
+                for cmd in &entry.autostart {
+                    log::info!("Autostart for workspace '{}': {}", entry.name, cmd);
+                    let _ = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(cmd)
+                        .spawn()
+                        .map(|mut child| {
+                            std::thread::spawn(move || {
+                                let _ = child.wait();
+                            });
+                        })
+                        .map_err(|e| {
+                            log::warn!(
+                                "Failed to autostart '{}' for workspace '{}': {}",
+                                cmd,
+                                entry.name,
+                                e
+                            );
+                        });
+                }
+            }
         }
 
         let frontmost_pid = os.frontmost_pid();
@@ -102,6 +225,15 @@ impl StateManager {
             .into_iter()
             .chain(excluded_pids)
             .collect::<Vec<_>>();
+        let (gap_outer, gap_inner) = if use_session {
+            let sess = maybe_session.as_ref().unwrap();
+            (sess.gap_outer, sess.gap_inner)
+        } else {
+            (
+                settings.gap_outer.max(0) as f64,
+                settings.gap_inner.max(0) as f64,
+            )
+        };
         let mut state = Self {
             workspaces,
             displays,
@@ -111,8 +243,8 @@ impl StateManager {
             hidden: HiddenTracker::new(),
             os,
             event_tx,
-            gap_outer: settings.gap_outer.max(0) as f64,
-            gap_inner: settings.gap_inner.max(0) as f64,
+            gap_outer,
+            gap_inner,
             router: Router::new(settings.max_tiles as usize),
             keybinds,
             restricted_apps: settings.restricted_apps,
@@ -122,10 +254,15 @@ impl StateManager {
             last_layout_rects: HashMap::new(),
             drag: DragState::new(),
             shutdown_requested: false,
+            switch_debounce_until: None,
         };
 
+        // Hide every workspace that isn't the active one for its monitor.
+        // On fresh init that's all i != 0; on session restore it's the saved active set.
+        let active_set: std::collections::HashSet<usize> =
+            state.displays.active().values().copied().collect();
         for i in 0..state.workspaces.len() {
-            if i != 0 {
+            if !active_set.contains(&i) {
                 state.hide_workspace(i);
             }
         }
@@ -193,6 +330,7 @@ impl StateManager {
 
     /// Name of the configured workspace `pid`'s app is assigned to, matched
     /// case-insensitively against bundle id first, then app display name.
+    #[allow(dead_code)]
     fn configured_workspace_name_for_pid(&self, pid: i32) -> Option<&str> {
         self.router.configured_workspace_name_for_pid(
             pid,
@@ -249,22 +387,27 @@ impl StateManager {
         }
 
         ws.add_window(window_id, None);
-        self.apply_layout(target);
+        if self.is_workspace_visible(target) {
+            self.apply_layout(target);
+        }
         Some(target)
     }
 
     pub fn on_window_destroyed(&mut self, window_id: WindowId) {
         for i in 0..self.workspaces.len() {
-            let ws = &self.workspaces[i];
-            if ws.find_window(window_id).is_some() {
+            if self.workspaces[i].find_window(window_id).is_some() {
+                let is_visible = self.is_workspace_visible(i);
                 let ws = &mut self.workspaces[i];
                 ws.remove_window(window_id);
-                self.apply_layout(i);
+                if is_visible {
+                    self.apply_layout(i);
+                }
                 break;
             }
         }
         self.window_pids.remove(&window_id);
         self.hidden.remove(window_id);
+        // Also evict from WindowElementCache via adapter if needed? MacOsAdapter handles via observer, but we can ensure hide not retried.
         self.pid_to_windows.retain(|_, windows| {
             windows.retain(|w| *w != window_id);
             !windows.is_empty()
@@ -277,7 +420,9 @@ impl StateManager {
     /// can be retiled when it becomes visible again.
     pub fn on_window_hidden(&mut self, window_id: WindowId) {
         if let Some(idx) = self.hidden.hide_window(window_id, &mut self.workspaces) {
-            self.apply_layout(idx);
+            if self.is_workspace_visible(idx) {
+                self.apply_layout(idx);
+            }
             self.publish_bar_state();
         } else {
             log::debug!("WindowHidden: window {} not tracked, ignoring", window_id);
@@ -317,6 +462,18 @@ impl StateManager {
             if self.workspaces[i].find_window(window_id).is_some() {
                 self.workspaces[i].focus_window(window_id);
                 let mon_id = self.workspaces[i].monitor_id;
+                // Debounce: don't mutate DisplaySet::active on focus notifications
+                // that arrive immediately after an explicit workspace switch — they
+                // are stale observer events for the window that was just hidden
+                // and would drag the old workspace back into view.
+                if let Some(until) = self.switch_debounce_until {
+                    if Instant::now() < until {
+                        self.publish_bar_state();
+                        return;
+                    } else {
+                        self.switch_debounce_until = None;
+                    }
+                }
                 let prev = self.displays.active_mut().insert(mon_id, i);
                 if let Some(prev_idx) = prev {
                     if prev_idx != i {
@@ -486,23 +643,75 @@ impl StateManager {
                 self.apply_layout(idx);
             }
             Command::Workspace { id } => {
-                let n = id;
-                if n > 0 && (n as usize) <= self.workspaces.len() {
-                    let new_idx = (n - 1) as usize;
-                    let current = self.active_workspace_idx();
-                    if new_idx != current {
-                        self.hide_workspace(current);
-                        let mon_id = self.workspaces[current].monitor_id;
-                        self.displays.active_mut().insert(mon_id, new_idx);
-                        self.apply_layout(new_idx);
+                // Per-monitor: id is 1-based index among workspaces on the
+                // *focused* monitor, not a flat global index. This keeps
+                // workspace-1..5 independent per display (10 total with 2
+                // monitors) and fixes "second monitor shoudl have separate
+                // workspaces but it doesn't".
+                let n = id as usize;
+                if n == 0 {
+                    // filtered by parse_id, but keep guard
+                } else {
+                    let current_idx = self.active_workspace_idx();
+                    if current_idx >= self.workspaces.len() {
+                        // headless fallback
+                    } else {
+                        let current_mon = self.workspaces[current_idx].monitor_id;
+                        let on_mon: Vec<usize> = self
+                            .workspaces
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, ws)| ws.monitor_id == current_mon)
+                            .map(|(i, _)| i)
+                            .collect();
+                        if n <= on_mon.len() {
+                            let new_idx = on_mon[n - 1];
+                            if new_idx != current_idx {
+                                // Hide every workspace on this monitor except the destination.
+                                for &idx in &on_mon {
+                                    if idx != new_idx {
+                                        self.hide_workspace(idx);
+                                    }
+                                }
+                                self.displays.active_mut().insert(current_mon, new_idx);
+                                self.switch_debounce_until =
+                                    Some(Instant::now() + Duration::from_millis(150));
+                                self.apply_layout(new_idx);
+                            }
+                        } else {
+                            log::debug!(
+                                "Workspace id {} out of range for monitor {} (has {} workspaces)",
+                                n, current_mon, on_mon.len()
+                            );
+                        }
                     }
                 }
             }
             Command::MoveWindowToWorkspace { id } => {
-                let n = id;
-                if n > 0 && (n as usize) <= self.workspaces.len() {
-                    self.move_focused_to_workspace((n - 1) as usize);
+                let n = id as usize;
+                if n == 0 {
+                } else {
+                    let current_idx = self.active_workspace_idx();
+                    if current_idx < self.workspaces.len() {
+                        let current_mon = self.workspaces[current_idx].monitor_id;
+                        let on_mon: Vec<usize> = self
+                            .workspaces
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, ws)| ws.monitor_id == current_mon)
+                            .map(|(i, _)| i)
+                            .collect();
+                        if n <= on_mon.len() {
+                            self.move_focused_to_workspace(on_mon[n - 1]);
+                        }
+                    }
                 }
+            }
+            Command::FocusDisplay { direction } => {
+                self.focus_display(direction);
+            }
+            Command::MoveWindowToDisplay { direction } => {
+                self.move_window_to_display(direction);
             }
             Command::Close => {
                 let idx = self.active_workspace_idx();
@@ -575,6 +784,20 @@ impl StateManager {
                     let _ = tx.try_send(DaemonResponse::Ack);
                 }
                 log::info!("Quit requested — shutting down daemon and bar");
+                // Persist session (topology + active + gaps) atomically before exit.
+                // Skipped in tests to avoid polluting the user's real session file.
+                if !cfg!(test) {
+                    let sess = session::snapshot_from(
+                        &self.workspaces,
+                        self.displays.active(),
+                        self.displays.entries(),
+                        self.gap_outer,
+                        self.gap_inner,
+                    );
+                    if let Err(e) = session::save_default(&sess) {
+                        log::warn!("Failed to save session on quit: {}", e);
+                    }
+                }
                 self.bar_sender.send(BarMessage::Exit);
                 std::thread::sleep(Duration::from_millis(150));
                 self.shutdown_requested = true;
@@ -633,8 +856,120 @@ impl StateManager {
                 target
             };
             self.workspaces[current].remove_window(wid);
-            self.apply_layout(current);
+            if self.is_workspace_visible(current) {
+                self.apply_layout(current);
+            }
             self.workspaces[dest].add_window(wid, None);
+            if self.is_workspace_visible(dest) {
+                self.apply_layout(dest);
+            }
+        }
+        self.publish_bar_state();
+    }
+
+    fn find_display_in_direction(&self, from_id: u32, direction: Direction) -> Option<u32> {
+        let displays = self.os.active_displays();
+        let from = displays.iter().find(|d| d.id == from_id)?;
+        // Pick the closest display whose center is in the given direction.
+        // Uses center-to-center vector and dot product heuristic.
+        let from_cx = from.origin.0 as f64 + from.size.0 as f64 / 2.0;
+        let from_cy = from.origin.1 as f64 + from.size.1 as f64 / 2.0;
+        let mut best: Option<(u32, f64)> = None;
+        for d in &displays {
+            if d.id == from_id {
+                continue;
+            }
+            let cx = d.origin.0 as f64 + d.size.0 as f64 / 2.0;
+            let cy = d.origin.1 as f64 + d.size.1 as f64 / 2.0;
+            let dx = cx - from_cx;
+            let dy = cy - from_cy;
+            let is_match = match direction {
+                Direction::Left => dx < 0.0 && dx.abs() >= dy.abs(),
+                Direction::Right => dx > 0.0 && dx.abs() >= dy.abs(),
+                Direction::Up => dy < 0.0 && dy.abs() > dx.abs(),
+                Direction::Down => dy > 0.0 && dy.abs() > dx.abs(),
+            };
+            if !is_match {
+                continue;
+            }
+            let dist = dx * dx + dy * dy;
+            if best.map(|(_, bd)| dist < bd).unwrap_or(true) {
+                best = Some((d.id, dist));
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    fn focus_display(&mut self, direction: Direction) {
+        let current_idx = self.active_workspace_idx();
+        if current_idx >= self.workspaces.len() {
+            return;
+        }
+        let current_mon = self.workspaces[current_idx].monitor_id;
+        let target_mon = match self.find_display_in_direction(current_mon, direction) {
+            Some(id) => id,
+            None => {
+                log::debug!("focus_display {:?} no target from mon {}", direction, current_mon);
+                return;
+            }
+        };
+        let target_idx = match self.displays.active().get(&target_mon).copied() {
+            Some(idx) if idx < self.workspaces.len() => idx,
+            _ => match self.workspaces.iter().position(|ws| ws.monitor_id == target_mon) {
+                Some(idx) => idx,
+                None => return,
+            },
+        };
+        if let Some(wid) = self.workspaces[target_idx].focused_window_id() {
+            log::debug!("focus_display {:?} mon {} -> {} wid {}", direction, current_mon, target_mon, wid);
+            self.os.focus_window(wid);
+        } else {
+            // No window to focus — just update frontmost heuristic by focusing display?
+            // Publish so bar/menubar reflect focused display change.
+            log::debug!("focus_display {:?} target {} has no windows", direction, target_mon);
+            self.publish_bar_state();
+        }
+    }
+
+    fn move_window_to_display(&mut self, direction: Direction) {
+        let current_idx = self.active_workspace_idx();
+        if current_idx >= self.workspaces.len() {
+            return;
+        }
+        let current_mon = self.workspaces[current_idx].monitor_id;
+        let target_mon = match self.find_display_in_direction(current_mon, direction) {
+            Some(id) => id,
+            None => return,
+        };
+        let wid = match self.workspaces[current_idx].focused_window_id() {
+            Some(id) => id,
+            None => return,
+        };
+        let target_idx = match self.displays.active().get(&target_mon).copied() {
+            Some(idx) if idx < self.workspaces.len() => idx,
+            _ => match self.workspaces.iter().position(|ws| ws.monitor_id == target_mon) {
+                Some(idx) => idx,
+                None => return,
+            },
+        };
+        let dest = if self.workspaces[target_idx].window_count() >= self.router.max_tiles() {
+            match self.find_next_workspace_with_capacity(target_idx) {
+                Some(idx) => idx,
+                None => {
+                    log::warn!("No room on target display {} for window {}", target_mon, wid);
+                    return;
+                }
+            }
+        } else {
+            target_idx
+        };
+        log::debug!("move_window_to_display {:?} wid {} mon {} -> {} dest {}", direction, wid, current_mon, target_mon, dest);
+        self.workspaces[current_idx].remove_window(wid);
+        if self.is_workspace_visible(current_idx) {
+            self.apply_layout(current_idx);
+        }
+        self.workspaces[dest].add_window(wid, None);
+        if self.is_workspace_visible(dest) {
             self.apply_layout(dest);
         }
         self.publish_bar_state();
@@ -697,8 +1032,17 @@ impl StateManager {
         );
     }
 
+    fn is_workspace_visible(&self, idx: usize) -> bool {
+        if idx >= self.workspaces.len() {
+            return false;
+        }
+        let mon = self.workspaces[idx].monitor_id;
+        self.displays.active().get(&mon).copied() == Some(idx)
+    }
+
     fn hide_workspace(&mut self, workspace_idx: usize) {
         let window_ids = self.workspaces[workspace_idx].all_windows();
+        log::debug!("hide_workspace idx={} mon={} windows={:?}", workspace_idx, self.workspaces[workspace_idx].monitor_id, window_ids);
         self.os.hide_windows(&window_ids);
     }
 
@@ -807,6 +1151,8 @@ mod state_tests {
     use crate::adapter::DisplayInfo;
     use crate::adapter_test::TestAdapter;
     use crate::config::keybinds::KeybindConfig;
+    use crate::config::{BarConfig, WorkspaceEntry};
+    use crate::config::MonitorRef;
     use pengwm_core::config::BarPosition;
     use pengwm_core::tree::SplitDirection;
 
@@ -1243,6 +1589,12 @@ mod state_tests {
             },
             Command::Workspace { id: 1 },
             Command::MoveWindowToWorkspace { id: 2 },
+            Command::FocusDisplay {
+                direction: Direction::Left,
+            },
+            Command::MoveWindowToDisplay {
+                direction: Direction::Right,
+            },
             Command::Close,
             Command::ToggleLayout,
             Command::SetLayout {
@@ -1491,5 +1843,103 @@ mod state_tests {
             msgs.iter().any(|m| matches!(m, BarMessage::Exit)),
             "quitting should tell the bar to exit too"
         );
+    }
+
+    #[test]
+    fn workspace_switch_hides_all_other_workspaces_on_monitor() {
+        let mut sm = setup(1);
+        // Route Firefox to Browsing (ws-1) then switch back to Development (ws-0).
+        sm.os.inject_bundle_id(77, "org.mozilla.firefox".into());
+        sm.on_window_created(777, 77);
+        let browsing_idx = sm
+            .workspaces
+            .iter()
+            .position(|ws| ws.name == "Browsing")
+            .unwrap();
+        assert!(sm.workspaces[browsing_idx].find_window(777).is_some());
+
+        // Switch to Development via command.
+        sm.on_command(Command::Workspace { id: 1 }, None);
+        let dev_idx = sm
+            .workspaces
+            .iter()
+            .position(|ws| ws.name == "Development")
+            .unwrap();
+        assert_eq!(sm.displays.active().get(&1), Some(&dev_idx));
+        // Browsing windows should still be only in Browsing, not dragged to Dev.
+        assert!(sm.workspaces[dev_idx].find_window(777).is_none());
+        assert!(sm.workspaces[browsing_idx].find_window(777).is_some());
+        assert_eq!(sm.workspaces[dev_idx].window_count(), 0);
+    }
+
+    #[test]
+    fn workspace_switch_debounces_stale_focus() {
+        let mut sm = setup(1);
+        sm.os.inject_bundle_id(77, "org.mozilla.firefox".into());
+        sm.on_window_created(777, 77);
+        let browsing_idx = sm
+            .workspaces
+            .iter()
+            .position(|ws| ws.name == "Browsing")
+            .unwrap();
+        let dev_idx = sm
+            .workspaces
+            .iter()
+            .position(|ws| ws.name == "Development")
+            .unwrap();
+        // Start on browsing, then switch to dev — sets debounce.
+        sm.on_command(Command::Workspace { id: 2 }, None);
+        assert_eq!(sm.displays.active().get(&1), Some(&browsing_idx));
+        sm.on_command(Command::Workspace { id: 1 }, None);
+        assert_eq!(sm.displays.active().get(&1), Some(&dev_idx));
+        // Stale focus for the firefox window that was just hidden should not flip active back.
+        sm.on_window_focused(777);
+        assert_eq!(
+            sm.displays.active().get(&1),
+            Some(&dev_idx),
+            "debounced focus should not drag active back to browsing"
+        );
+    }
+
+    #[test]
+    fn per_monitor_workspace_entries_respected() {
+        let mut ds = crate::state::display::DisplaySet::new(vec![
+            WorkspaceEntry {
+                name: "Dev".into(),
+                apps: vec![],
+                monitor: Some(crate::config::MonitorRef::Index(1)),
+                autostart: vec![],
+            },
+            WorkspaceEntry {
+                name: "Browse".into(),
+                apps: vec![],
+                monitor: None,
+                autostart: vec![],
+            },
+        ]);
+        let mut wss = Vec::new();
+        ds.init_workspaces(
+            &mut wss,
+            &[
+                DisplayInfo {
+                    id: 1,
+                    origin: (0, 0),
+                    size: (1920, 1080),
+                },
+                DisplayInfo {
+                    id: 2,
+                    origin: (1920, 0),
+                    size: (1920, 1080),
+                },
+            ],
+        );
+        // Dev only on monitor 1, Browse on both.
+        assert_eq!(wss.len(), 3);
+        assert_eq!(wss[0].name, "Dev");
+        assert_eq!(wss[0].monitor_id, 1);
+        assert_eq!(wss[1].name, "Browse");
+        assert_eq!(wss[1].monitor_id, 1);
+        assert_eq!(wss[2].name, "Browse");
+        assert_eq!(wss[2].monitor_id, 2);
     }
 }

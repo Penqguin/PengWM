@@ -24,6 +24,11 @@ pub struct Settings {
     /// that workspace. Defaults to five named workspaces.
     #[serde(default = "default_workspaces")]
     pub workspaces: Vec<WorkspaceEntry>,
+    /// When true, restore the last session (layout/focus/monitor affinity)
+    /// from `~/.local/share/pengwm/state.toml` on startup. When false, always
+    /// start from config defaults.
+    #[serde(default = "default_true")]
+    pub restore_last_session: bool,
 }
 
 /// One named workspace and the apps (by bundle id or app name) whose windows
@@ -34,6 +39,22 @@ pub struct WorkspaceEntry {
     pub name: String,
     #[serde(default)]
     pub apps: Vec<String>,
+    /// Optional monitor affinity. When set, the workspace is only created on
+    /// that monitor (by numeric id or display name). `None` means cloned to
+    /// every monitor (back-compat).
+    #[serde(default)]
+    pub monitor: Option<MonitorRef>,
+    /// Optional autostart commands spawned once when the workspace is created.
+    #[serde(default)]
+    pub autostart: Vec<String>,
+}
+
+/// Monitor affinity for a workspace — numeric id or display name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MonitorRef {
+    Index(u32),
+    Name(String),
 }
 
 pub fn default_workspaces() -> Vec<WorkspaceEntry> {
@@ -57,6 +78,8 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
                 "Alacritty".into(),
                 "zed".into(),
             ],
+            monitor: None,
+            autostart: vec![],
         },
         WorkspaceEntry {
             name: "Browsing".into(),
@@ -75,6 +98,8 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
                 "Brave".into(),
                 "Opera".into(),
             ],
+            monitor: None,
+            autostart: vec![],
         },
         WorkspaceEntry {
             name: "Notes".into(),
@@ -86,6 +111,8 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
                 "Obsidian".into(),
                 "Notion".into(),
             ],
+            monitor: None,
+            autostart: vec![],
         },
         WorkspaceEntry {
             name: "Music".into(),
@@ -95,6 +122,8 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
                 "Music".into(),
                 "Spotify".into(),
             ],
+            monitor: None,
+            autostart: vec![],
         },
         WorkspaceEntry {
             name: "Messaging".into(),
@@ -112,6 +141,8 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
                 "WeChat".into(),
                 "Telegram".into(),
             ],
+            monitor: None,
+            autostart: vec![],
         },
     ]
 }
@@ -156,6 +187,7 @@ impl Default for Settings {
             bar: BarConfig::default(),
             menubar: MenubarConfig::default(),
             workspaces: default_workspaces(),
+            restore_last_session: true,
         }
     }
 }

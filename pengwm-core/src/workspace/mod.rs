@@ -3,12 +3,18 @@ use crate::tree::{Arena, Direction, NodeData, NodeId, SplitDirection, WindowId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-const OFFSCREEN: Rect = Rect {
-    x: -9999.0,
-    y: 0.0,
-    width: 1.0,
-    height: 1.0,
-};
+fn offscreen_rect(_reference: Rect) -> Rect {
+    // 1×1 far off-screen — macOS clamps AXPosition to keep windows
+    // partially on-screen, so preserving the tiled size would leave a
+    // visible sliver. 1×1 minimizes that; layout restores the correct
+    // size on switch, so no glitch. See `adapter_macos::hide_windows`.
+    Rect {
+        x: -100_000.0,
+        y: -100_000.0,
+        width: 1.0,
+        height: 1.0,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
@@ -55,6 +61,16 @@ impl Workspace {
             self.root = Some(id);
             self.focused_node = Some(id);
             return id;
+        }
+
+        // Default master-stack: 1 window on the left, remaining stacked on the
+        // right. Only use the generic split logic when an explicit direction
+        // was requested (via keybind or pending_split).
+        let explicit = direction.is_some() || self.pending_split.is_some();
+        if !explicit {
+            if let Some(id) = self.try_add_master_stack(window_id) {
+                return id;
+            }
         }
 
         let dir = direction
@@ -113,6 +129,88 @@ impl Workspace {
 
         self.set_focused_node(new_id);
         new_id
+    }
+
+    /// Master-stack insertion: left master (single window), right stack
+    /// (Horizontal split). Returns None if the current tree is not in
+    /// master-stack shape and we should fall back to the generic splitter.
+    fn try_add_master_stack(&mut self, window_id: WindowId) -> Option<NodeId> {
+        let root_id = self.root?;
+        // Single window → create Vertical [master, new]
+        if self.arena.len() == 1 {
+            if !matches!(
+                self.arena.get(root_id)?.data,
+                NodeData::Window { .. }
+            ) {
+                return None;
+            }
+            let new_id = self.arena.alloc(NodeData::Window {
+                window_id,
+                is_focused: true,
+            });
+            let split_id = self.arena.alloc(NodeData::Split {
+                direction: SplitDirection::Vertical,
+                ratios: vec![0.5, 0.5],
+            });
+            self.arena.get_mut(split_id).unwrap().children = vec![root_id, new_id];
+            self.arena.get_mut(root_id).unwrap().parent = Some(split_id);
+            self.arena.get_mut(new_id).unwrap().parent = Some(split_id);
+            self.root = Some(split_id);
+            self.set_focused_node(new_id);
+            return Some(new_id);
+        }
+
+        // Check master-stack shape: root Vertical with exactly 2 children,
+        // left is Window, right is Window or Horizontal.
+        let root_node = self.arena.get(root_id)?;
+        let (dir, children) = match &root_node.data {
+            NodeData::Split { direction, .. } => (*direction, root_node.children.clone()),
+            _ => return None,
+        };
+        if dir != SplitDirection::Vertical || children.len() != 2 {
+            return None;
+        }
+        let left_id = children[0];
+        let right_id = children[1];
+        let left_is_window = matches!(
+            self.arena.get(left_id)?.data,
+            NodeData::Window { .. }
+        );
+        if !left_is_window {
+            return None;
+        }
+        // Clone right data before mutable alloc to avoid borrow conflict
+        let right_data = self.arena.get(right_id)?.data.clone();
+        let new_id = self.arena.alloc(NodeData::Window {
+            window_id,
+            is_focused: true,
+        });
+        match &right_data {
+            NodeData::Window { .. } => {
+                // Right is single window → convert to Horizontal stack [right, new]
+                let stack_id = self.arena.alloc(NodeData::Split {
+                    direction: SplitDirection::Horizontal,
+                    ratios: vec![0.5, 0.5],
+                });
+                self.arena.get_mut(stack_id).unwrap().children = vec![right_id, new_id];
+                self.arena.get_mut(right_id).unwrap().parent = Some(stack_id);
+                self.arena.get_mut(new_id).unwrap().parent = Some(stack_id);
+                self.arena.get_mut(root_id).unwrap().children[1] = stack_id;
+                self.arena.get_mut(stack_id).unwrap().parent = Some(root_id);
+                self.rebalance_ratios(stack_id);
+                self.set_focused_node(new_id);
+                Some(new_id)
+            }
+            NodeData::Split { direction, .. } if *direction == SplitDirection::Horizontal => {
+                // Right is already a Horizontal stack → append
+                self.arena.get_mut(right_id).unwrap().children.push(new_id);
+                self.arena.get_mut(new_id).unwrap().parent = Some(right_id);
+                self.rebalance_ratios(right_id);
+                self.set_focused_node(new_id);
+                Some(new_id)
+            }
+            _ => None,
+        }
     }
 
     pub fn remove_window(&mut self, window_id: WindowId) {
@@ -266,9 +364,12 @@ impl Workspace {
                     }
                 }
             }
+            // Keep the original size (inset) while moving far off-screen
+            // so the window isn't shrunk to 1x1 and can restore without flicker.
+            let offscreen = offscreen_rect(inset);
             for node in self.arena.nodes.values() {
                 if let NodeData::Window { window_id, .. } = &node.data {
-                    output.entry(*window_id).or_insert(OFFSCREEN);
+                    output.entry(*window_id).or_insert(offscreen);
                 }
             }
         } else {
@@ -284,6 +385,10 @@ impl Workspace {
     /// Global-coordinate origin of the monitor this workspace tiles on.
     pub fn set_monitor_origin(&mut self, origin: (i32, i32)) {
         self.monitor_origin = origin;
+    }
+
+    pub fn monitor_origin(&self) -> (i32, i32) {
+        self.monitor_origin
     }
 
     pub fn monitor_size(&self) -> (u32, u32) {

@@ -230,6 +230,64 @@ impl Default for KeybindConfig {
                 modifiers: MODIFIER_ALT,
                 action: Command::ToggleBar,
             },
+            // Display focus: alt-ctrl arrows (move focus between monitors)
+            Keybind {
+                keycode: 0x7B,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL,
+                action: Command::FocusDisplay {
+                    direction: Direction::Left,
+                },
+            },
+            Keybind {
+                keycode: 0x7C,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL,
+                action: Command::FocusDisplay {
+                    direction: Direction::Right,
+                },
+            },
+            Keybind {
+                keycode: 0x7E,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL,
+                action: Command::FocusDisplay {
+                    direction: Direction::Up,
+                },
+            },
+            Keybind {
+                keycode: 0x7D,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL,
+                action: Command::FocusDisplay {
+                    direction: Direction::Down,
+                },
+            },
+            // Move window to display: alt-ctrl-shift arrows
+            Keybind {
+                keycode: 0x7B,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                action: Command::MoveWindowToDisplay {
+                    direction: Direction::Left,
+                },
+            },
+            Keybind {
+                keycode: 0x7C,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                action: Command::MoveWindowToDisplay {
+                    direction: Direction::Right,
+                },
+            },
+            Keybind {
+                keycode: 0x7E,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                action: Command::MoveWindowToDisplay {
+                    direction: Direction::Up,
+                },
+            },
+            Keybind {
+                keycode: 0x7D,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                action: Command::MoveWindowToDisplay {
+                    direction: Direction::Down,
+                },
+            },
         ];
         KeybindConfig { bindings }
     }

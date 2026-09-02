@@ -10,12 +10,7 @@ use accessibility_sys::*;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
-const OFFSCREEN: Rect = Rect {
-    x: -9999.0,
-    y: 0.0,
-    width: 1.0,
-    height: 1.0,
-};
+
 
 pub struct MacOsAdapter {
     observer_registry: AxObserverRegistry,
@@ -48,6 +43,31 @@ impl MacOsAdapter {
             }
         }
         result
+    }
+
+    /// Fallback scan: try to discover `window_id` by polling every running app.
+    /// Used when the cache has no entry (e.g., window created before daemon start
+    /// but poll missed, or cache was evicted on stale element). Returns the
+    /// retained element and its pid, and caches it.
+    fn discover_window(&self, window_id: WindowId) -> Option<(AXUIElementRef, i32)> {
+        use core_foundation::base::{CFRelease, CFTypeRef};
+        for pid in ns_workspace::running_app_pids() {
+            let windows = unsafe { ax_element::windows_for_pid(pid) };
+            let mut found: Option<AXUIElementRef> = None;
+            for (elem, wid) in windows {
+                if wid == window_id {
+                    found = Some(elem);
+                } else {
+                    unsafe { CFRelease(elem as CFTypeRef) };
+                }
+            }
+            if let Some(elem) = found {
+                log::debug!("discover_window hit {} pid {}", window_id, pid);
+                self.ctx.cache_insert(window_id, elem, pid);
+                return Some((elem, pid));
+            }
+        }
+        None
     }
 }
 
@@ -96,9 +116,16 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
-        let (element, pid) = self.cache_get_element(window_id).ok_or_else(|| {
-            anyhow::anyhow!("element not found in cache for window {}", window_id)
-        })?;
+        let (element, pid) = match self.cache_get_element(window_id) {
+            Some(v) => v,
+            None => match self.discover_window(window_id) {
+                Some(v) => v,
+                None => {
+                    log::debug!("set_window_rect cache miss for {} rect {:?}", window_id, rect);
+                    anyhow::bail!("element not found in cache for window {}", window_id)
+                }
+            },
+        };
         match unsafe { ax_element::set_window_rect(element, rect) } {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -136,7 +163,9 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn focus_window(&self, window_id: WindowId) {
-        let (element, pid) = match self.cache_get_element(window_id) {
+        let (element, pid) = match self.cache_get_element(window_id)
+            .or_else(|| self.discover_window(window_id))
+        {
             Some(v) => v,
             None => {
                 log::warn!(
@@ -162,8 +191,19 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn hide_windows(&self, window_ids: &[WindowId]) {
+        // Shrink to 1×1 far off-screen — macOS clamps `AXPosition` to keep at
+        // least the title bar on-screen, so a preserved-size off-screen rect
+        // leaves a visible sliver (your “slightly visible” report). 1×1
+        // minimizes that to a single pixel; the correct tiled size is restored
+        // via `apply_layout` on switch, so no resize glitch.
+        let offscreen = Rect {
+            x: -100_000.0,
+            y: -100_000.0,
+            width: 1.0,
+            height: 1.0,
+        };
         for &wid in window_ids {
-            if let Err(e) = self.set_window_rect(wid, OFFSCREEN) {
+            if let Err(e) = self.set_window_rect(wid, offscreen) {
                 log::warn!("hide_windows: failed to hide window {}: {}", wid, e);
             }
         }

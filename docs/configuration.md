@@ -6,12 +6,13 @@ apply on save (or via `pengwm reload-config`).
 
 ## Settings
 
-| Key              | Type   | Default | Description                               |
-| ---------------- | ------ | ------- | ----------------------------------------- |
-| `gap_outer`      | int    | `10`    | Pixels between windows and screen edge    |
-| `gap_inner`      | int    | `5`     | Pixels between adjacent windows           |
-| `max_tiles`      | int    | `4`     | Max windows per workspace; overflow goes to the next workspace with room |
-| `restricted_apps`| list   | `[]`    | Bundle ids of apps that PengWM must not manage |
+| Key                    | Type   | Default | Description                               |
+| ---------------------- | ------ | ------- | ----------------------------------------- |
+| `gap_outer`            | int    | `10`    | Pixels between windows and screen edge    |
+| `gap_inner`            | int    | `5`     | Pixels between adjacent windows           |
+| `max_tiles`            | int    | `4`     | Max windows per workspace; overflow goes to the next workspace with room |
+| `restricted_apps`      | list   | `[]`    | Bundle ids of apps that PengWM must not manage |
+| `restore_last_session` | bool   | `true`  | Restore last session (workspace layout/focus) from `~/.local/share/pengwm/state.toml` on startup |
 
 ```toml
 gap_outer = 8
@@ -29,10 +30,12 @@ your editor opens on the Development workspace, Safari on Browsing, and so on.
 `apps` entries match an app's bundle id or display name (case-insensitively);
 windows from unlisted apps go to the currently focused workspace.
 
-| Key    | Type   | Description                                                  |
-| ------ | ------ | ------------------------------------------------------------ |
-| `name` | string | Workspace name (shown in the bar and menubar)                |
-| `apps` | list   | Bundle ids / app names whose windows route to this workspace |
+| Key         | Type   | Description                                                  |
+| ----------- | ------ | ------------------------------------------------------------ |
+| `name`      | string | Workspace name (shown in the bar and menubar)                |
+| `apps`      | list   | Bundle ids / app names whose windows route to this workspace |
+| `monitor`   | int/string | Optional display affinity (`1` or `"Display Name"`); `None` clones to every monitor |
+| `autostart` | list   | Shell commands to run once when this workspace is created (not on session restore) |
 
 The list replaces the defaults entirely — define your own five (or three, or
 twelve). Workspaces are created at startup, so changing the list requires a
@@ -42,6 +45,8 @@ daemon restart.
 [[workspaces]]
 name = "Development"
 apps = ["com.apple.dt.Xcode", "com.googlecode.iterm2", "iTerm2", "Code"]
+monitor = 1
+autostart = ["ghostty"]
 
 [[workspaces]]
 name = "Browsing"
@@ -59,6 +64,24 @@ apps = ["com.apple.Music", "com.spotify.client", "Spotify"]
 name = "Messaging"
 apps = ["com.apple.MobileSMS", "com.hnc.Discord", "Slack", "WhatsApp"]
 ```
+
+Workspaces with `monitor` set only appear on that display; entries without `monitor`
+are cloned to every monitor (so `monitor = 1` on a 2-display setup gives 1+5*1=6
+workspaces). Orphaned workspaces (saved for a disconnected display) are
+remapped to the primary on restore — windows are never dropped.
+
+### Session
+
+On `pengwm quit` (or SIGTERM/SIGINT) the daemon atomically saves the session to
+`~/.local/share/pengwm/state.toml` (`$XDG_STATE_HOME/pengwm/state.toml` if set):
+active workspace per monitor, workspace names/monitors, gaps, and the split
+skeleton (windows themselves are ephemeral and re-routed on next launch).
+
+- `restore_last_session = true` (default) restores that file on next launch.
+- `restore_last_session = false` always starts from `config.toml`.
+- A corrupt/missing session falls back to defaults with a warning.
+- `pengwm clear-session` deletes the saved state so the next launch is fresh.
+- `autostart` does **not** run when restoring a session.
 
 ## Bar
 

@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 

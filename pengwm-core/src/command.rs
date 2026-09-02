@@ -9,6 +9,8 @@ pub enum Command {
     Split { direction: SplitDirection },
     Workspace { id: u32 },
     MoveWindowToWorkspace { id: u32 },
+    FocusDisplay { direction: Direction },
+    MoveWindowToDisplay { direction: Direction },
     Close,
     ToggleLayout,
     SetLayout { mode: LayoutMode },
@@ -51,6 +53,24 @@ impl Command {
                 .parse::<i32>()
                 .ok()
                 .map(|pixels| Command::SetGapInner { pixels });
+        }
+        if let Some(dir) = s.strip_prefix("focus-display-") {
+            return match dir {
+                "left" => Some(Command::FocusDisplay { direction: Direction::Left }),
+                "right" => Some(Command::FocusDisplay { direction: Direction::Right }),
+                "up" => Some(Command::FocusDisplay { direction: Direction::Up }),
+                "down" => Some(Command::FocusDisplay { direction: Direction::Down }),
+                _ => None,
+            };
+        }
+        if let Some(dir) = s.strip_prefix("move-window-to-display-") {
+            return match dir {
+                "left" => Some(Command::MoveWindowToDisplay { direction: Direction::Left }),
+                "right" => Some(Command::MoveWindowToDisplay { direction: Direction::Right }),
+                "up" => Some(Command::MoveWindowToDisplay { direction: Direction::Up }),
+                "down" => Some(Command::MoveWindowToDisplay { direction: Direction::Down }),
+                _ => None,
+            };
         }
         None
     }
@@ -141,6 +161,54 @@ const ACTION_TABLE: &[(&str, Command)] = &[
     ("reload-config", Command::ReloadConfig),
     ("query-state", Command::QueryState),
     ("quit", Command::Quit),
+    (
+        "focus-display-left",
+        Command::FocusDisplay {
+            direction: Direction::Left,
+        },
+    ),
+    (
+        "focus-display-right",
+        Command::FocusDisplay {
+            direction: Direction::Right,
+        },
+    ),
+    (
+        "focus-display-up",
+        Command::FocusDisplay {
+            direction: Direction::Up,
+        },
+    ),
+    (
+        "focus-display-down",
+        Command::FocusDisplay {
+            direction: Direction::Down,
+        },
+    ),
+    (
+        "move-window-to-display-left",
+        Command::MoveWindowToDisplay {
+            direction: Direction::Left,
+        },
+    ),
+    (
+        "move-window-to-display-right",
+        Command::MoveWindowToDisplay {
+            direction: Direction::Right,
+        },
+    ),
+    (
+        "move-window-to-display-up",
+        Command::MoveWindowToDisplay {
+            direction: Direction::Up,
+        },
+    ),
+    (
+        "move-window-to-display-down",
+        Command::MoveWindowToDisplay {
+            direction: Direction::Down,
+        },
+    ),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -270,6 +338,18 @@ mod tests {
             Some(Command::QueryState)
         );
         assert_eq!(Command::parse_action("quit"), Some(Command::Quit));
+        assert_eq!(
+            Command::parse_action("focus-display-left"),
+            Some(Command::FocusDisplay {
+                direction: Direction::Left
+            })
+        );
+        assert_eq!(
+            Command::parse_action("move-window-to-display-right"),
+            Some(Command::MoveWindowToDisplay {
+                direction: Direction::Right
+            })
+        );
     }
 
     #[test]
