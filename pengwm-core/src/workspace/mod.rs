@@ -4,15 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn offscreen_rect(_reference: Rect) -> Rect {
-    // 1×1 far off-screen — macOS clamps AXPosition to keep windows
-    // partially on-screen, so preserving the tiled size would leave a
-    // visible sliver. 1×1 minimizes that; layout restores the correct
-    // size on switch, so no glitch. See `adapter_macos::hide_windows`.
+    // 0×0 far off-screen — even 1×1 leaves a 1px sliver because macOS
+    // clamps AXPosition to keep the title bar visible. 0×0 is fully
+    // invisible; layout restores the correct size on switch.
     Rect {
         x: -100_000.0,
         y: -100_000.0,
-        width: 1.0,
-        height: 1.0,
+        width: 0.0,
+        height: 0.0,
     }
 }
 

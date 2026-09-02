@@ -191,19 +191,29 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn hide_windows(&self, window_ids: &[WindowId]) {
-        // Shrink to 1×1 far off-screen — macOS clamps `AXPosition` to keep at
-        // least the title bar on-screen, so a preserved-size off-screen rect
-        // leaves a visible sliver (your “slightly visible” report). 1×1
-        // minimizes that to a single pixel; the correct tiled size is restored
-        // via `apply_layout` on switch, so no resize glitch.
-        let offscreen = Rect {
+        // Try 0×0 far off-screen first — 1×1 still leaves a 1px sliver
+        // because macOS clamps `AXPosition` to keep the title bar on-screen
+        // (your “slightly visible” report). 0×0 is fully invisible even when
+        // clamped; layout restores the correct tiled size on switch.
+        let offscreen_zero = Rect {
+            x: -100_000.0,
+            y: -100_000.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        let offscreen_one = Rect {
             x: -100_000.0,
             y: -100_000.0,
             width: 1.0,
             height: 1.0,
         };
         for &wid in window_ids {
-            if let Err(e) = self.set_window_rect(wid, offscreen) {
+            // Prefer 0×0 for true invisibility; fall back to 1×1 if the app
+            // rejects zero size (some apps enforce minimum window size).
+            if self.set_window_rect(wid, offscreen_zero).is_ok() {
+                continue;
+            }
+            if let Err(e) = self.set_window_rect(wid, offscreen_one) {
                 log::warn!("hide_windows: failed to hide window {}: {}", wid, e);
             }
         }
