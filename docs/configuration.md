@@ -132,6 +132,19 @@ closes, and the menubar exits. (`pengwm quit` does the same.)
 enabled = true
 ```
 
+## Windows
+
+Visibility and lifecycle settings scoped under `[windows]`.
+
+| Key               | Type   | Default        | Description                                                                                   |
+| ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------------- |
+| `hidden_strategy` | string | `"bottom_edge"` | Where inactive-workspace windows are parked: `"bottom_edge"` (1×1 at bottom-right, dark clamped strip visible in Mission Control as daemon-down escape hatch) or `"far_offscreen"` (legacy `-100k`, fully invisible) |
+
+```toml
+[windows]
+hidden_strategy = "bottom_edge" # or "far_offscreen"
+```
+
 ### Corner radius
 
 `corner_radius` defaults to the corner radius of the current macOS version so
@@ -199,6 +212,7 @@ Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 | `reload-config`                                              | Reload configuration from disk                |
 | `query-state`                                                | Dump workspace state to stdout                |
 | `quit`                                                       | Shut down the daemon (and the bar)            |
+| `reveal-all`                                                 | Re-tile all hidden windows into their workspaces (daemon-down recovery) |
 
 ### Example
 

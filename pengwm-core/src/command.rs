@@ -22,6 +22,9 @@ pub enum Command {
     /// Shut the daemon down (and the bar with it). Used by the menubar's Quit
     /// item and `pengwm quit`.
     Quit,
+    /// Re-tile all hidden windows back into their remembered workspaces.
+    /// Daemon-down safety net counterpart to the bottom-edge clamped hide.
+    RevealAll,
 }
 
 impl Command {
@@ -161,6 +164,7 @@ const ACTION_TABLE: &[(&str, Command)] = &[
     ("reload-config", Command::ReloadConfig),
     ("query-state", Command::QueryState),
     ("quit", Command::Quit),
+    ("reveal-all", Command::RevealAll),
     (
         "focus-display-left",
         Command::FocusDisplay {

@@ -115,6 +115,32 @@ pub fn bar_strip_rect(
     }
 }
 
+/// Global-coordinate 1×1 rect at the bottom-right display corner for hidden
+/// windows. Placing it at `origin + size - 1` tucks traffic lights off-screen;
+/// AppKit clamps the title bar (~28px) into view, leaving a dark strip that
+/// is visible in Mission Control as a daemon-down escape hatch without the
+/// bright red/yellow/green chrome. Monocle siblings stay far offscreen; only
+/// `StateManager::hide_workspace` uses this.
+pub fn hidden_rect(origin: (i32, i32), size: (u32, u32)) -> Rect {
+    Rect::new(
+        origin.0 as f64 + size.0 as f64 - 1.0,
+        origin.1 as f64 + size.1 as f64 - 1.0,
+        1.0,
+        1.0,
+    )
+}
+
+/// Far off-screen rect for monocle siblings — fully invisible even when
+/// `AXPosition` is clamped. Layout restores correct size on switch.
+pub fn far_offscreen_rect() -> Rect {
+    Rect {
+        x: -100_000.0,
+        y: -100_000.0,
+        width: 0.0,
+        height: 0.0,
+    }
+}
+
 /// Subtract a reserved edge strip (in monitor-local coordinates) from the
 /// monitor rect. `strip` is expected to span the full width (top/bottom) or
 /// full height (left/right) and sit flush against one edge. Anything that
@@ -740,5 +766,37 @@ mod tests {
         let monitor = Rect::new(0.0, 0.0, 100.0, 100.0);
         let mid = Rect::new(10.0, 10.0, 10.0, 10.0);
         assert_eq!(subtract_strip(monitor, mid), monitor);
+    }
+
+    #[test]
+    fn hidden_rect_bottom_right_single_display() {
+        assert_eq!(
+            hidden_rect((0, 0), (1920, 1080)),
+            Rect::new(1919.0, 1079.0, 1.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn hidden_rect_per_monitor_second_display() {
+        assert_eq!(
+            hidden_rect((1920, 0), (1920, 1080)),
+            Rect::new(3839.0, 1079.0, 1.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn hidden_rect_negative_origin() {
+        assert_eq!(
+            hidden_rect((-1920, 0), (1920, 1080)),
+            Rect::new(-1.0, 1079.0, 1.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn far_offscreen_is_negative_100k() {
+        assert_eq!(
+            far_offscreen_rect(),
+            Rect::new(-100_000.0, -100_000.0, 0.0, 0.0)
+        );
     }
 }

@@ -94,6 +94,14 @@ impl HiddenTracker {
         self.hidden.insert(window_id, idx)
     }
 
+    pub fn keys(&self) -> Vec<WindowId> {
+        self.hidden.keys().copied().collect()
+    }
+
+    pub fn drain(&mut self) -> Vec<(WindowId, usize)> {
+        self.hidden.drain().collect()
+    }
+
     /// True when `RECONCILE_INTERVAL` has elapsed since the last reconcile.
     /// When true, also advances the timestamp so the next call is debounced.
     pub fn should_reconcile(&mut self, now: Instant) -> bool {

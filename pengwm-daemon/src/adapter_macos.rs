@@ -190,31 +190,23 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
-    fn hide_windows(&self, window_ids: &[WindowId]) {
-        // Try 0×0 far off-screen first — 1×1 still leaves a 1px sliver
-        // because macOS clamps `AXPosition` to keep the title bar on-screen
-        // (your “slightly visible” report). 0×0 is fully invisible even when
-        // clamped; layout restores the correct tiled size on switch.
-        let offscreen_zero = Rect {
-            x: -100_000.0,
-            y: -100_000.0,
-            width: 0.0,
-            height: 0.0,
-        };
-        let offscreen_one = Rect {
-            x: -100_000.0,
-            y: -100_000.0,
-            width: 1.0,
-            height: 1.0,
-        };
-        for &wid in window_ids {
-            // Prefer 0×0 for true invisibility; fall back to 1×1 if the app
-            // rejects zero size (some apps enforce minimum window size).
-            if self.set_window_rect(wid, offscreen_zero).is_ok() {
+    fn hide_windows(&self, rects: &std::collections::HashMap<WindowId, Rect>) {
+        for (&wid, &rect) in rects {
+            // Rect is precomputed per-monitor by StateManager (typically
+            // layout::hidden_rect for BottomEdge or far_offscreen_rect for
+            // FarOffscreen). Try it directly; fall back to 1×1 at same origin
+            // if the app rejects 0×0 minimum size.
+            if self.set_window_rect(wid, rect).is_ok() {
                 continue;
             }
-            if let Err(e) = self.set_window_rect(wid, offscreen_one) {
-                log::warn!("hide_windows: failed to hide window {}: {}", wid, e);
+            let fallback = Rect {
+                x: rect.x,
+                y: rect.y,
+                width: 1.0,
+                height: 1.0,
+            };
+            if let Err(e) = self.set_window_rect(wid, fallback) {
+                log::warn!("hide_windows: failed to hide window {} at {:?}: {}", wid, rect, e);
             }
         }
     }
@@ -263,6 +255,11 @@ impl OsAdapter for MacOsAdapter {
     #[cfg(test)]
     fn inject_bundle_id(&self, _pid: i32, _bundle: String) {
         unimplemented!("inject_bundle_id only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn window_rect_for_test(&self, _window_id: pengwm_core::tree::WindowId) -> Option<Rect> {
+        None
     }
 }
 

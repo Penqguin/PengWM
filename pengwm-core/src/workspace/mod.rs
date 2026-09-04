@@ -4,15 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn offscreen_rect(_reference: Rect) -> Rect {
-    // 0×0 far off-screen — even 1×1 leaves a 1px sliver because macOS
-    // clamps AXPosition to keep the title bar visible. 0×0 is fully
-    // invisible; layout restores the correct size on switch.
-    Rect {
-        x: -100_000.0,
-        y: -100_000.0,
-        width: 0.0,
-        height: 0.0,
-    }
+    // Far off-screen for monocle siblings — must stay fully invisible
+    // even when clamped, unlike hide_workspace which deliberately uses
+    // hidden_rect (bottom-right clamped strip) as a daemon-down escape hatch.
+    crate::layout::far_offscreen_rect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

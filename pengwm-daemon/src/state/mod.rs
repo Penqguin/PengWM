@@ -54,6 +54,7 @@ pub struct StateManager {
     /// Set on explicit workspace switches to prevent focus-notification feedback loops
     /// that drag windows along to the new workspace.
     switch_debounce_until: Option<Instant>,
+    cached_hidden_strategy: Option<crate::config::HiddenStrategy>,
 }
 
 impl StateManager {
@@ -255,6 +256,7 @@ impl StateManager {
             drag: DragState::new(),
             shutdown_requested: false,
             switch_debounce_until: None,
+            cached_hidden_strategy: Some(settings.windows.hidden_strategy),
         };
 
         // Hide every workspace that isn't the active one for its monitor.
@@ -458,6 +460,13 @@ impl StateManager {
     }
 
     pub fn on_window_focused(&mut self, window_id: WindowId) {
+        // Ignore focus from windows parked at the bottom-edge hidden rect —
+        // clamped title bars retain hit-testing and would otherwise steal focus
+        // or flip DisplaySet::active.
+        if self.hidden.contains(window_id) {
+            log::debug!("on_window_focused: ignoring hidden window {}", window_id);
+            return;
+        }
         for i in 0..self.workspaces.len() {
             if self.workspaces[i].find_window(window_id).is_some() {
                 self.workspaces[i].focus_window(window_id);
@@ -493,6 +502,10 @@ impl StateManager {
     }
 
     pub fn on_window_moved(&mut self, window_id: WindowId, x: f64, y: f64) {
+        if self.hidden.contains(window_id) {
+            log::debug!("on_window_moved: ignoring hidden window {}", window_id);
+            return;
+        }
         let now = Instant::now();
         self.drag
             .on_moved(window_id, x, y, &self.workspaces, &self.last_layout_rects, now);
@@ -803,6 +816,10 @@ impl StateManager {
                 self.shutdown_requested = true;
                 return;
             }
+            Command::RevealAll => {
+                log::info!("RevealAll requested — retiling hidden windows");
+                self.reveal_all();
+            }
         }
         if let Some(tx) = tx {
             let _ = tx.try_send(DaemonResponse::Ack);
@@ -994,6 +1011,7 @@ impl StateManager {
         self.gap_inner = updated_settings.gap_inner.max(0) as f64;
         self.router.set_max_tiles(updated_settings.max_tiles as usize);
         self.restricted_apps = updated_settings.restricted_apps;
+        self.cached_hidden_strategy = Some(updated_settings.windows.hidden_strategy);
         self.displays
             .set_entries(if updated_settings.workspaces.is_empty() {
                 crate::config::default_workspaces()
@@ -1041,9 +1059,75 @@ impl StateManager {
     }
 
     fn hide_workspace(&mut self, workspace_idx: usize) {
-        let window_ids = self.workspaces[workspace_idx].all_windows();
-        log::debug!("hide_workspace idx={} mon={} windows={:?}", workspace_idx, self.workspaces[workspace_idx].monitor_id, window_ids);
-        self.os.hide_windows(&window_ids);
+        let ws = &self.workspaces[workspace_idx];
+        let window_ids = ws.all_windows();
+        if window_ids.is_empty() {
+            return;
+        }
+        let rect = match self.windows_hidden_strategy() {
+            crate::config::HiddenStrategy::BottomEdge => {
+                pengwm_core::layout::hidden_rect(ws.monitor_origin(), ws.monitor_size())
+            }
+            crate::config::HiddenStrategy::FarOffscreen => {
+                pengwm_core::layout::far_offscreen_rect()
+            }
+        };
+        let rects: HashMap<WindowId, Rect> = window_ids.into_iter().map(|wid| (wid, rect)).collect();
+        log::debug!(
+            "hide_workspace idx={} mon={} strategy={:?} rect={:?} windows={:?}",
+            workspace_idx, ws.monitor_id, self.windows_hidden_strategy(), rect, rects.keys()
+        );
+        self.os.hide_windows(&rects);
+    }
+
+    fn windows_hidden_strategy(&self) -> crate::config::HiddenStrategy {
+        self.windows_config_hidden_strategy()
+    }
+
+    fn windows_config_hidden_strategy(&self) -> crate::config::HiddenStrategy {
+        self.cached_hidden_strategy.unwrap_or_default()
+    }
+
+    /// Re-tile every window currently tracked as hidden back into its
+    /// remembered (or routed) workspace and clear `HiddenTracker`. Must clear
+    /// the tracker so future focus/move events are not ignored for now-visible
+    /// windows.
+    fn reveal_all(&mut self) {
+        if self.hidden.is_empty() {
+            return;
+        }
+        // Snapshot keys to avoid borrow conflict with &mut self in loop.
+        let hidden_ids = self.hidden.keys();
+        for wid in hidden_ids {
+            // Skip if already re-tiled via earlier iteration
+            if self.find_workspace_for_window(wid).is_some() {
+                self.hidden.remove(wid);
+                continue;
+            }
+            // Reuse on_window_shown which does take_hidden + add_window_to_workspace
+            self.on_window_shown(wid);
+        }
+        // Ensure any remaining entries (e.g. unknown pid) are cleared
+        if !self.hidden.is_empty() {
+            for (_, _) in self.hidden.drain() {}
+        }
+        // Re-layout visible workspaces to ensure tiling clean
+        let visible: Vec<usize> = self
+            .displays
+            .active()
+            .values()
+            .copied()
+            .collect();
+        for idx in visible {
+            if idx < self.workspaces.len() {
+                self.apply_layout(idx);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn set_hidden_strategy_for_test(&mut self, s: crate::config::HiddenStrategy) {
+        self.cached_hidden_strategy = Some(s);
     }
 
     fn apply_layout(&mut self, workspace_idx: usize) {
@@ -1941,5 +2025,105 @@ mod state_tests {
         assert_eq!(wss[1].monitor_id, 1);
         assert_eq!(wss[2].name, "Browse");
         assert_eq!(wss[2].monitor_id, 2);
+    }
+
+    #[test]
+    fn hide_workspace_uses_bottom_edge_rect() {
+        let mut sm = setup(1);
+        sm.set_hidden_strategy_for_test(crate::config::HiddenStrategy::BottomEdge);
+        sm.on_window_created(100, 42);
+        assert!(sm.workspaces[0].find_window(100).is_some());
+        // Switch to a different workspace so ws-0 gets hidden
+        sm.on_command(Command::Workspace { id: 2 }, None);
+        let expected = pengwm_core::layout::hidden_rect((0, 0), (1920, 1080));
+        let rect = sm.os.window_rect_for_test(100).expect("hidden window rect should exist");
+        assert_eq!(rect, expected, "hidden window should be at bottom-right clamped rect");
+    }
+
+    #[test]
+    fn hide_workspace_far_offscreen_when_configured() {
+        let mut sm = setup(1);
+        sm.set_hidden_strategy_for_test(crate::config::HiddenStrategy::FarOffscreen);
+        sm.on_window_created(100, 42);
+        sm.on_command(Command::Workspace { id: 2 }, None);
+        let expected = pengwm_core::layout::far_offscreen_rect();
+        let rect = sm.os.window_rect_for_test(100).expect("hidden window rect should exist");
+        assert_eq!(rect, expected);
+    }
+
+    #[test]
+    fn hide_workspace_per_monitor_second_display() {
+        let mut sm = setup(2);
+        sm.set_hidden_strategy_for_test(crate::config::HiddenStrategy::BottomEdge);
+        // Window routed to display 2 via manual add
+        sm.workspaces[5].add_window(999, None);
+        sm.window_pids.insert(999, 42);
+        sm.pid_to_windows.entry(42).or_default().push(999);
+        // Hide workspace 5 (on display 2 origin 1920,0)
+        sm.displays.active_mut().insert(2, 6);
+        // Hide the former visible on display 2
+        sm.hide_workspace(5);
+        let expected = pengwm_core::layout::hidden_rect((1920, 0), (1920, 1080));
+        let rect = sm.os.window_rect_for_test(999).expect("hidden window rect should exist");
+        assert_eq!(rect, expected, "display-2 window should hide at its own monitor corner");
+    }
+
+    #[test]
+    fn monocle_sibling_stays_far_offscreen() {
+        let mut ws = Workspace::new("test".into(), 1, (0, 0), (1920, 1080));
+        ws.add_window(100, None);
+        ws.add_window(200, None);
+        ws.monocle = true;
+        ws.focus_window(100);
+        let rects = ws.layout(5.0, 10.0);
+        let off = pengwm_core::layout::far_offscreen_rect();
+        assert_eq!(rects[&200], off, "monocle sibling must remain far offscreen, not bottom-edge");
+        assert_ne!(rects[&100], off);
+    }
+
+    #[test]
+    fn hidden_focus_and_move_ignored() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        sm.on_window_hidden(100);
+        assert!(sm.hidden.contains(100));
+        // Focus from hidden should not flip active
+        let before = sm.displays.active().get(&1).copied();
+        sm.on_window_focused(100);
+        assert_eq!(sm.displays.active().get(&1).copied(), before);
+        // Move from hidden should not affect drag
+        sm.on_window_moved(100, 1919.0, 1079.0);
+        // No panic, still hidden
+        assert!(sm.hidden.contains(100));
+    }
+
+    #[test]
+    fn reveal_all_clears_tracker_and_retiles() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+        sm.on_window_hidden(100);
+        assert!(sm.hidden.contains(100));
+        assert!(sm.workspaces[0].find_window(100).is_none());
+        let (rtx, _) = mpsc::channel(1);
+        sm.on_command(Command::RevealAll, Some(rtx));
+        assert!(!sm.hidden.contains(100), "RevealAll must clear HiddenTracker");
+        assert!(sm.workspaces[0].find_window(100).is_some(), "window should be re-tiled");
+        // Second reveal is idempotent
+        let (rtx2, _) = mpsc::channel(1);
+        sm.on_command(Command::RevealAll, Some(rtx2));
+        assert!(sm.hidden.is_empty());
+    }
+
+    #[test]
+    fn reveal_all_via_hidden_drain_is_idempotent() {
+        let mut sm = setup(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_hidden(100);
+        sm.reveal_all();
+        assert!(sm.hidden.is_empty());
+        sm.reveal_all();
+        assert!(sm.hidden.is_empty());
     }
 }

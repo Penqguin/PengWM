@@ -51,6 +51,8 @@ pub enum CliCommand {
     State,
     /// Stop the daemon (and the status bar with it)
     Quit,
+    /// Re-tile all hidden windows back into their workspaces
+    RevealAll,
     /// Clear the persisted session state (next launch uses config defaults)
     ClearSession,
 }
@@ -118,6 +120,7 @@ impl From<CliCommand> for Command {
             CliCommand::ReloadConfig => Command::ReloadConfig,
             CliCommand::State => Command::QueryState,
             CliCommand::Quit => Command::Quit,
+            CliCommand::RevealAll => Command::RevealAll,
             CliCommand::ClearSession => unreachable!("clear-session handled before IPC"),
         }
     }

@@ -103,17 +103,9 @@ impl OsAdapter for TestAdapter {
         }
     }
 
-    fn hide_windows(&self, window_ids: &[WindowId]) {
-        // 0×0 far off-screen — even 1×1 leaves a 1px sliver due to
-        // macOS position clamping. 0×0 is fully invisible.
-        let offscreen = Rect {
-            x: -100_000.0,
-            y: -100_000.0,
-            width: 0.0,
-            height: 0.0,
-        };
-        for &wid in window_ids {
-            self.window_rects.borrow_mut().insert(wid, offscreen);
+    fn hide_windows(&self, rects: &HashMap<WindowId, Rect>) {
+        for (&wid, &rect) in rects {
+            self.window_rects.borrow_mut().insert(wid, rect);
         }
     }
 
@@ -149,5 +141,9 @@ impl OsAdapter for TestAdapter {
 
     fn inject_bundle_id(&self, pid: i32, bundle: String) {
         self.bundle_ids.borrow_mut().insert(pid, bundle);
+    }
+
+    fn window_rect_for_test(&self, window_id: WindowId) -> Option<Rect> {
+        self.window_rects.borrow().get(&window_id).copied()
     }
 }
