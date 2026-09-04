@@ -773,18 +773,14 @@ impl Workspace {
         let mut current = from_node;
         let (split_id, branch_id) = loop {
             let node = self.arena.get(current)?;
-            match node.parent {
-                Some(pid) => {
-                    let parent = self.arena.get(pid)?;
-                    if let NodeData::Split { direction: d, .. } = &parent.data {
-                        if *d == target_axis {
-                            break (pid, current);
-                        }
-                    }
-                    current = pid;
+            let pid = node.parent?;
+            let parent = self.arena.get(pid)?;
+            if let NodeData::Split { direction: d, .. } = &parent.data {
+                if *d == target_axis {
+                    break (pid, current);
                 }
-                None => return None,
             }
+            current = pid;
         };
 
         let split = self.arena.get(split_id)?;
