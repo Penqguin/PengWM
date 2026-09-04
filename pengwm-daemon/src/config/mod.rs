@@ -62,6 +62,11 @@ pub struct Settings {
     /// start from config defaults.
     #[serde(default = "default_true")]
     pub restore_last_session: bool,
+    /// When true, switching workspaces focuses the first (leftmost/topmost)
+    /// window in the destination workspace. When false (default), the last
+    /// focused window is preserved (MRU).
+    #[serde(default)]
+    pub focus_first_on_switch: bool,
 }
 
 /// One named workspace and the apps (by bundle id or app name) whose windows
@@ -222,6 +227,7 @@ impl Default for Settings {
             windows: WindowsConfig::default(),
             workspaces: default_workspaces(),
             restore_last_session: true,
+            focus_first_on_switch: false,
         }
     }
 }

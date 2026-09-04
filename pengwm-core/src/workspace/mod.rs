@@ -661,6 +661,13 @@ impl Workspace {
         }
     }
 
+    pub fn focus_first(&mut self) -> Option<WindowId> {
+        let root = self.root?;
+        let leaf = self.leftmost_leaf(root);
+        self.set_focused_node(leaf);
+        self.focused_window_id()
+    }
+
     fn focus_nearest_leaf(&mut self) {
         match self.root {
             Some(root_id) => {

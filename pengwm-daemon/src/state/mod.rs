@@ -55,6 +55,7 @@ pub struct StateManager {
     /// that drag windows along to the new workspace.
     switch_debounce_until: Option<Instant>,
     cached_hidden_strategy: Option<crate::config::HiddenStrategy>,
+    focus_first_on_switch: bool,
 }
 
 impl StateManager {
@@ -257,6 +258,7 @@ impl StateManager {
             shutdown_requested: false,
             switch_debounce_until: None,
             cached_hidden_strategy: Some(settings.windows.hidden_strategy),
+            focus_first_on_switch: settings.focus_first_on_switch,
         };
 
         // Hide every workspace that isn't the active one for its monitor.
@@ -680,16 +682,26 @@ impl StateManager {
                         if n <= on_mon.len() {
                             let new_idx = on_mon[n - 1];
                             if new_idx != current_idx {
+                                self.displays.active_mut().insert(current_mon, new_idx);
                                 // Hide every workspace on this monitor except the destination.
                                 for &idx in &on_mon {
                                     if idx != new_idx {
                                         self.hide_workspace(idx);
                                     }
                                 }
-                                self.displays.active_mut().insert(current_mon, new_idx);
+                                let maybe_focus = if self.focus_first_on_switch
+                                    && self.workspaces[new_idx].window_count() > 0
+                                {
+                                    self.workspaces[new_idx].focus_first()
+                                } else {
+                                    None
+                                };
+                                self.apply_layout(new_idx);
+                                if let Some(wid) = maybe_focus {
+                                    self.os.focus_window(wid);
+                                }
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
-                                self.apply_layout(new_idx);
                             }
                         } else {
                             log::debug!(
@@ -1012,6 +1024,7 @@ impl StateManager {
         self.router.set_max_tiles(updated_settings.max_tiles as usize);
         self.restricted_apps = updated_settings.restricted_apps;
         self.cached_hidden_strategy = Some(updated_settings.windows.hidden_strategy);
+        self.focus_first_on_switch = updated_settings.focus_first_on_switch;
         self.displays
             .set_entries(if updated_settings.workspaces.is_empty() {
                 crate::config::default_workspaces()
@@ -1128,6 +1141,11 @@ impl StateManager {
     #[cfg(test)]
     fn set_hidden_strategy_for_test(&mut self, s: crate::config::HiddenStrategy) {
         self.cached_hidden_strategy = Some(s);
+    }
+
+    #[cfg(test)]
+    fn set_focus_first_for_test(&mut self, v: bool) {
+        self.focus_first_on_switch = v;
     }
 
     fn apply_layout(&mut self, workspace_idx: usize) {
