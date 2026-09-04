@@ -4,18 +4,38 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
-    Focus { direction: Direction },
-    MoveWindow { direction: Direction },
-    Split { direction: SplitDirection },
-    Workspace { id: u32 },
-    MoveWindowToWorkspace { id: u32 },
-    FocusDisplay { direction: Direction },
-    MoveWindowToDisplay { direction: Direction },
+    Focus {
+        direction: Direction,
+    },
+    MoveWindow {
+        direction: Direction,
+    },
+    Split {
+        direction: SplitDirection,
+    },
+    Workspace {
+        id: u32,
+    },
+    MoveWindowToWorkspace {
+        id: u32,
+    },
+    FocusDisplay {
+        direction: Direction,
+    },
+    MoveWindowToDisplay {
+        direction: Direction,
+    },
     Close,
     ToggleLayout,
-    SetLayout { mode: LayoutMode },
-    SetGapOuter { pixels: i32 },
-    SetGapInner { pixels: i32 },
+    SetLayout {
+        mode: LayoutMode,
+    },
+    SetGapOuter {
+        pixels: i32,
+    },
+    SetGapInner {
+        pixels: i32,
+    },
     ToggleBar,
     ReloadConfig,
     QueryState,
@@ -59,19 +79,35 @@ impl Command {
         }
         if let Some(dir) = s.strip_prefix("focus-display-") {
             return match dir {
-                "left" => Some(Command::FocusDisplay { direction: Direction::Left }),
-                "right" => Some(Command::FocusDisplay { direction: Direction::Right }),
-                "up" => Some(Command::FocusDisplay { direction: Direction::Up }),
-                "down" => Some(Command::FocusDisplay { direction: Direction::Down }),
+                "left" => Some(Command::FocusDisplay {
+                    direction: Direction::Left,
+                }),
+                "right" => Some(Command::FocusDisplay {
+                    direction: Direction::Right,
+                }),
+                "up" => Some(Command::FocusDisplay {
+                    direction: Direction::Up,
+                }),
+                "down" => Some(Command::FocusDisplay {
+                    direction: Direction::Down,
+                }),
                 _ => None,
             };
         }
         if let Some(dir) = s.strip_prefix("move-window-to-display-") {
             return match dir {
-                "left" => Some(Command::MoveWindowToDisplay { direction: Direction::Left }),
-                "right" => Some(Command::MoveWindowToDisplay { direction: Direction::Right }),
-                "up" => Some(Command::MoveWindowToDisplay { direction: Direction::Up }),
-                "down" => Some(Command::MoveWindowToDisplay { direction: Direction::Down }),
+                "left" => Some(Command::MoveWindowToDisplay {
+                    direction: Direction::Left,
+                }),
+                "right" => Some(Command::MoveWindowToDisplay {
+                    direction: Direction::Right,
+                }),
+                "up" => Some(Command::MoveWindowToDisplay {
+                    direction: Direction::Up,
+                }),
+                "down" => Some(Command::MoveWindowToDisplay {
+                    direction: Direction::Down,
+                }),
                 _ => None,
             };
         }

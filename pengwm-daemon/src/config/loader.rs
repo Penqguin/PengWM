@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::config::keybinds::KeybindConfig;
-use crate::config::{Settings, config_file_path};
+use crate::config::{config_file_path, Settings};
 
 #[derive(Debug)]
 pub struct ConfigError(pub String);
@@ -44,21 +44,14 @@ pub fn load_from(path: &Path) -> Result<(Settings, KeybindConfig), ConfigError> 
         ))
     })?;
 
-    let settings: Settings = value.clone().try_into().map_err(|e| {
-        ConfigError(format!(
-            "Invalid settings in '{}': {}",
-            path.display(),
-            e
-        ))
-    })?;
+    let settings: Settings = value
+        .clone()
+        .try_into()
+        .map_err(|e| ConfigError(format!("Invalid settings in '{}': {}", path.display(), e)))?;
 
     let keybinds = match value.get("keybinds") {
         Some(v) => crate::config::keybinds::try_from_toml_value(v).map_err(|e| {
-            ConfigError(format!(
-                "Invalid [keybinds] in '{}': {}",
-                path.display(),
-                e
-            ))
+            ConfigError(format!("Invalid [keybinds] in '{}': {}", path.display(), e))
         })?,
         None => KeybindConfig::default(),
     };

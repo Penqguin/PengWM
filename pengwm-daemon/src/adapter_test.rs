@@ -131,7 +131,11 @@ impl OsAdapter for TestAdapter {
     }
 
     fn inject_window(&self, pid: i32, window_id: WindowId) {
-        self.windows.borrow_mut().entry(pid).or_default().push(window_id);
+        self.windows
+            .borrow_mut()
+            .entry(pid)
+            .or_default()
+            .push(window_id);
         self.window_pids.borrow_mut().insert(window_id, pid);
     }
 

@@ -44,9 +44,7 @@ pub fn subscribe(state: Arc<Mutex<Option<BarState>>>) {
                 let now = Instant::now();
                 let down = down_since.get_or_insert(now);
                 if now.duration_since(*down) >= SHUTDOWN_GRACE {
-                    log::info!(
-                        "daemon unreachable for {SHUTDOWN_GRACE:?}; exiting menubar"
-                    );
+                    log::info!("daemon unreachable for {SHUTDOWN_GRACE:?}; exiting menubar");
                     std::process::exit(0);
                 }
                 std::thread::sleep(backoff);

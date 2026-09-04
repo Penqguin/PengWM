@@ -34,11 +34,7 @@ impl Router {
     /// First workspace after `start` (wrapping within the same monitor) with
     /// room for another window. `None` when every workspace on that monitor is
     /// at capacity.
-    pub fn find_next_with_capacity(
-        &self,
-        workspaces: &[Workspace],
-        start: usize,
-    ) -> Option<usize> {
+    pub fn find_next_with_capacity(&self, workspaces: &[Workspace], start: usize) -> Option<usize> {
         let n = workspaces.len();
         if n == 0 {
             return None;
@@ -102,7 +98,9 @@ impl Router {
             .iter()
             .find(|entry| {
                 entry.apps.iter().any(|app| {
-                    bundle.as_deref().is_some_and(|b| b.eq_ignore_ascii_case(app))
+                    bundle
+                        .as_deref()
+                        .is_some_and(|b| b.eq_ignore_ascii_case(app))
                         || app_name
                             .as_deref()
                             .is_some_and(|n| n.eq_ignore_ascii_case(app))
@@ -171,7 +169,7 @@ mod tests {
     #[test]
     fn configured_name_matches_bundle_case_insensitive() {
         let r = Router::new(4);
-        let mut adapter = TestAdapter::new();
+        let adapter = TestAdapter::new();
         adapter.inject_bundle_id(10, "com.google.Chrome".into());
         let entries = entries_default();
         let name = r
@@ -183,7 +181,7 @@ mod tests {
     #[test]
     fn configured_name_matches_app_name() {
         let r = Router::new(4);
-        let mut adapter = TestAdapter::new();
+        let adapter = TestAdapter::new();
         adapter.inject_app_name(10, "spotify".into());
         let entries = entries_default();
         let name = r
@@ -195,7 +193,7 @@ mod tests {
     #[test]
     fn routed_idx_on_active_monitor() {
         let r = Router::new(4);
-        let mut adapter = TestAdapter::new();
+        let adapter = TestAdapter::new();
         adapter.inject_bundle_id(10, "com.apple.Safari".into());
         let entries = entries_default();
         let wss = vec![

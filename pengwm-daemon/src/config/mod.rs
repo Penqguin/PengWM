@@ -6,34 +6,21 @@ pub use pengwm_core::config::{config_file_path, BarConfig, BarPosition};
 use serde::{Deserialize, Serialize};
 
 /// Where hidden windows are parked when a workspace is not visible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum HiddenStrategy {
     /// Bottom-right 1×1 clamped to a dark title-bar strip (daemon-down escape hatch).
+    #[default]
     BottomEdge,
     /// Far offscreen -100k,0,0 fully invisible (legacy).
     FarOffscreen,
 }
 
-impl Default for HiddenStrategy {
-    fn default() -> Self {
-        Self::BottomEdge
-    }
-}
-
 /// Window lifecycle / visibility settings scoped under `[windows]` in TOML.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WindowsConfig {
     #[serde(default)]
     pub hidden_strategy: HiddenStrategy,
-}
-
-impl Default for WindowsConfig {
-    fn default() -> Self {
-        Self {
-            hidden_strategy: HiddenStrategy::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

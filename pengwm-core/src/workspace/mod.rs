@@ -132,10 +132,7 @@ impl Workspace {
         let root_id = self.root?;
         // Single window → create Vertical [master, new]
         if self.arena.len() == 1 {
-            if !matches!(
-                self.arena.get(root_id)?.data,
-                NodeData::Window { .. }
-            ) {
+            if !matches!(self.arena.get(root_id)?.data, NodeData::Window { .. }) {
                 return None;
             }
             let new_id = self.arena.alloc(NodeData::Window {
@@ -166,10 +163,7 @@ impl Workspace {
         }
         let left_id = children[0];
         let right_id = children[1];
-        let left_is_window = matches!(
-            self.arena.get(left_id)?.data,
-            NodeData::Window { .. }
-        );
+        let left_is_window = matches!(self.arena.get(left_id)?.data, NodeData::Window { .. });
         if !left_is_window {
             return None;
         }
@@ -831,7 +825,6 @@ impl Workspace {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests;

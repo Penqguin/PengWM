@@ -10,8 +10,6 @@ use accessibility_sys::*;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
-
-
 pub struct MacOsAdapter {
     observer_registry: AxObserverRegistry,
     ctx: Box<ObserverContext>,
@@ -121,7 +119,11 @@ impl OsAdapter for MacOsAdapter {
             None => match self.discover_window(window_id) {
                 Some(v) => v,
                 None => {
-                    log::debug!("set_window_rect cache miss for {} rect {:?}", window_id, rect);
+                    log::debug!(
+                        "set_window_rect cache miss for {} rect {:?}",
+                        window_id,
+                        rect
+                    );
                     anyhow::bail!("element not found in cache for window {}", window_id)
                 }
             },
@@ -163,7 +165,8 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn focus_window(&self, window_id: WindowId) {
-        let (element, pid) = match self.cache_get_element(window_id)
+        let (element, pid) = match self
+            .cache_get_element(window_id)
             .or_else(|| self.discover_window(window_id))
         {
             Some(v) => v,
@@ -201,7 +204,11 @@ impl OsAdapter for MacOsAdapter {
             let is_far = rect.x < -50_000.0;
             if !is_far {
                 if let Some((elem, _)) = self.cache_get_element(wid) {
-                    if unsafe { crate::macos::ax_element::set_window_position(elem, rect.x, rect.y) }.is_ok() {
+                    if unsafe {
+                        crate::macos::ax_element::set_window_position(elem, rect.x, rect.y)
+                    }
+                    .is_ok()
+                    {
                         continue;
                     }
                 }
@@ -210,8 +217,14 @@ impl OsAdapter for MacOsAdapter {
                 continue;
             }
             if let Some((elem, _)) = self.cache_get_element(wid) {
-                if unsafe { crate::macos::ax_element::set_window_position(elem, rect.x, rect.y) }.is_ok() {
-                    log::debug!("hide_windows: window {} position-only hide at {:?}", wid, rect);
+                if unsafe { crate::macos::ax_element::set_window_position(elem, rect.x, rect.y) }
+                    .is_ok()
+                {
+                    log::debug!(
+                        "hide_windows: window {} position-only hide at {:?}",
+                        wid,
+                        rect
+                    );
                     continue;
                 }
             }
@@ -222,7 +235,12 @@ impl OsAdapter for MacOsAdapter {
                 height: 1.0,
             };
             if let Err(e) = self.set_window_rect(wid, fallback) {
-                log::warn!("hide_windows: failed to hide window {} at {:?}: {}", wid, rect, e);
+                log::warn!(
+                    "hide_windows: failed to hide window {} at {:?}: {}",
+                    wid,
+                    rect,
+                    e
+                );
             }
         }
     }

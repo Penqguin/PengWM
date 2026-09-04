@@ -7,8 +7,8 @@ use crate::config::WorkspaceEntry;
 use pengwm_core::workspace::Workspace;
 
 mod string_key_map {
-    use std::collections::HashMap;
     use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
 
     pub fn serialize<S>(map: &HashMap<u32, usize>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -26,7 +26,11 @@ mod string_key_map {
         let string_map = HashMap::<String, usize>::deserialize(deserializer)?;
         string_map
             .into_iter()
-            .map(|(k, v)| k.parse::<u32>().map(|nk| (nk, v)).map_err(de::Error::custom))
+            .map(|(k, v)| {
+                k.parse::<u32>()
+                    .map(|nk| (nk, v))
+                    .map_err(de::Error::custom)
+            })
             .collect()
     }
 }
@@ -202,7 +206,7 @@ mod tests {
         let sess = snapshot_from(
             &[ws],
             &HashMap::from([(1, 0)]),
-            &vec![WorkspaceEntry {
+            &[WorkspaceEntry {
                 name: "Dev".into(),
                 apps: vec![],
                 monitor: None,
@@ -235,13 +239,7 @@ mod tests {
         // Simulate session saved with monitor 2, but only display 1 exists now.
         // The caller (StateManager) remaps, but we ensure sanitize keeps monitor_id.
         let ws = Workspace::new("Browsing".into(), 2, (1920, 0), (1920, 1080));
-        let sess = snapshot_from(
-            &[ws],
-            &HashMap::from([(2, 0)]),
-            &vec![],
-            10.0,
-            5.0,
-        );
+        let sess = snapshot_from(&[ws], &HashMap::from([(2, 0)]), &[], 10.0, 5.0);
         assert_eq!(sess.workspaces[0].monitor_id, 2);
         assert_eq!(sess.active.get(&2), Some(&0));
     }

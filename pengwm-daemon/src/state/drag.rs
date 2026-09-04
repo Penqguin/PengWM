@@ -19,7 +19,9 @@ pub enum DragTickAction {
         target: WindowId,
     },
     /// No overlap target and idle timeout elapsed — snap back to tiled layout.
-    SnapBack { workspace_idx: usize },
+    SnapBack {
+        workspace_idx: usize,
+    },
     None,
 }
 
@@ -136,8 +138,7 @@ impl DragState {
         // Only snap back when there's no active overlap target — otherwise the
         // 500 ms idle timeout would kill the swap before the 2 s hold.
         if let Some(last_move) = self.last_move {
-            if self.overlap_target.is_none() && now.duration_since(last_move) >= DRAG_IDLE_TIMEOUT
-            {
+            if self.overlap_target.is_none() && now.duration_since(last_move) >= DRAG_IDLE_TIMEOUT {
                 if self.drag_window.is_some() {
                     let action = DragTickAction::SnapBack {
                         workspace_idx: active_workspace_idx,
@@ -172,7 +173,12 @@ mod tests {
     use pengwm_core::workspace::Workspace;
 
     fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
-        Rect { x, y, width: w, height: h }
+        Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
     }
 
     fn two_window_workspaces_and_rects() -> (Vec<Workspace>, HashMap<WindowId, Rect>) {
@@ -217,7 +223,10 @@ mod tests {
         let t0 = Instant::now();
         d.on_moved(1, 400.0, 0.0, &wss, &rects, t0);
         // Before hold — no swap.
-        assert_eq!(d.on_tick(t0 + Duration::from_secs(1), &wss, &rects, 0), DragTickAction::None);
+        assert_eq!(
+            d.on_tick(t0 + Duration::from_secs(1), &wss, &rects, 0),
+            DragTickAction::None
+        );
         // After hold — swap.
         let action = d.on_tick(t0 + Duration::from_secs(3), &wss, &rects, 0);
         assert_eq!(
@@ -241,7 +250,10 @@ mod tests {
         let t0 = Instant::now();
         d.on_moved(1, 2000.0, 0.0, &wss, &rects, t0);
         assert_eq!(d.overlap_target, None);
-        assert_eq!(d.on_tick(t0 + Duration::from_millis(600), &wss, &rects, 0), DragTickAction::SnapBack { workspace_idx: 0 });
+        assert_eq!(
+            d.on_tick(t0 + Duration::from_millis(600), &wss, &rects, 0),
+            DragTickAction::SnapBack { workspace_idx: 0 }
+        );
         assert!(d.is_idle());
     }
 
@@ -253,7 +265,10 @@ mod tests {
         d.on_moved(1, 400.0, 0.0, &wss, &rects, t0);
         assert_eq!(d.overlap_target, Some(2));
         // 600 ms > DRAG_IDLE_TIMEOUT but overlap is active -> no snap-back.
-        assert_eq!(d.on_tick(t0 + Duration::from_millis(600), &wss, &rects, 0), DragTickAction::None);
+        assert_eq!(
+            d.on_tick(t0 + Duration::from_millis(600), &wss, &rects, 0),
+            DragTickAction::None
+        );
         assert!(!d.is_idle());
     }
 

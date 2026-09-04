@@ -180,7 +180,7 @@ pub enum ReloadAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{DisplayInfo, OsAdapter};
+    use crate::adapter::DisplayInfo;
     use crate::adapter_test::TestAdapter;
     use pengwm_core::config::BarPosition;
 

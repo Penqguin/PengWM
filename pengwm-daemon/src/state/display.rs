@@ -42,11 +42,7 @@ impl DisplaySet {
     /// Initialize `workspaces` + `active` from the current displays. Called
     /// once from `StateManager::new`. Returns the number of workspaces created
     /// (for tests).
-    pub fn init_workspaces(
-        &mut self,
-        workspaces: &mut Vec<Workspace>,
-        displays: &[DisplayInfo],
-    ) {
+    pub fn init_workspaces(&mut self, workspaces: &mut Vec<Workspace>, displays: &[DisplayInfo]) {
         workspaces.clear();
         self.active.clear();
         // Per-monitor affinity: entries with `monitor` set only appear on that
@@ -135,8 +131,7 @@ impl DisplaySet {
         if created.is_empty() {
             return None;
         }
-        self.active
-            .insert(display_id, first_for_display.unwrap());
+        self.active.insert(display_id, first_for_display.unwrap());
         Some(created)
     }
 

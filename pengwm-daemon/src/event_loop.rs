@@ -201,6 +201,9 @@ fn spawn_child_process(name: &str, candidates: &[std::path::PathBuf]) -> Option<
             }
         }
     }
-    log::warn!("{} not found. Install it next to pengwm or set its _PATH env var.", name);
+    log::warn!(
+        "{} not found. Install it next to pengwm or set its _PATH env var.",
+        name
+    );
     None
 }

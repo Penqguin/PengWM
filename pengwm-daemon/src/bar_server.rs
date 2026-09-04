@@ -87,16 +87,10 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
                             }
 
                             clients.lock().unwrap().push(client_tx);
-                            log::info!(
-                                "bar connected ({} clients)",
-                                clients.lock().unwrap().len()
-                            );
+                            log::info!("bar connected ({} clients)", clients.lock().unwrap().len());
 
                             // Prune disconnected senders (channel closed)
-                            clients
-                                .lock()
-                                .unwrap()
-                                .retain(|tx| !tx.is_closed());
+                            clients.lock().unwrap().retain(|tx| !tx.is_closed());
                         }
                         Err(e) => log::error!("bar socket accept error: {}", e),
                     }

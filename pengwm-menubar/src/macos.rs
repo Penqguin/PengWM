@@ -7,7 +7,7 @@ use objc2_app_kit::{
     NSApplication, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar,
     NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSString, NSObject, NSObjectProtocol};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
 use pengwm_core::command::{BarState, Command};
 use pengwm_core::ipc::send_command;
