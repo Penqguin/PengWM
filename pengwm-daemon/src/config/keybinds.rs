@@ -203,9 +203,16 @@ impl Default for KeybindConfig {
                 modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 9 },
             },
-            // Layout: alt-/ tile, alt-, accordion (monocle)
+            // Layout: alt-/ tile, alt-, accordion (monocle), alt-. tile (alt-,/alt-. pair), alt-t toggle
             Keybind {
                 keycode: 0x2C,
+                modifiers: MODIFIER_ALT,
+                action: Command::SetLayout {
+                    mode: LayoutMode::Tile,
+                },
+            },
+            Keybind {
+                keycode: 0x2F,
                 modifiers: MODIFIER_ALT,
                 action: Command::SetLayout {
                     mode: LayoutMode::Tile,
@@ -217,6 +224,11 @@ impl Default for KeybindConfig {
                 action: Command::SetLayout {
                     mode: LayoutMode::Accordion,
                 },
+            },
+            Keybind {
+                keycode: 0x11,
+                modifiers: MODIFIER_ALT,
+                action: Command::ToggleLayout,
             },
             // Reload config: cmd-shift-r
             Keybind {
@@ -383,6 +395,7 @@ pub fn key_name_to_keycode(name: &str) -> Option<u16> {
         "down" => Some(0x7D),
         "up" => Some(0x7E),
         "," => Some(0x2B),
+        "." => Some(0x2F),
         "/" => Some(0x2C),
         "space" => Some(0x31),
         "tab" => Some(0x30),

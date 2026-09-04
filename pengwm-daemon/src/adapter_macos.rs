@@ -192,12 +192,28 @@ impl OsAdapter for MacOsAdapter {
 
     fn hide_windows(&self, rects: &std::collections::HashMap<WindowId, Rect>) {
         for (&wid, &rect) in rects {
-            // Rect is precomputed per-monitor by StateManager (typically
-            // layout::hidden_rect for BottomEdge or far_offscreen_rect for
-            // FarOffscreen). Try it directly; fall back to 1×1 at same origin
-            // if the app rejects 0×0 minimum size.
+            // BottomEdge 1×1 at 1919,1079 triggers slow reflow for Firefox
+            // (AXSize 1×1 rejected) while Ghostty is instant. For BottomEdge
+            // do position-only first — keep original size, just snap origin to
+            // corner. Still offscreen except clamped 28px strip, but as fast
+            // as Ghostty and no 2-swap shrink-then-corner. FarOffscreen
+            // (-100k) still needs 0×0 for true invisibility.
+            let is_far = rect.x < -50_000.0;
+            if !is_far {
+                if let Some((elem, _)) = self.cache_get_element(wid) {
+                    if unsafe { crate::macos::ax_element::set_window_position(elem, rect.x, rect.y) }.is_ok() {
+                        continue;
+                    }
+                }
+            }
             if self.set_window_rect(wid, rect).is_ok() {
                 continue;
+            }
+            if let Some((elem, _)) = self.cache_get_element(wid) {
+                if unsafe { crate::macos::ax_element::set_window_position(elem, rect.x, rect.y) }.is_ok() {
+                    log::debug!("hide_windows: window {} position-only hide at {:?}", wid, rect);
+                    continue;
+                }
             }
             let fallback = Rect {
                 x: rect.x,

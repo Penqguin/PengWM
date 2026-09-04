@@ -332,6 +332,33 @@ struct CGSize {
     height: f64,
 }
 
+/// Set only the window position (no resize) — fast BottomEdge hide for
+/// apps like Firefox where `AXSize 1×1` triggers slow reflow. Used as
+/// fallback when `set_window_rect` fails on size.
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef`.
+pub unsafe fn set_window_position(element: AXUIElementRef, x: f64, y: f64) -> anyhow::Result<()> {
+    let pos_name = CFString::new(kAXPositionAttribute);
+    let mut point = CGPoint { x, y };
+    let pos_value = AXValueCreate(kAXValueTypeCGPoint, &mut point as *mut _ as *mut c_void);
+    if pos_value.is_null() {
+        anyhow::bail!("AXValueCreate failed for position");
+    }
+    let err = AXUIElementSetAttributeValue(
+        element,
+        pos_name.as_concrete_TypeRef(),
+        pos_value as CFTypeRef,
+    );
+    CFRelease(pos_value as CFTypeRef);
+    if err != kAXErrorSuccess {
+        anyhow::bail!(
+            "AXUIElementSetAttributeValue position error: {}",
+            error_string(err)
+        );
+    }
+    Ok(())
+}
+
 /// # Safety
 ///
 /// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
