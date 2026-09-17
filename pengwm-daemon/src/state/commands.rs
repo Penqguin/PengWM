@@ -214,37 +214,28 @@ impl StateManager {
         }
         let window_id = self.workspaces[current].focused_window_id();
         if let Some(wid) = window_id {
-            let dest = if self.workspaces[target].window_count() >= self.displays.max_tiles() {
-                match self.find_next_workspace_with_capacity(target) {
-                    Some(idx) => idx,
-                    None => {
-                        log::warn!(
-                            "No workspace has room for {} (cap {}), move aborted",
-                            wid,
-                            self.displays.max_tiles()
-                        );
-                        self.publish_bar_state();
-                        return;
-                    }
+            let dest = match self.displays.target_with_room(&self.workspaces, target) {
+                Some(idx) => idx,
+                None => {
+                    log::warn!(
+                        "No workspace has room for {} (cap {}), move aborted",
+                        wid,
+                        self.displays.max_tiles()
+                    );
+                    self.publish_bar_state();
+                    return;
                 }
-            } else {
-                target
             };
             self.workspaces[current].remove_window(wid);
-            if self.is_workspace_visible(current) {
+            if self.displays.is_visible(current, &self.workspaces) {
                 self.apply_layout(current);
             }
             self.workspaces[dest].add_window(wid, None);
-            if self.is_workspace_visible(dest) {
+            if self.displays.is_visible(dest, &self.workspaces) {
                 self.apply_layout(dest);
             }
         }
         self.publish_bar_state();
-    }
-
-    fn find_display_in_direction(&self, from_id: u32, direction: Direction) -> Option<u32> {
-        self.displays
-            .display_in_direction(from_id, direction, &*self.os)
     }
 
     fn focus_display(&mut self, direction: Direction) {
@@ -253,7 +244,10 @@ impl StateManager {
             return;
         }
         let current_mon = self.workspaces[current_idx].monitor_id;
-        let target_mon = match self.find_display_in_direction(current_mon, direction) {
+        let target_mon = match self
+            .displays
+            .display_in_direction(current_mon, direction, &*self.os)
+        {
             Some(id) => id,
             None => {
                 log::debug!(
@@ -264,16 +258,9 @@ impl StateManager {
                 return;
             }
         };
-        let target_idx = match self.displays.active().get(&target_mon).copied() {
-            Some(idx) if idx < self.workspaces.len() => idx,
-            _ => match self
-                .workspaces
-                .iter()
-                .position(|ws| ws.monitor_id == target_mon)
-            {
-                Some(idx) => idx,
-                None => return,
-            },
+        let target_idx = match self.displays.visible_or_first(target_mon, &self.workspaces) {
+            Some(idx) => idx,
+            None => return,
         };
         if let Some(wid) = self.workspaces[target_idx].focused_window_id() {
             log::debug!(
@@ -302,7 +289,10 @@ impl StateManager {
             return;
         }
         let current_mon = self.workspaces[current_idx].monitor_id;
-        let target_mon = match self.find_display_in_direction(current_mon, direction) {
+        let target_mon = match self
+            .displays
+            .display_in_direction(current_mon, direction, &*self.os)
+        {
             Some(id) => id,
             None => return,
         };
@@ -310,31 +300,20 @@ impl StateManager {
             Some(id) => id,
             None => return,
         };
-        let target_idx = match self.displays.active().get(&target_mon).copied() {
-            Some(idx) if idx < self.workspaces.len() => idx,
-            _ => match self
-                .workspaces
-                .iter()
-                .position(|ws| ws.monitor_id == target_mon)
-            {
-                Some(idx) => idx,
-                None => return,
-            },
+        let target_idx = match self.displays.visible_or_first(target_mon, &self.workspaces) {
+            Some(idx) => idx,
+            None => return,
         };
-        let dest = if self.workspaces[target_idx].window_count() >= self.displays.max_tiles() {
-            match self.find_next_workspace_with_capacity(target_idx) {
-                Some(idx) => idx,
-                None => {
-                    log::warn!(
-                        "No room on target display {} for window {}",
-                        target_mon,
-                        wid
-                    );
-                    return;
-                }
+        let dest = match self.displays.target_with_room(&self.workspaces, target_idx) {
+            Some(idx) => idx,
+            None => {
+                log::warn!(
+                    "No room on target display {} for window {}",
+                    target_mon,
+                    wid
+                );
+                return;
             }
-        } else {
-            target_idx
         };
         log::debug!(
             "move_window_to_display {:?} wid {} mon {} -> {} dest {}",
@@ -345,11 +324,11 @@ impl StateManager {
             dest
         );
         self.workspaces[current_idx].remove_window(wid);
-        if self.is_workspace_visible(current_idx) {
+        if self.displays.is_visible(current_idx, &self.workspaces) {
             self.apply_layout(current_idx);
         }
         self.workspaces[dest].add_window(wid, None);
-        if self.is_workspace_visible(dest) {
+        if self.displays.is_visible(dest, &self.workspaces) {
             self.apply_layout(dest);
         }
         self.publish_bar_state();

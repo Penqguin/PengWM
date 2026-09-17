@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::config::WorkspaceEntry;
+use pengwm_core::tree::{Direction, WindowId};
 use pengwm_core::workspace::Workspace;
 
 use crate::adapter::{DisplayInfo, OsAdapter};
@@ -8,26 +9,40 @@ use crate::adapter::{DisplayInfo, OsAdapter};
 /// Owns the display ↔ workspace registry: `active_workspaces` (which flat
 /// workspace index is visible per monitor) and the `workspace_entries` that
 /// define the named workspace set cloned per display. `Vec<Workspace>` itself
-/// stays on `StateManager` and is borrowed per call — so `HiddenTracker`,
+/// stays on `StateManager` and is borrowed per call — so `WindowStore`,
 /// `BarReserve` and `DragState` don't need to reach through a registry.
+/// `active` is a `BTreeMap` so iteration order is deterministic (no HashMap
+/// random fallback in `active_workspace_idx`). Also owns the routing policy
+/// (`max_tiles` + per-monitor overflow/routing) so callers have one interface
+/// for "workspaces on monitor X" (Q1 deepening).
 pub struct DisplaySet {
-    active: HashMap<u32, usize>,
+    active: BTreeMap<u32, usize>,
     entries: Vec<WorkspaceEntry>,
+    max_tiles: usize,
 }
 
 impl DisplaySet {
     pub fn new(entries: Vec<WorkspaceEntry>) -> Self {
         Self {
-            active: HashMap::new(),
+            active: BTreeMap::new(),
             entries,
+            max_tiles: 4,
         }
     }
 
-    pub fn active(&self) -> &HashMap<u32, usize> {
+    pub fn with_max_tiles(entries: Vec<WorkspaceEntry>, max_tiles: usize) -> Self {
+        Self {
+            active: BTreeMap::new(),
+            entries,
+            max_tiles: max_tiles.max(1),
+        }
+    }
+
+    pub fn active(&self) -> &BTreeMap<u32, usize> {
         &self.active
     }
 
-    pub fn active_mut(&mut self) -> &mut HashMap<u32, usize> {
+    pub fn active_mut(&mut self) -> &mut BTreeMap<u32, usize> {
         &mut self.active
     }
 
@@ -37,6 +52,219 @@ impl DisplaySet {
 
     pub fn set_entries(&mut self, entries: Vec<WorkspaceEntry>) {
         self.entries = entries;
+    }
+
+    pub fn max_tiles(&self) -> usize {
+        self.max_tiles
+    }
+
+    pub fn set_max_tiles(&mut self, n: usize) {
+        self.max_tiles = n.max(1);
+    }
+
+    // -- per-monitor helpers (Q1: one interface for monitor-local workspace sets) --
+
+    /// Flat indices of workspaces on `monitor`.
+    pub fn workspaces_on(&self, monitor: u32, workspaces: &[Workspace]) -> Vec<usize> {
+        workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, ws)| ws.monitor_id == monitor)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Flat index of the visible workspace on `monitor`, if any.
+    pub fn visible_on(&self, monitor: u32) -> Option<usize> {
+        self.active.get(&monitor).copied()
+    }
+
+    /// Whether flat workspace `idx` is the visible one on its monitor.
+    /// Moved up from `StateManager::is_workspace_visible` so visibility
+    /// reads sit with the `active` map they query (locality).
+    pub fn is_visible(&self, idx: usize, workspaces: &[Workspace]) -> bool {
+        if idx >= workspaces.len() {
+            return false;
+        }
+        let mon = workspaces[idx].monitor_id;
+        self.active.get(&mon).copied() == Some(idx)
+    }
+
+    /// Visible workspace on `monitor`, falling back to the first workspace
+    /// owned by that monitor. Unifies the active-or-first fallback
+    /// duplicated in focus/move-to-display (locality).
+    pub fn visible_or_first(&self, monitor: u32, workspaces: &[Workspace]) -> Option<usize> {
+        match self.active.get(&monitor).copied() {
+            Some(idx) if idx < workspaces.len() => Some(idx),
+            _ => workspaces.iter().position(|ws| ws.monitor_id == monitor),
+        }
+    }
+
+    /// Resolve a 1-based per-monitor workspace id `n` (from `Command::Workspace`)
+    /// into a flat workspace index, using `current_idx`'s monitor.
+    pub fn resolve_workspace(
+        &self,
+        current_idx: usize,
+        n: usize,
+        workspaces: &[Workspace],
+    ) -> Option<usize> {
+        if n == 0 || current_idx >= workspaces.len() {
+            return None;
+        }
+        let monitor = workspaces[current_idx].monitor_id;
+        let on_mon = self.workspaces_on(monitor, workspaces);
+        if n > on_mon.len() {
+            return None;
+        }
+        Some(on_mon[n - 1])
+    }
+
+    /// First workspace after `start` (wrapping within the same monitor) with
+    /// room for another window. `None` when every workspace on that monitor is
+    /// at capacity. Absorbed from `capacity::next_with_room` (deleted).
+    pub fn next_with_room(&self, workspaces: &[Workspace], start: usize) -> Option<usize> {
+        if start >= workspaces.len() {
+            return None;
+        }
+        let monitor = workspaces[start].monitor_id;
+        let indices: Vec<usize> = workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, ws)| ws.monitor_id == monitor)
+            .map(|(i, _)| i)
+            .collect();
+        let pos = indices.iter().position(|&idx| idx == start)?;
+        let n = indices.len();
+        for offset in 1..n {
+            let idx = indices[(pos + offset) % n];
+            if workspaces[idx].window_count() < self.max_tiles {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Overflow redirect: `target` itself when it has room, else the next
+    /// workspace on the same monitor with room. `None` when the monitor is
+    /// full. Unifies the three redirect sites (create / move / move-display)
+    /// so capacity policy lives with `max_tiles` (locality).
+    pub fn target_with_room(&self, workspaces: &[Workspace], target: usize) -> Option<usize> {
+        if target >= workspaces.len() {
+            return None;
+        }
+        if workspaces[target].window_count() < self.max_tiles {
+            return Some(target);
+        }
+        self.next_with_room(workspaces, target)
+    }
+
+    /// Heuristic for "which workspace is active": the workspace that contains a
+    /// window belonging to `frontmost_pid`, mapped through `active` per
+    /// monitor. Falls back to arbitrary `active` entry. Absorbed from `Router`.
+    pub fn active_workspace_idx(
+        &self,
+        workspaces: &[Workspace],
+        pid_to_windows: &HashMap<i32, Vec<WindowId>>,
+        frontmost_pid: Option<i32>,
+    ) -> usize {
+        if let Some(pid) = frontmost_pid {
+            if let Some(windows) = pid_to_windows.get(&pid) {
+                for &window_id in windows {
+                    for ws in workspaces {
+                        if ws.find_window(window_id).is_some() {
+                            if let Some(&idx) = self.active.get(&ws.monitor_id) {
+                                if idx < workspaces.len() {
+                                    return idx;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.active.values().next().copied().unwrap_or(0)
+    }
+
+    /// Name of the configured workspace `pid`'s app is assigned to, matched
+    /// case-insensitively against bundle id first, then app display name.
+    pub fn configured_workspace_name_for_pid(&self, pid: i32, os: &dyn OsAdapter) -> Option<&str> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let bundle = os.app_bundle_id(pid);
+        let app_name = os.app_name(pid);
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.apps.iter().any(|app| {
+                    bundle
+                        .as_deref()
+                        .is_some_and(|b| b.eq_ignore_ascii_case(app))
+                        || app_name
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(app))
+                })
+            })
+            .map(|e| e.name.as_str())
+    }
+
+    /// Flat workspace index a new window from `pid` should land in: the
+    /// configured workspace for the app on the active monitor. `None` when the
+    /// app isn't assigned. Absorbed from `Router`.
+    pub fn routed_workspace_idx(
+        &self,
+        pid: i32,
+        workspaces: &[Workspace],
+        active_idx: usize,
+        os: &dyn OsAdapter,
+    ) -> Option<usize> {
+        if active_idx >= workspaces.len() {
+            return None;
+        }
+        let monitor = workspaces[active_idx].monitor_id;
+        let name = self.configured_workspace_name_for_pid(pid, os)?;
+        workspaces
+            .iter()
+            .position(|ws| ws.name == name && ws.monitor_id == monitor)
+    }
+
+    /// Closest display in `direction` from `from`, by center-to-center vector.
+    /// Absorbed from `StateManager::find_display_in_direction` so all
+    /// geometry queries flow through one interface (locality).
+    pub fn display_in_direction(
+        &self,
+        from: u32,
+        direction: Direction,
+        os: &dyn OsAdapter,
+    ) -> Option<u32> {
+        let displays = os.active_displays();
+        let from_disp = displays.iter().find(|d| d.id == from)?;
+        let from_cx = from_disp.origin.0 as f64 + from_disp.size.0 as f64 / 2.0;
+        let from_cy = from_disp.origin.1 as f64 + from_disp.size.0 as f64 / 2.0;
+        let mut best: Option<(u32, f64)> = None;
+        for d in &displays {
+            if d.id == from {
+                continue;
+            }
+            let cx = d.origin.0 as f64 + d.size.0 as f64 / 2.0;
+            let cy = d.origin.1 as f64 + d.size.1 as f64 / 2.0;
+            let dx = cx - from_cx;
+            let dy = cy - from_cy;
+            let is_match = match direction {
+                Direction::Left => dx < 0.0 && dx.abs() >= dy.abs(),
+                Direction::Right => dx > 0.0 && dx.abs() >= dy.abs(),
+                Direction::Up => dy < 0.0 && dy.abs() > dx.abs(),
+                Direction::Down => dy > 0.0 && dy.abs() > dx.abs(),
+            };
+            if !is_match {
+                continue;
+            }
+            let dist = dx * dx + dy * dy;
+            if best.map(|(_, bd)| dist < bd).unwrap_or(true) {
+                best = Some((d.id, dist));
+            }
+        }
+        best.map(|(id, _)| id)
     }
 
     /// Initialize `workspaces` + `active` from the current displays. Called
@@ -310,5 +538,95 @@ mod tests {
         assert_eq!(affected, vec![0, 1]);
         assert_eq!(wss[0].monitor_size(), (2560, 1440));
         assert_eq!(wss[2].monitor_size(), (1920, 1080));
+    }
+
+    // -- routing helpers (absorbed from Router + capacity) --
+
+    #[test]
+    fn next_with_room_wraps_within_monitor() {
+        let ds = DisplaySet::with_max_tiles(vec![], 2);
+        let mut wss = vec![
+            Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("b".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("c".into(), 2, (1920, 0), (1920, 1080)),
+        ];
+        wss[0].add_window(1, None);
+        wss[0].add_window(2, None);
+        assert_eq!(ds.next_with_room(&wss, 0), Some(1));
+        // From 1 the next on same monitor is 0 which is full → None
+        assert_eq!(ds.next_with_room(&wss, 1), None);
+    }
+
+    #[test]
+    fn next_with_room_ignores_other_monitor() {
+        let ds = DisplaySet::with_max_tiles(vec![], 2);
+        let mut wss = vec![
+            Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("b".into(), 2, (1920, 0), (1920, 1080)),
+        ];
+        wss[0].add_window(1, None);
+        wss[0].add_window(2, None);
+        assert_eq!(ds.next_with_room(&wss, 0), None);
+    }
+
+    #[test]
+    fn resolve_workspace_on_monitor() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_two());
+        // wss: [a@1,b@1,a@2,b@2] ; from idx 0 (monitor 1), n=2 → flat 1
+        assert_eq!(ds.resolve_workspace(0, 2, &wss), Some(1));
+        assert_eq!(ds.resolve_workspace(0, 1, &wss), Some(0));
+        // from monitor 2
+        assert_eq!(ds.resolve_workspace(2, 2, &wss), Some(3));
+        assert_eq!(ds.resolve_workspace(0, 3, &wss), None);
+    }
+
+    #[test]
+    fn workspaces_on_filters() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_two());
+        assert_eq!(ds.workspaces_on(1, &wss), vec![0, 1]);
+        assert_eq!(ds.workspaces_on(2, &wss), vec![2, 3]);
+    }
+
+    #[test]
+    fn configured_name_matches_bundle_case_insensitive() {
+        let ds = DisplaySet::new(crate::config::default_workspaces());
+        let adapter = TestAdapter::new();
+        adapter.inject_bundle_id(10, "com.google.Chrome".into());
+        let name = ds.configured_workspace_name_for_pid(10, &adapter).unwrap();
+        assert_eq!(name, "Browsing");
+    }
+
+    #[test]
+    fn routed_idx_on_active_monitor() {
+        let ds = DisplaySet::new(crate::config::default_workspaces());
+        let adapter = TestAdapter::new();
+        adapter.inject_bundle_id(10, "com.apple.Safari".into());
+        let wss = vec![
+            Workspace::new("Development".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("Browsing".into(), 1, (0, 0), (1920, 1080)),
+        ];
+        let idx = ds.routed_workspace_idx(10, &wss, 0, &adapter);
+        assert_eq!(idx, Some(1));
+    }
+
+    #[test]
+    fn active_idx_falls_back_when_frontmost_has_no_window() {
+        let mut ds = DisplaySet::new(crate::config::default_workspaces());
+        let mut wss = Vec::new();
+        ds.init_workspaces(
+            &mut wss,
+            &[DisplayInfo {
+                id: 1,
+                origin: (0, 0),
+                size: (1920, 1080),
+            }],
+        );
+        let pid_to_windows: HashMap<i32, Vec<WindowId>> = HashMap::new();
+        let idx = ds.active_workspace_idx(&wss, &pid_to_windows, Some(99));
+        assert_eq!(idx, 0);
     }
 }

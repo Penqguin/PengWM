@@ -168,13 +168,6 @@ impl StateManager {
         state
     }
 
-    /// First workspace after `start` (wrapping within the same monitor) with
-    /// room for another window. Returns `None` when every workspace on that
-    /// monitor is at capacity.
-    fn find_next_workspace_with_capacity(&self, start: usize) -> Option<usize> {
-        self.displays.next_with_room(&self.workspaces, start)
-    }
-
     fn active_workspace_idx(&self) -> usize {
         self.displays.active_workspace_idx(
             &self.workspaces,
@@ -193,28 +186,13 @@ impl StateManager {
             return;
         }
 
+        let active = self.active_workspace_idx();
         let preferred = self
-            .routed_workspace_idx(pid)
-            .unwrap_or_else(|| self.active_workspace_idx());
+            .displays
+            .routed_workspace_idx(pid, &self.workspaces, active, &*self.os)
+            .unwrap_or(active);
         self.add_window_to_workspace(window_id, pid, preferred);
         self.publish_bar_state();
-    }
-
-    /// Flat workspace index a new window from `pid` should land in: the
-    /// configured workspace for the app (by bundle id or name) on the active
-    /// monitor. `None` when the app isn't assigned to any workspace.
-    fn routed_workspace_idx(&self, pid: i32) -> Option<usize> {
-        let active = self.active_workspace_idx();
-        self.displays
-            .routed_workspace_idx(pid, &self.workspaces, active, &*self.os)
-    }
-
-    /// Name of the configured workspace `pid`'s app is assigned to, matched
-    /// case-insensitively against bundle id first, then app display name.
-    #[allow(dead_code)]
-    fn configured_workspace_name_for_pid(&self, pid: i32) -> Option<&str> {
-        self.displays
-            .configured_workspace_name_for_pid(pid, &*self.os)
     }
 
     /// Route `window_id` into a workspace and retile. Prefers `preferred`,
@@ -229,9 +207,9 @@ impl StateManager {
         if self.workspaces[preferred].find_window(window_id).is_some() {
             return Some(preferred);
         }
-        let target = if self.workspaces[preferred].window_count() >= self.displays.max_tiles() {
-            match self.find_next_workspace_with_capacity(preferred) {
-                Some(idx) => {
+        let target = match self.displays.target_with_room(&self.workspaces, preferred) {
+            Some(idx) => {
+                if idx != preferred {
                     log::info!(
                         "Workspace {} full ({} >= {}), routing new window to workspace {}",
                         preferred,
@@ -239,19 +217,17 @@ impl StateManager {
                         self.displays.max_tiles(),
                         idx
                     );
-                    idx
                 }
-                None => {
-                    log::warn!(
-                        "All workspaces at capacity ({}), leaving window {} untracked",
-                        self.displays.max_tiles(),
-                        window_id
-                    );
-                    return None;
-                }
+                idx
             }
-        } else {
-            preferred
+            None => {
+                log::warn!(
+                    "All workspaces at capacity ({}), leaving window {} untracked",
+                    self.displays.max_tiles(),
+                    window_id
+                );
+                return None;
+            }
         };
 
         let ws = &mut self.workspaces[target];
@@ -265,7 +241,7 @@ impl StateManager {
         }
 
         ws.add_window(window_id, None);
-        if self.is_workspace_visible(target) {
+        if self.displays.is_visible(target, &self.workspaces) {
             self.apply_layout(target);
         }
         Some(target)
@@ -274,7 +250,7 @@ impl StateManager {
     pub fn on_window_destroyed(&mut self, window_id: WindowId) {
         for i in 0..self.workspaces.len() {
             if self.workspaces[i].find_window(window_id).is_some() {
-                let is_visible = self.is_workspace_visible(i);
+                let is_visible = self.displays.is_visible(i, &self.workspaces);
                 let ws = &mut self.workspaces[i];
                 ws.remove_window(window_id);
                 if is_visible {
@@ -293,7 +269,7 @@ impl StateManager {
     /// can be retiled when it becomes visible again.
     pub fn on_window_hidden(&mut self, window_id: WindowId) {
         if let Some(idx) = self.store.hide(window_id, &mut self.workspaces) {
-            if self.is_workspace_visible(idx) {
+            if self.displays.is_visible(idx, &self.workspaces) {
                 self.apply_layout(idx);
             }
             self.publish_bar_state();
@@ -319,7 +295,13 @@ impl StateManager {
         let preferred = remembered
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
-                self.routed_workspace_idx(pid)
+                self.displays
+                    .routed_workspace_idx(
+                        pid,
+                        &self.workspaces,
+                        self.active_workspace_idx(),
+                        &*self.os,
+                    )
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
         if self
@@ -660,14 +642,6 @@ impl StateManager {
             self.gap_outer,
             self.gap_inner
         );
-    }
-
-    fn is_workspace_visible(&self, idx: usize) -> bool {
-        if idx >= self.workspaces.len() {
-            return false;
-        }
-        let mon = self.workspaces[idx].monitor_id;
-        self.displays.active().get(&mon).copied() == Some(idx)
     }
 
     fn hide_workspace(&mut self, workspace_idx: usize) {
