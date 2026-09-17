@@ -109,24 +109,13 @@ impl BarReserve {
         let mut affected = Vec::new();
         for (i, ws) in workspaces.iter_mut().enumerate() {
             let want = if ws.monitor_id == primary { rect } else { None };
-            // Always mark as affected when bar is on primary — layout must be
-            // recomputed even if rect is None (clearing reservation).
             let was = ws.reserved_rect();
-            let needs_layout = was != want || ws.monitor_id == primary && rect.is_some();
-            ws.set_reserved_rect(want);
-            if needs_layout || was != want {
+            if was != want {
                 affected.push(i);
-            } else if was.is_none() && want.is_none() {
-                // still collect for startup correctness; caller may dedup
             }
+            ws.set_reserved_rect(want);
         }
-        // Simpler: return all indices on primary when rect is Some, and all
-        // when transitioning. For correctness we return all workspaces whose
-        // monitor matches primary, or all when clearing.
-        // To keep behavior identical to the old two-loop apply, just return all.
-        // Callers call apply_layout per affected; returning all is safe (idempotent).
-        // For minimal diff we just return every index.
-        workspaces.iter().enumerate().map(|(i, _)| i).collect()
+        affected
     }
 
     /// Toggle visibility — no-op when not spawned. Returns the action the
@@ -282,7 +271,7 @@ mod tests {
         let affected = bar.apply_reservation(&mut wss, &os);
         assert!(wss[0].reserved_rect().is_some());
         assert!(wss[1].reserved_rect().is_none());
-        assert_eq!(affected.len(), 2);
+        assert_eq!(affected, vec![0]);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter};
-use pengwm_core::layout::Rect;
+use pengwm_core::layout::{HidePlacement, Rect};
 use pengwm_core::tree::WindowId;
 
 pub struct TestAdapter {
@@ -19,6 +19,9 @@ pub struct TestAdapter {
     pub app_names: RefCell<HashMap<i32, String>>,
     pub hidden_windows: RefCell<HashSet<WindowId>>,
     pub hidden_apps: RefCell<HashSet<i32>>,
+    /// Number of `set_window_rect` calls served. Lets tests observe whether
+    /// `apply_layout` skipped redundant writes.
+    pub set_rect_calls: Cell<usize>,
 }
 
 impl Default for TestAdapter {
@@ -37,6 +40,7 @@ impl Default for TestAdapter {
             app_names: RefCell::new(HashMap::new()),
             hidden_windows: RefCell::new(HashSet::new()),
             hidden_apps: RefCell::new(HashSet::new()),
+            set_rect_calls: Cell::new(0),
         }
     }
 }
@@ -83,6 +87,7 @@ impl OsAdapter for TestAdapter {
     }
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
+        self.set_rect_calls.set(self.set_rect_calls.get() + 1);
         self.window_rects.borrow_mut().insert(window_id, rect);
         Ok(())
     }
@@ -103,9 +108,9 @@ impl OsAdapter for TestAdapter {
         }
     }
 
-    fn hide_windows(&self, rects: &HashMap<WindowId, Rect>) {
-        for (&wid, &rect) in rects {
-            self.window_rects.borrow_mut().insert(wid, rect);
+    fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>) {
+        for (&wid, placement) in placements {
+            self.window_rects.borrow_mut().insert(wid, placement.rect());
         }
     }
 
@@ -149,5 +154,9 @@ impl OsAdapter for TestAdapter {
 
     fn window_rect_for_test(&self, window_id: WindowId) -> Option<Rect> {
         self.window_rects.borrow().get(&window_id).copied()
+    }
+
+    fn set_rect_calls_for_test(&self) -> usize {
+        self.set_rect_calls.get()
     }
 }

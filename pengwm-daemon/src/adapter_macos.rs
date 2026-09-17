@@ -7,7 +7,7 @@ use crate::macos::ax_observer::{ObserverContext, ObserverRegistry as AxObserverR
 use crate::macos::cg_display;
 use crate::macos::ns_workspace;
 use accessibility_sys::*;
-use pengwm_core::layout::Rect;
+use pengwm_core::layout::{HidePlacement, Rect};
 use pengwm_core::tree::WindowId;
 
 pub struct MacOsAdapter {
@@ -193,15 +193,10 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
-    fn hide_windows(&self, rects: &std::collections::HashMap<WindowId, Rect>) {
-        for (&wid, &rect) in rects {
-            // BottomEdge 1×1 at 1919,1079 triggers slow reflow for Firefox
-            // (AXSize 1×1 rejected) while Ghostty is instant. For BottomEdge
-            // do position-only first — keep original size, just snap origin to
-            // corner. Still offscreen except clamped 28px strip, but as fast
-            // as Ghostty and no 2-swap shrink-then-corner. FarOffscreen
-            // (-100k) still needs 0×0 for true invisibility.
-            let is_far = rect.x < -50_000.0;
+    fn hide_windows(&self, placements: &std::collections::HashMap<WindowId, HidePlacement>) {
+        for (&wid, placement) in placements {
+            let rect = placement.rect();
+            let is_far = placement.is_far_offscreen();
             if !is_far {
                 if let Some((elem, _)) = self.cache_get_element(wid) {
                     if unsafe {
@@ -238,7 +233,7 @@ impl OsAdapter for MacOsAdapter {
                 log::warn!(
                     "hide_windows: failed to hide window {} at {:?}: {}",
                     wid,
-                    rect,
+                    placement,
                     e
                 );
             }
@@ -294,6 +289,11 @@ impl OsAdapter for MacOsAdapter {
     #[cfg(test)]
     fn window_rect_for_test(&self, _window_id: pengwm_core::tree::WindowId) -> Option<Rect> {
         None
+    }
+
+    #[cfg(test)]
+    fn set_rect_calls_for_test(&self) -> usize {
+        0
     }
 }
 

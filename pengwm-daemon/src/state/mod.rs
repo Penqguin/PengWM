@@ -19,7 +19,6 @@ pub mod display;
 pub mod drag;
 pub mod hidden;
 pub mod layout_cache;
-pub mod router;
 pub mod session;
 pub mod store;
 #[cfg(test)]
@@ -426,9 +425,9 @@ impl StateManager {
     fn reconcile_hidden_windows(&mut self) {
         // Snapshot to avoid borrow conflicts with &mut self in the loop.
         let window_ids: Vec<WindowId> = self.store.all_window_pids().keys().copied().collect();
-        let (to_hide, to_show) = self.store.pending_for_reconcile(&self.workspaces, |wid| {
-            self.os.window_is_hidden(wid)
-        });
+        let (to_hide, to_show) = self
+            .store
+            .pending_for_reconcile(&self.workspaces, |wid| self.os.window_is_hidden(wid));
         // Hide first, then show — order doesn't matter but hide frees capacity.
         for wid in to_hide {
             // Only hide if still tiled (pending set already checked, but window

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -8,22 +8,22 @@ use pengwm_core::workspace::Workspace;
 
 mod string_key_map {
     use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
-    pub fn serialize<S>(map: &HashMap<u32, usize>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(map: &BTreeMap<u32, usize>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let string_map: HashMap<String, usize> =
+        let string_map: BTreeMap<String, usize> =
             map.iter().map(|(k, v)| (k.to_string(), *v)).collect();
         string_map.serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<u32, usize>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BTreeMap<u32, usize>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let string_map = HashMap::<String, usize>::deserialize(deserializer)?;
+        let string_map = BTreeMap::<String, usize>::deserialize(deserializer)?;
         string_map
             .into_iter()
             .map(|(k, v)| {
@@ -42,7 +42,7 @@ pub struct Session {
     pub version: u32,
     pub workspaces: Vec<Workspace>,
     #[serde(with = "string_key_map")]
-    pub active: HashMap<u32, usize>,
+    pub active: BTreeMap<u32, usize>,
     pub entries: Vec<WorkspaceEntry>,
     pub gap_outer: f64,
     pub gap_inner: f64,
@@ -51,7 +51,7 @@ pub struct Session {
 impl Session {
     pub fn new(
         workspaces: Vec<Workspace>,
-        active: HashMap<u32, usize>,
+        active: BTreeMap<u32, usize>,
         entries: Vec<WorkspaceEntry>,
         gap_outer: f64,
         gap_inner: f64,
@@ -104,7 +104,7 @@ pub fn sanitize_workspace(ws: &Workspace) -> Workspace {
 /// workspaces so no WindowIds are persisted.
 pub fn snapshot_from(
     workspaces: &[Workspace],
-    active: &HashMap<u32, usize>,
+    active: &BTreeMap<u32, usize>,
     entries: &[WorkspaceEntry],
     gap_outer: f64,
     gap_inner: f64,
@@ -187,7 +187,7 @@ mod tests {
     use super::*;
     use crate::config::WorkspaceEntry;
     use pengwm_core::workspace::Workspace;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn tmp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("pengwm-session-tests");
@@ -205,7 +205,7 @@ mod tests {
 
         let sess = snapshot_from(
             &[ws],
-            &HashMap::from([(1, 0)]),
+            &BTreeMap::from([(1, 0)]),
             &[WorkspaceEntry {
                 name: "Dev".into(),
                 apps: vec![],
@@ -239,7 +239,7 @@ mod tests {
         // Simulate session saved with monitor 2, but only display 1 exists now.
         // The caller (StateManager) remaps, but we ensure sanitize keeps monitor_id.
         let ws = Workspace::new("Browsing".into(), 2, (1920, 0), (1920, 1080));
-        let sess = snapshot_from(&[ws], &HashMap::from([(2, 0)]), &[], 10.0, 5.0);
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(2, 0)]), &[], 10.0, 5.0);
         assert_eq!(sess.workspaces[0].monitor_id, 2);
         assert_eq!(sess.active.get(&2), Some(&0));
     }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pengwm_core::layout::Rect;
+use pengwm_core::layout::{HidePlacement, Rect};
 use pengwm_core::tree::WindowId;
 
 pub trait ObserverRegistry {
@@ -18,12 +18,12 @@ pub trait OsAdapter: ObserverRegistry {
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;
     fn focus_window(&self, window_id: WindowId);
     fn close_window(&self, window_id: WindowId);
-    /// Hide windows at precomputed per-monitor rects. `rects` maps each
-    /// `WindowId` to the global-coordinate rect it should occupy while hidden
-    /// (typically `layout::hidden_rect` for `BottomEdge` or far offscreen for
-    /// `FarOffscreen`). StateManager computes rects so the adapter stays
-    /// display-agnostic and `pengwm-core` stays pure.
-    fn hide_windows(&self, rects: &HashMap<WindowId, Rect>);
+    /// Hide windows at precomputed placements. `placements` maps each
+    /// `WindowId` to a `HidePlacement` variant so the adapter can match on
+    /// intent instead of guessing from raw coordinates (no magic threshold).
+    /// `StateManager` computes placements so the adapter stays display-agnostic
+    /// and `pengwm-core` stays pure.
+    fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>);
     /// True when the window is minimized or hidden (per-window `AXHidden`,
     /// `AXMinimized`, or its app is hidden). Used by the periodic reconcile so
     /// hidden windows stop being tiled even when AX notifications are missed.
@@ -42,6 +42,10 @@ pub trait OsAdapter: ObserverRegistry {
     fn inject_bundle_id(&self, pid: i32, bundle: String);
     #[cfg(test)]
     fn window_rect_for_test(&self, window_id: WindowId) -> Option<Rect>;
+    /// Number of `set_window_rect` calls served. Lets layout tests observe
+    /// whether redundant writes were skipped.
+    #[cfg(test)]
+    fn set_rect_calls_for_test(&self) -> usize;
 }
 
 #[derive(Clone)]
