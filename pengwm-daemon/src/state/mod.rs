@@ -18,6 +18,7 @@ pub mod commands;
 pub mod display;
 pub mod drag;
 pub mod hidden;
+pub mod layout_cache;
 pub mod router;
 pub mod session;
 pub mod store;
@@ -360,26 +361,7 @@ impl StateManager {
             return;
         }
         let now = Instant::now();
-        // If the window is genuinely displaced from where we put it, forget
-        // the applied entry so the next layout re-asserts (snap-back, app
-        // moves). Two guards keep our own writes from tripping this:
-        // moves within the post-write grace window are our animation
-        // settling, and moves within a few px are jitter, not a drag.
-        const MOVE_GRACE: Duration = Duration::from_millis(500);
-        const MOVE_EPSILON: f64 = 8.0;
-        if let Some((target, written_at)) = self.applied_rects.get(&window_id) {
-            let displaced =
-                (x - target.x).abs() > MOVE_EPSILON || (y - target.y).abs() > MOVE_EPSILON;
-            if displaced && now.duration_since(*written_at) > MOVE_GRACE {
-                log::debug!(
-                    "on_window_moved: window {} displaced to ({:.0},{:.0}), invalidating applied rect",
-                    window_id,
-                    x,
-                    y
-                );
-                self.applied_rects.remove(&window_id);
-            }
-        }
+        self.note_displaced(window_id, x, y);
         self.drag.on_moved(
             window_id,
             x,
@@ -672,15 +654,7 @@ impl StateManager {
             placements.keys()
         );
         self.os.hide_windows(&placements);
-        // Record where we put them: a hidden rect never equals a future tile
-        // target, so this can't cause a wrongful skip — worst case one extra
-        // write. Without it, a window hidden after being tiled would compare
-        // equal to its stale tiled entry and never come back on switch-back.
-        let hidden_rect = placement.rect();
-        let written_at = Instant::now();
-        for wid in placements.keys() {
-            self.applied_rects.insert(*wid, (hidden_rect, written_at));
-        }
+        self.seed_hidden_rect(placement.rect(), placements.keys().copied());
     }
 
     fn windows_hidden_strategy(&self) -> crate::config::HiddenStrategy {
@@ -732,57 +706,6 @@ impl StateManager {
     #[allow(dead_code)]
     fn set_focus_first_for_test(&mut self, v: bool) {
         self.focus_first_on_switch = v;
-    }
-
-    fn apply_layout(&mut self, workspace_idx: usize) {
-        let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
-        self.last_layout_rects = rects.clone();
-
-        log::debug!(
-            "apply_layout ws={} gaps_in={} out={}:",
-            workspace_idx,
-            self.gap_inner,
-            self.gap_outer
-        );
-        for (&window_id, rect) in &rects {
-            log::debug!(
-                "  win={} -> ({:.0},{:.0}) {}x{}",
-                window_id,
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height
-            );
-        }
-
-        for (&window_id, rect) in &rects {
-            // Skip windows already at their target — redundant AX writes are
-            // what makes Firefox crawl (reflow per write).
-            if self.applied_rects.get(&window_id).map(|(r, _)| r) == Some(rect) {
-                continue;
-            }
-            match self.os.set_window_rect(window_id, *rect) {
-                Ok(()) => {
-                    self.applied_rects
-                        .insert(window_id, (*rect, Instant::now()));
-                }
-                Err(e) => {
-                    log::error!(
-                        "apply_layout: set_window_rect failed for window {}: {}",
-                        window_id,
-                        e
-                    );
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn age_applied_for_test(&mut self, window_id: WindowId, age: Duration) {
-        if let Some((rect, _)) = self.applied_rects.get(&window_id).copied() {
-            self.applied_rects
-                .insert(window_id, (rect, Instant::now() - age));
-        }
     }
 
     /// Global-coordinate rect of the bar strip on the primary display, or
