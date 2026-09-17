@@ -53,7 +53,7 @@ pub struct Node {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Arena {
-    pub nodes: std::collections::HashMap<NodeId, Node>,
+    pub(crate) nodes: std::collections::HashMap<NodeId, Node>,
     next_id: NodeId,
 }
 
@@ -150,6 +150,44 @@ impl Arena {
         if let Some(parent_node) = self.nodes.get_mut(&new_parent) {
             parent_node.children.push(child);
         }
+    }
+
+    /// Find the node that holds `window_id`, if any. Encapsulates the scan so
+    /// `Workspace` doesn't reach into `nodes` directly.
+    pub fn find_window(&self, window_id: WindowId) -> Option<NodeId> {
+        for (id, node) in &self.nodes {
+            if let NodeData::Window { window_id: wid, .. } = &node.data {
+                if *wid == window_id {
+                    return Some(*id);
+                }
+            }
+        }
+        None
+    }
+
+    /// All window ids currently in the arena.
+    pub fn all_windows(&self) -> Vec<WindowId> {
+        self.nodes
+            .values()
+            .filter_map(|n| {
+                if let NodeData::Window { window_id, .. } = &n.data {
+                    Some(*window_id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Iterate over window nodes (window_id, node_id) pairs.
+    pub fn windows_iter(&self) -> impl Iterator<Item = (WindowId, NodeId)> + '_ {
+        self.nodes.iter().filter_map(|(id, node)| {
+            if let NodeData::Window { window_id, .. } = &node.data {
+                Some((*window_id, *id))
+            } else {
+                None
+            }
+        })
     }
 }
 

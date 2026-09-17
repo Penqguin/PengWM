@@ -378,24 +378,11 @@ impl Workspace {
     // -----------------------------------------------------------------------
 
     pub fn find_window(&self, window_id: WindowId) -> Option<NodeId> {
-        for (id, node) in &self.arena.nodes {
-            if let NodeData::Window { window_id: wid, .. } = &node.data {
-                if *wid == window_id {
-                    return Some(*id);
-                }
-            }
-        }
-        None
+        self.arena.find_window(window_id)
     }
 
     pub fn all_windows(&self) -> Vec<WindowId> {
-        let mut result = Vec::new();
-        for node in self.arena.nodes.values() {
-            if let NodeData::Window { window_id: wid, .. } = &node.data {
-                result.push(*wid);
-            }
-        }
-        result
+        self.arena.all_windows()
     }
 
     pub fn window_count(&self) -> usize {
@@ -441,10 +428,8 @@ impl Workspace {
             // Keep the original size (inset) while moving far off-screen
             // so the window isn't shrunk to 1x1 and can restore without flicker.
             let offscreen = offscreen_rect(inset);
-            for node in self.arena.nodes.values() {
-                if let NodeData::Window { window_id, .. } = &node.data {
-                    output.entry(*window_id).or_insert(offscreen);
-                }
+            for wid in self.arena.all_windows() {
+                output.entry(wid).or_insert(offscreen);
             }
         } else {
             crate::layout::calculate_layout(root, inset, &self.arena, &mut output, gap_inner);

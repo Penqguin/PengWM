@@ -141,6 +141,31 @@ pub fn far_offscreen_rect() -> Rect {
     }
 }
 
+/// Where a hidden window should be placed. The `StateManager` computes the
+/// variant; the `OsAdapter` matches on it instead of inspecting raw coordinates.
+/// `BottomEdge` keeps the title bar clamped in Mission Control as a daemon-down
+/// escape hatch; `FarOffscreen` is truly invisible for monocle siblings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HidePlacement {
+    /// 1×1 at the bottom-right corner of the owning monitor.
+    BottomEdge(Rect),
+    /// 0×0 at -100k,-100k, fully invisible.
+    FarOffscreen,
+}
+
+impl HidePlacement {
+    pub fn rect(&self) -> Rect {
+        match *self {
+            HidePlacement::BottomEdge(r) => r,
+            HidePlacement::FarOffscreen => far_offscreen_rect(),
+        }
+    }
+
+    pub fn is_far_offscreen(&self) -> bool {
+        matches!(self, HidePlacement::FarOffscreen)
+    }
+}
+
 /// Subtract a reserved edge strip (in monitor-local coordinates) from the
 /// monitor rect. `strip` is expected to span the full width (top/bottom) or
 /// full height (left/right) and sit flush against one edge. Anything that
