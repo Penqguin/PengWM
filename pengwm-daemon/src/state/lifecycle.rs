@@ -97,6 +97,8 @@ impl StateManager {
         self.store.unregister(window_id);
         self.applied_rects.remove(&window_id);
         self.layout_fail_logged.remove(&window_id);
+        self.gone_since.remove(&window_id);
+        self.pin_state.remove(&window_id);
         self.publish_bar_state();
     }
 
@@ -229,6 +231,8 @@ impl StateManager {
         for window_id in windows {
             self.applied_rects.remove(&window_id);
             self.layout_fail_logged.remove(&window_id);
+            self.gone_since.remove(&window_id);
+            self.pin_state.remove(&window_id);
             let _ = self
                 .event_tx
                 .try_send(DaemonEvent::WindowDestroyed(window_id));

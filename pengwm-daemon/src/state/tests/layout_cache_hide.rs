@@ -118,9 +118,12 @@ fn moved_window_is_reasserted_on_next_layout() {
         "identical layout must not rewrite"
     );
     // Displace past the grace window so it reads as external, not as our
-    // own animation settling.
+    // own animation settling — on both sides: the daemon-side moved
+    // notification invalidates the cache entry, and the OS-side rect must
+    // genuinely disagree or the read-before-write check correctly skips.
     sm.age_applied_for_test(100, Duration::from_secs(5));
     sm.on_window_moved(100, 500.0, 500.0);
+    sm.os.displace_window_for_test(100, 500.0, 500.0);
     sm.apply_layout(sm.active_workspace_idx());
     assert!(
         sm.os.set_rect_calls_for_test() > writes_after_tile,
@@ -181,6 +184,17 @@ fn apply_layout_untracks_window_gone_from_os() {
     sm.age_applied_for_test(100, Duration::from_secs(5));
     sm.on_window_moved(100, 500.0, 500.0);
     sm.apply_layout(sm.active_workspace_idx());
+    assert!(
+        sm.store.contains(100),
+        "first miss must start the gone grace, not untrack"
+    );
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()),
+        "grace window must keep its tree position"
+    );
+    // Still missing past the grace: genuinely gone, untrack.
+    sm.age_gone_for_test(100, Duration::from_secs(30));
+    sm.apply_layout(sm.active_workspace_idx());
     assert!(!sm.store.contains(100), "gone window must be untracked");
     assert!(
         sm.workspaces.iter().all(|ws| ws.find_window(100).is_none()),
@@ -189,6 +203,160 @@ fn apply_layout_untracks_window_gone_from_os() {
     assert!(
         sm.workspaces.iter().any(|ws| ws.find_window(200).is_some()),
         "live windows keep tiling"
+    );
+}
+
+#[test]
+fn transient_blackout_heals_without_retiling_as_new() {
+    // Post-wake / transient AX blackout: the write fails AND the OS doesn't
+    // list the window for one layout, then the same WindowId is back. The
+    // window must stay tracked throughout (tree position preserved) and be
+    // rewritten in place — no untrack/rediscover cycle.
+    let mut sm = setup(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    // Blackout: OS-side invisible + writes failing. Drop the cache entry to
+    // mirror the post-wake cleared `applied_rects`.
+    sm.os.close_window(100);
+    sm.os.fail_rect_for_test(100);
+    sm.drop_applied_for_test(100);
+    sm.apply_layout(sm.active_workspace_idx());
+    assert!(
+        sm.store.contains(100),
+        "transient miss must not untrack the window"
+    );
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()),
+        "blackout must not drop the window from the tree"
+    );
+    // Blackout lifts, same WindowId back: rewrite in place.
+    sm.os.inject_window(42, 100);
+    sm.os.clear_rect_fail_for_test(100);
+    let writes_before_heal = sm.os.set_rect_calls_for_test();
+    sm.apply_layout(sm.active_workspace_idx());
+    assert!(
+        sm.os.set_rect_calls_for_test() > writes_before_heal,
+        "healed window must be rewritten"
+    );
+    assert!(sm.store.contains(100));
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()),
+        "healed window keeps its tree position"
+    );
+}
+
+#[test]
+fn pinned_window_backs_off_writes_then_retries_after_backoff() {
+    // Busy-app pinned window (stable readbacks, writes futile): three
+    // strikes engage the backoff, further layouts skip the write, the
+    // backoff timer expiring retries, and a healed window resumes
+    // skip-if-unchanged. Tracked throughout, never untracked.
+    let mut sm = setup(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    sm.os.fail_pinned_for_test(100);
+    // Displace the OS-side rect so the read-before-write check can't skip:
+    // the write must actually be attempted to observe the pin. (Pinned
+    // failures never update the OS rect, so one displacement covers every
+    // layout below.)
+    sm.os.displace_window_for_test(100, 500.0, 500.0);
+    sm.drop_applied_for_test(100);
+
+    // Strikes 1–3: each layout attempts the write.
+    for strike in 1..=3 {
+        let calls = sm.os.set_rect_calls_for_test();
+        sm.apply_layout(sm.active_workspace_idx());
+        assert_eq!(
+            sm.os.set_rect_calls_for_test(),
+            calls + 1,
+            "pre-backoff layout {} must attempt the write",
+            strike
+        );
+        assert!(sm.store.contains(100), "pinned window must stay tracked");
+    }
+    // Backoff engaged: layouts skip the write entirely.
+    let backed_off = sm.os.set_rect_calls_for_test();
+    sm.apply_layout(sm.active_workspace_idx());
+    sm.apply_layout(sm.active_workspace_idx());
+    assert_eq!(
+        sm.os.set_rect_calls_for_test(),
+        backed_off,
+        "backed-off layouts must not write"
+    );
+    assert!(sm.store.contains(100));
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()),
+        "backed-off window keeps its tree position"
+    );
+    // Backoff expires: the next layout retries the write.
+    sm.age_pin_for_test(100, Duration::from_secs(30));
+    sm.apply_layout(sm.active_workspace_idx());
+    assert_eq!(
+        sm.os.set_rect_calls_for_test(),
+        backed_off + 1,
+        "expired backoff must retry"
+    );
+    // Heals (app drains its event loop): the write lands, the pin clears,
+    // and the following layout skips via the applied entry.
+    sm.os.clear_pinned_for_test(100);
+    sm.age_pin_for_test(100, Duration::from_secs(30));
+    sm.apply_layout(sm.active_workspace_idx());
+    let healed = sm.os.set_rect_calls_for_test();
+    sm.apply_layout(sm.active_workspace_idx());
+    assert_eq!(
+        sm.os.set_rect_calls_for_test(),
+        healed,
+        "healed window must resume skip-if-unchanged"
+    );
+    assert!(sm.store.contains(100));
+}
+
+#[test]
+fn pinned_window_with_changed_target_starts_fresh() {
+    // A changed target is a fresh situation: pin strikes for the old target
+    // must not silence writes for the new one.
+    let mut sm = setup(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    sm.os.fail_pinned_for_test(100);
+    sm.os.displace_window_for_test(100, 500.0, 500.0);
+    sm.drop_applied_for_test(100);
+    for _ in 0..3 {
+        sm.apply_layout(sm.active_workspace_idx());
+    }
+    // Backoff engaged for the old target; a new window changes 100's target.
+    let backed_off = sm.os.set_rect_calls_for_test();
+    sm.apply_layout(sm.active_workspace_idx());
+    assert_eq!(
+        sm.os.set_rect_calls_for_test(),
+        backed_off,
+        "backoff must hold for the unchanged target"
+    );
+    sm.on_window_created(300, 42);
+    // Tiling 300 rewrites the workspace (new targets): 100's write must be
+    // attempted again despite the old pin, not skipped.
+    assert!(
+        sm.os.set_rect_calls_for_test() > backed_off,
+        "changed target must reset the pin and write again"
+    );
+    assert!(sm.store.contains(100));
+}
+
+#[test]
+fn read_before_write_skips_placed_windows_without_cache() {
+    // Post-wake full rewrite is the Firefox storm: with no `applied_rects`
+    // entry but the OS rect already at target, one read must skip the write.
+    let mut sm = setup(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    sm.drop_applied_for_test(100);
+    sm.drop_applied_for_test(200);
+    let writes_before = sm.os.set_rect_calls_for_test();
+    sm.apply_layout(sm.active_workspace_idx());
+    assert_eq!(
+        sm.os.set_rect_calls_for_test(),
+        writes_before,
+        "placed windows must not be rewritten just because the cache is empty"
     );
 }
 

@@ -30,6 +30,11 @@ pub struct TestAdapter {
     /// login-time not-yet-resizable windows. Must stay tracked and retry —
     /// never poison `applied_rects`.
     pub drift_windows: RefCell<HashSet<WindowId>>,
+    /// Windows whose readbacks stop moving between attempts (busy app event
+    /// loop ignoring writes): `set_window_rect` returns the distinct
+    /// "drift pinned" error without updating the OS rect. Models a Firefox
+    /// window stalled in teardown. Drives the layout-cache pin backoff.
+    pub pinned_windows: RefCell<HashSet<WindowId>>,
     /// Number of `set_window_rect` calls served. Lets tests observe whether
     /// `apply_layout` skipped redundant writes.
     pub set_rect_calls: Cell<usize>,
@@ -54,6 +59,7 @@ impl Default for TestAdapter {
             gone_windows: RefCell::new(HashSet::new()),
             transient_fail_windows: RefCell::new(HashSet::new()),
             drift_windows: RefCell::new(HashSet::new()),
+            pinned_windows: RefCell::new(HashSet::new()),
             set_rect_calls: Cell::new(0),
         }
     }
@@ -111,6 +117,13 @@ impl OsAdapter for TestAdapter {
         if self.drift_windows.borrow().contains(&window_id) {
             anyhow::bail!(
                 "set_window_rect drift did not converge target {:?} actual {:?}",
+                rect,
+                self.window_rects.borrow().get(&window_id).copied()
+            );
+        }
+        if self.pinned_windows.borrow().contains(&window_id) {
+            anyhow::bail!(
+                "set_window_rect drift pinned target {:?} actual {:?} (stable across attempts)",
                 rect,
                 self.window_rects.borrow().get(&window_id).copied()
             );
@@ -213,6 +226,10 @@ impl OsAdapter for TestAdapter {
         self.gone_windows.borrow_mut().insert(window_id);
     }
 
+    fn clear_rect_fail_for_test(&self, window_id: WindowId) {
+        self.gone_windows.borrow_mut().remove(&window_id);
+    }
+
     fn fail_transient_for_test(&self, window_id: WindowId) {
         self.transient_fail_windows.borrow_mut().insert(window_id);
     }
@@ -227,6 +244,14 @@ impl OsAdapter for TestAdapter {
 
     fn clear_drift_for_test(&self, window_id: WindowId) {
         self.drift_windows.borrow_mut().remove(&window_id);
+    }
+
+    fn fail_pinned_for_test(&self, window_id: WindowId) {
+        self.pinned_windows.borrow_mut().insert(window_id);
+    }
+
+    fn clear_pinned_for_test(&self, window_id: WindowId) {
+        self.pinned_windows.borrow_mut().remove(&window_id);
     }
 
     fn displace_window_for_test(&self, window_id: WindowId, dx: f64, dy: f64) {

@@ -51,9 +51,14 @@ impl StateManager {
             }
         }
         // Drop the layout-write cache: stale AX refs + moved displays mean
-        // every "already applied" entry is a lie after sleep.
+        // every "already applied" entry is a lie after sleep. The gone
+        // grace restarts too — pre-sleep misses must not kill windows
+        // while post-wake AX is still blacked out — and so does the pin
+        // count, so post-wake writes aren't backoff-silenced.
         self.applied_rects.clear();
         self.layout_fail_logged.clear();
+        self.gone_since.clear();
+        self.pin_state.clear();
         // Force the background sweep on next tick for windows created mid-sleep.
         self.last_window_sweep = Instant::now() - Duration::from_secs(5);
         self.frontmost_pid = self.os.frontmost_pid();

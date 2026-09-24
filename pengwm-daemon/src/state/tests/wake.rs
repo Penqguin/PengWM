@@ -16,6 +16,10 @@ fn system_woke_resyncs_and_retiles() {
     assert_eq!(sm.os.set_rect_calls_for_test(), writes_after_tile);
     // Window that appeared mid-sleep: OS knows it, store does not.
     sm.os.inject_window(42, 300);
+    // Window moved mid-sleep: OS truth disagrees with the cleared cache, so
+    // the read-before-write check can't skip it and a rewrite is forced.
+    // (Without this, placed windows correctly skip and no write happens.)
+    sm.os.displace_window_for_test(200, 200.0, 200.0);
     sm.on_system_woke();
     assert!(
         sm.workspaces.iter().any(|ws| ws.find_window(300).is_some()),
@@ -38,6 +42,11 @@ fn transient_resize_failure_stays_tracked_and_retries() {
     sm.on_window_created(100, 42);
     sm.on_window_created(200, 42);
     sm.os.fail_transient_for_test(100);
+    // Displace the OS-side rect so the read-before-write check can't skip:
+    // the write must actually be attempted to observe the contention. (The
+    // failed writes never update it, so one displacement covers all three
+    // layouts below.)
+    sm.os.displace_window_for_test(100, 500.0, 500.0);
 
     // Force a rewrite attempt (mirrors the displaced path).
     sm.age_applied_for_test(100, Duration::from_secs(5));
@@ -84,6 +93,11 @@ fn drift_failure_stays_tracked_and_retries_without_poisoning_cache() {
     let mut sm = setup(1);
     sm.on_window_created(100, 42);
     sm.os.fail_drift_for_test(100);
+    // Displace the OS-side rect so the read-before-write check can't skip:
+    // the write must actually be attempted to observe the drift. (Drift
+    // failures never update the OS rect, so one displacement covers both
+    // layouts below.)
+    sm.os.displace_window_for_test(100, 500.0, 500.0);
 
     // Force a rewrite attempt (mirrors the displaced path).
     sm.age_applied_for_test(100, Duration::from_secs(5));
@@ -109,6 +123,31 @@ fn drift_failure_stays_tracked_and_retries_without_poisoning_cache() {
         "success must clear the throttle"
     );
     assert!(sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()));
+}
+
+#[test]
+fn wake_skips_windows_already_at_target() {
+    // Post-wake full rewrite is the Firefox storm: `on_system_woke` clears
+    // `applied_rects`, but windows that haven't moved must still skip via
+    // the read-before-write check — no write, no reflow.
+    let mut sm = setup(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    let writes_after_tile = sm.os.set_rect_calls_for_test();
+    sm.on_system_woke();
+    assert_eq!(
+        sm.os.set_rect_calls_for_test(),
+        writes_after_tile,
+        "wake must not rewrite windows already at target"
+    );
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()),
+        "skipped window stays tiled"
+    );
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(200).is_some()),
+        "skipped window stays tiled"
+    );
 }
 
 #[test]

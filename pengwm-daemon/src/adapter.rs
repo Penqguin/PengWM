@@ -54,6 +54,10 @@ pub trait OsAdapter: ObserverRegistry {
     /// miss. Lets tests exercise dead-window cleanup.
     #[cfg(test)]
     fn fail_rect_for_test(&self, window_id: WindowId);
+    /// Clear the gone mark: the window is back (same id) after a transient
+    /// blackout. Lets tests exercise grace-then-heal without retiling as new.
+    #[cfg(test)]
+    fn clear_rect_fail_for_test(&self, window_id: WindowId);
     /// Mark a window as transiently contested: `set_window_rect` fails with
     /// `kAXErrorFailure` (live resize) while the OS still lists it. Lets
     /// tests exercise the throttled-retry path (stays tracked, retries).
@@ -69,6 +73,13 @@ pub trait OsAdapter: ObserverRegistry {
     fn fail_drift_for_test(&self, window_id: WindowId);
     #[cfg(test)]
     fn clear_drift_for_test(&self, window_id: WindowId);
+    /// Mark a window as pinned: `set_window_rect` returns the distinct
+    /// "drift pinned" error (stable readbacks, writes futile) without
+    /// updating the OS rect. Lets tests exercise the pin backoff.
+    #[cfg(test)]
+    fn fail_pinned_for_test(&self, window_id: WindowId);
+    #[cfg(test)]
+    fn clear_pinned_for_test(&self, window_id: WindowId);
     /// Externally displace a window's OS rect (user drag / app move
     /// simulation). Lets tests exercise the misplaced reconcile without
     /// reaching through the adapter.

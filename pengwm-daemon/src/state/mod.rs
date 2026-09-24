@@ -30,6 +30,7 @@ mod tests;
 use self::bar::{BarReserve, ReloadAction};
 use self::display::DisplaySet;
 use self::drag::DragState;
+use self::layout_cache::PinState;
 use self::store::WindowStore;
 
 pub struct StateManager {
@@ -68,6 +69,23 @@ pub struct StateManager {
     /// logs again and the log fills with ERROR spam. Successful writes
     /// clear the entry so the next failure episode logs fresh.
     layout_fail_logged: HashMap<WindowId, Instant>,
+    /// First time a tracked window failed its write AND the OS no longer
+    /// listed it. A single poll miss is not death: post-wake / transient AX
+    /// hiccups make `windows_for_pid` (used by both the element refresh and
+    /// the gone-verify poll) come back empty while the window is still alive
+    /// — the same WindowId reappears seconds later. Untrack only after the
+    /// window stays missing past `GONE_GRACE`. Cleared on success, destroy,
+    /// terminate and wake.
+    gone_since: HashMap<WindowId, Instant>,
+    /// Consecutive stable-pinned write failures per window (`layout_cache`
+    /// policy): the writer reports "drift pinned" when consecutive readbacks
+    /// stop moving, meaning further writes are futile (busy Firefox event
+    /// loop). After `PIN_STRIKES` the layout skips writes for `PIN_BACKOFF`
+    /// and retries on a timer instead of storming. Time-bounded, never
+    /// permanent — a late-becoming-resizable window heals at most one
+    /// backoff late. Cleared on success, target change, displace, destroy,
+    /// terminate and wake.
+    pin_state: HashMap<WindowId, PinState>,
     drag: DragState,
     /// Set when `Command::Quit` is handled; the event loop polls this and
     /// returns so the daemon process can exit.
@@ -157,6 +175,8 @@ impl StateManager {
             last_layout_rects: HashMap::new(),
             applied_rects: HashMap::new(),
             layout_fail_logged: HashMap::new(),
+            gone_since: HashMap::new(),
+            pin_state: HashMap::new(),
             drag: DragState::new(),
             shutdown_requested: false,
             switch_debounce_until: None,

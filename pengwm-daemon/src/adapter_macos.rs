@@ -324,6 +324,11 @@ impl OsAdapter for MacOsAdapter {
     }
 
     #[cfg(test)]
+    fn clear_rect_fail_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("clear_rect_fail_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
     fn fail_transient_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
         unimplemented!("fail_transient_for_test only for TestAdapter")
     }
@@ -341,6 +346,16 @@ impl OsAdapter for MacOsAdapter {
     #[cfg(test)]
     fn clear_drift_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
         unimplemented!("clear_drift_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn fail_pinned_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("fail_pinned_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn clear_pinned_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("clear_pinned_for_test only for TestAdapter")
     }
 
     #[cfg(test)]

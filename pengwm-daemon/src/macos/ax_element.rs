@@ -129,8 +129,22 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
     // (session-restore / not-yet-resizable) at the wrong rect until the app
     // is fully quit + reopened. Return a transient drift error instead so the
     // write retries on the next layout / 2s sweep.
+    //
+    // EPS matches the 8px the daemon's misplaced sweep and drag settle use:
+    // a window inside it is "at target" everywhere else, so demanding
+    // tighter here only buys a perpetual 3-attempt storm for windows with a
+    // few-px frame offset. Genuinely misplaced windows (tens/hundreds of px)
+    // still error and retry.
+    //
+    // STABLE_EPS detects a pinned window: readbacks within 2px across
+    // attempts mean zero real progress (sub-pixel jitter at most), so a
+    // third attempt cannot converge and bails early with a distinct "drift
+    // pinned" error. The daemon backs off writes for pinned windows instead
+    // of storming them; shifting windows (progress between attempts) keep
+    // the full 3 attempts and the shifting drift error.
     const ATTEMPTS: u32 = 3;
-    const EPS: f64 = 2.0;
+    const EPS: f64 = 8.0;
+    const STABLE_EPS: f64 = 2.0;
     let mut last_actual: Option<Rect> = None;
     for attempt in 0..ATTEMPTS {
         set_window_position_raw(element, rect.x, rect.y)?;
@@ -140,6 +154,22 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
         match get_window_rect(element) {
             Some(actual) if rects_close(actual, rect, EPS) => return Ok(()),
             Some(actual) => {
+                if let Some(prev) = last_actual {
+                    if rects_close(prev, actual, STABLE_EPS) {
+                        log::debug!(
+                            "set_window_rect pinned attempt {}/{} target {:?} actual {:?} (unchanged since last attempt, bailing)",
+                            attempt + 1,
+                            ATTEMPTS,
+                            rect,
+                            actual
+                        );
+                        anyhow::bail!(
+                            "set_window_rect drift pinned target {:?} actual {:?} (stable across attempts)",
+                            rect,
+                            actual
+                        );
+                    }
+                }
                 log::debug!(
                     "set_window_rect drift attempt {}/{} target {:?} actual {:?}",
                     attempt + 1,
