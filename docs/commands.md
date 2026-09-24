@@ -66,6 +66,27 @@ pengwm toggle-layout
 Toggle the focused workspace between tiling mode and monocle (fullscreen)
 mode.
 
+## Select Layout
+
+```bash
+pengwm select-layout <even-horizontal|even-vertical|main-horizontal|main-vertical|tiled>
+```
+
+Rearrange the focused workspace into a tmux-style preset. The `main-*`
+presets give the first window the `main-ratio` share (default `0.6`, settable
+in the config). A preset clears monocle and re-equalizes shares.
+
+## Resize Pane
+
+```bash
+pengwm resize-pane <left|right|up|down>
+```
+
+Push the divider one step (5%) in the given direction: the arrow-side edge
+moves with the arrow. Inward presses grow the focused window; outward presses
+at the screen edge shrink it. No pane drops below a 10% share.
+Manual sizes survive windows opening and closing; only a preset re-equalizes.
+
 ## Set Gap Outer
 
 ```bash

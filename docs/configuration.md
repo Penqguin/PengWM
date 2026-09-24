@@ -13,12 +13,18 @@ apply on save (or via `pengwm reload-config`).
 | `max_tiles`            | int    | `4`     | Max windows per workspace; overflow goes to the next workspace with room |
 | `restricted_apps`      | list   | `[]`    | Bundle ids of apps that PengWM must not manage |
 | `restore_last_session` | bool   | `true`  | Restore last session (workspace layout/focus) from `~/.local/share/pengwm/state.toml` on startup |
+| `main_ratio`           | float  | `0.6`   | Share of the split the first window takes in the `main-horizontal` / `main-vertical` presets (clamped to 0.2–0.8) |
+| `prefix`               | string | `"alt-space"` | Chord that arms the tmux-style prefix window, e.g. `"ctrl-b"` |
+| `prefix_timeout_ms`    | int    | `1000`  | How long the prefix stays armed for follow-ups, in milliseconds |
 
 ```toml
 gap_outer = 8
 gap_inner = 4
 max_tiles = 6
 restricted_apps = ["com.whatever.floating-app"]
+main_ratio = 0.65
+prefix = "alt-space"
+prefix_timeout_ms = 1000
 ```
 
 ## Workspaces
@@ -206,6 +212,8 @@ Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 | `close`                                                      | Close the focused window                      |
 | `set-layout-tile`                                            | Switch to tiling layout                       |
 | `set-layout-accordion`                                       | Switch to accordion layout (focused window fills the screen) |
+| `select-layout-even-horizontal` / `select-layout-even-vertical` / `select-layout-main-horizontal` / `select-layout-main-vertical` / `select-layout-tiled` | Rearrange into a tmux-style preset |
+| `resize-pane-left` / `resize-pane-right` / `resize-pane-up` / `resize-pane-down` | Push the divider one step in the direction |
 | `set-gap-outer-{pixels}` / `set-gap-inner-{pixels}`          | Set gaps                                     |
 | `toggle-layout`                                              | Toggle between tiling and monocle             |
 | `toggle-bar`                                                 | Show/hide the bar                             |
@@ -249,7 +257,34 @@ alt-/ = "set-layout-tile"
 alt-, = "set-layout-accordion"
 cmd-shift-r = "reload-config"
 alt-b = "toggle-bar"
+
+# tmux-style presets and resizing
+alt-shift-left  = "resize-pane-left"
+alt-shift-right = "resize-pane-right"
+alt-shift-up    = "resize-pane-up"
+alt-shift-down  = "resize-pane-down"
+alt-ctrl-1 = "select-layout-even-horizontal"
+alt-ctrl-2 = "select-layout-even-vertical"
+alt-ctrl-3 = "select-layout-main-horizontal"
+alt-ctrl-4 = "select-layout-main-vertical"
+alt-ctrl-5 = "select-layout-tiled"
 ```
+
+### Prefix key
+
+Like tmux's `ctrl-b`, the prefix (default `alt-space`, settable via the
+top-level `prefix` key) arms a ~1s window (`prefix_timeout_ms`) where the full
+action table above is reachable from short follow-ups — and it is purely
+additive, so every direct bind keeps working.
+
+- Hit `alt-space`, release, then type a bare key: it inherits the prefix
+  modifiers, so `prefix, h` behaves like `alt-h` and `prefix, 1` like `alt-1`
+  (workspace switching, tmux-style). Exact chords work too.
+- Repeatable actions (resize, focus, presets, splits, display moves) extend
+  the window, so `prefix, h, h, h` keeps resizing without re-arming.
+  One-shot actions (`close`, `quit`, `toggle-bar`, …) fire once and disarm.
+- An unmatched key disarms and passes through, so normal typing is never
+  swallowed beyond the armed window.
 
 ### Key Codes
 

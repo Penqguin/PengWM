@@ -64,9 +64,12 @@ or pass a subcommand to control a running daemon (see below).
 | Keys | Action |
 |------|--------|
 | `Alt-h/j/k/l` or `Alt-arrows` | Focus left/down/up/right |
-| `Alt-Shift-h/j/k/l` or `Alt-Shift-arrows` | Move window into the neighbor's space (swap + resize) |
+| `Alt-Shift-h/j/k/l` | Move window into the neighbor's space (swap) |
+| `Alt-Shift-arrows` | Push the divider in the arrow direction (resize, 5% steps) |
 | `Alt-1..9` | Switch to workspace |
 | `Alt-Shift-1..9` | Move window to workspace |
+| `Alt-Ctrl-1..5` | tmux-style preset: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled |
+| `Alt-Space` then keys | Prefix: `prefix, h` acts like `Alt-h`, repeatable without re-arming |
 | `Alt-/` | Switch to tiling layout |
 | `Alt-,` | Switch to accordion layout |
 | `Cmd-Shift-r` | Reload config |

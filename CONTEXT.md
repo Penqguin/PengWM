@@ -6,11 +6,17 @@
 - *Tiling* — Windows are arranged in splits according to the tree structure.
 - *Monocle* — Only the focused window is shown fullscreen (minus gaps); all others are positioned off-screen.
 
+**LayoutPreset** — One of five named tmux-style arrangements (`even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`) applied via `Workspace::apply_preset`, which rewrites the tree into a canonical shape with weighted ratios. The `main-*` presets honor `main-ratio` (default 0.6).
+
+**ResizePane** — Growing or shrinking the focused window by shifting the split ratios around it one step (5%, clamped at a 10% minimum pane share). Manual sizes survive structural edits; only a preset re-equalizes.
+_Avoid_: pane (tmux word for window)
+
 **Workspace** — An independent window tree on a single monitor. The deepened interface exposes:
 - `layout(gap_inner, gap_outer) -> HashMap<WindowId, Rect>` — single method that computes global-coordinate rects for every window. Uses stored monitor geometry internally. Checks `monocle` flag; if set, produces one fullscreen rect + offscreen rects for siblings.
 - `apply_split_direction(direction)` — the split intent: re-orients the focused Split container, or — when a Window is focused — pends the direction for the next window added. The "only a Split container re-orients" invariant lives here with the tree.
 - Hiding — no workspace method: `StateManager::hide_workspace` sends `all_windows()` to `OsAdapter::hide_windows` (batch offscreen). The workspace owns *which* windows; the adapter owns *how* to hide.
 - Tree internals (`root`, `arena`, `monitor_origin`, `monitor_size`) are private — `focused_node` and `monocle` remain public for daemon integration tests.
+- Implementation is split by responsibility (`workspace/preset.rs`, `add_remove.rs`, `focus_swap.rs`, `split.rs`, `geometry.rs`); the suite mirrors it (`workspace/tests/` + `common` harness). Fields stay on `Workspace`; the files only reorganize `impl` blocks.
 
 ## Platform Abstraction
 
@@ -25,9 +31,10 @@ pub trait OsAdapter: ObserverRegistry {
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;  // &self interior (WindowElementCache)
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;  // &self interior (WindowElementCache); position/size/position x3 with readback (Firefox drift)
+    fn window_rect(&self, window_id: WindowId) -> Option<Rect>;  // readback seam for verify-and-retry + tests
     fn close_window(&self, window_id: WindowId);
-    fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>); // HidePlacement::BottomEdge vs FarOffscreen; no magic threshold
+    fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>); // HidePlacement::BottomEdge vs FarOffscreen; no magic threshold; position-only, never resizes (no Firefox reflow)
     fn window_is_hidden(&self, window_id: WindowId) -> bool;  // kAXMinimized/kAXHidden; drives reconcile
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
     fn app_name(&self, pid: i32) -> Option<String>;
@@ -50,9 +57,9 @@ Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturize
 
 **DisplaySet** — The display ↔ workspace registry + routing policy owned by `StateManager` (`active: BTreeMap<u32, usize>` + `entries: Vec<WorkspaceEntry>` + `max_tiles`). `BTreeMap` makes iteration deterministic (no `HashMap` random fallback in `active_workspace_idx`). Owns `active` (which flat workspace is visible per monitor), the named-entry set, and the routing policy (`next_with_room`, `target_with_room`, `routed_workspace_idx`, `configured_workspace_name_for_pid`, `active_workspace_idx`, `display_in_direction`, `resolve_workspace`, `workspaces_on`, `is_visible`, `visible_or_first`) so per-monitor workspace resolution, visibility and overflow have locality in one module; `Vec<Workspace>` stays on `StateManager` and is borrowed per call. Exposes `init_workspaces`, `on_added`, `on_removed`, `on_resized` for monitor lifecycle. `capacity::next_with_room` deleted — now `DisplaySet::next_with_room` with `max_tiles` stored on the set. `StateManager` keeps one narrow `active_workspace_idx()` accessor (19 call sites); the other former delegates are deleted. `bootstrap::assemble(display_infos, primary_id, settings, session)` is the single pure assembly for workspaces/displays/gaps (Q2).
 
-**StateManager layout** — `pengwm-daemon/src/state/mod.rs` holds the window/app/monitor lifecycle; `commands.rs` owns the `Command` dispatch (`impl StateManager`, test-called helpers are `pub(super)`); `layout_cache.rs` owns the layout-write cache policy (`apply_layout`, grace/epsilon invalidate, hidden-rect seeding); `tests.rs` holds the suite. Fields stay on `StateManager`; the files only reorganize `impl` blocks.
+**StateManager layout** — `pengwm-daemon/src/state/mod.rs` holds construction, config reload, hide/reveal, and bar publish; `lifecycle.rs` owns the window/app lifecycle, `reconcile.rs` the tick path, `monitors_wake.rs` monitor handling and wake resync; `commands.rs` owns the `Command` dispatch (`impl StateManager`, test-called helpers are `pub(super)`); `layout_cache.rs` owns the layout-write cache policy (`apply_layout`, grace/epsilon invalidate, hidden-rect seeding, dead-window untracking when the OS no longer lists a permanently-failed window); `tests/` holds the suite by domain (`common` harness + `bootstrap_routing`, `lifecycle`, `commands`, `bar`, `layout_cache_hide`, `wake`). Fields stay on `StateManager`; the files only reorganize `impl` blocks.
 
-**WindowElementCache** — A `HashMap<WindowId, AXUIElementRef>` owned by the unified macOS adapter. Populated on `kAXWindowCreatedNotification` (caller does `CFRetain`), evicted on `kAXUIElementDestroyedNotification` (caller does `CFRelease`). Makes `set_window_rect` O(1) instead of O(n) and seals CFRef memory lifecycle. Maintains a reverse `WindowId → i32` pid map so `set_window_rect` and `close_window` do not require a pid parameter from callers.
+**WindowElementCache** — A `HashMap<WindowId, AXUIElementRef>` owned by the unified macOS adapter. Populated on `kAXWindowCreatedNotification` (caller does `CFRetain`), evicted on `kAXUIElementDestroyedNotification` (caller does `CFRelease`). Makes `set_window_rect` O(1) instead of O(n) and seals CFRef memory lifecycle. Maintains a reverse `WindowId → i32` pid map so `set_window_rect` and `close_window` do not require a pid parameter from callers. Resynced on `DaemonEvent::SystemWoke` (`NSWorkspaceDidWake`/`ScreensDidWake`): `StateManager::on_system_woke` refreshes display geometry, clears `applied_rects`, re-attaches observers + re-polls all pids (which re-inserts fresh refs), then re-layouts visible workspaces.
 
 ## Architecture Boundaries
 
@@ -76,3 +83,4 @@ One `Command` type is the single vocabulary every surface feeds into `StateManag
 - **`command::Command::parse_action(s)`** — the one action-string parser (kebab-case of the variant + args: `move-window-left`, `set-layout-tile`, `workspace-3`). Lives in `pengwm-core` with the wire type so the keybind TOML surface can never drift from it. `config/keybinds.rs::parse_action` is a thin passthrough.
 - **CLI** — clap subcommands map onto the same `Command` (`move-window left` → `Command::MoveWindow`). Names line up with the keybind strings (`swap-*` is gone).
 - **Reply slot** — `DaemonEvent::Command(cmd, Option<Sender<DaemonResponse>>)`. `Some` only for the IPC client; keybinds and the config watcher send `None` and get no reply, so no throwaway response channel is allocated. `on_command` acks only when a slot is present.
+- **PrefixKey** — The chord (default `alt-space`) that arms a ~1s window where the full `Command` vocabulary is reachable from short follow-ups; repeatable commands (resize, focus) fire again without re-arming. Purely additive — direct binds keep working.
