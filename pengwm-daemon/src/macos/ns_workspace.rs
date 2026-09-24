@@ -33,12 +33,15 @@ pub fn observe(event_tx: mpsc::Sender<DaemonEvent>) {
             NSWorkspaceDidTerminateApplicationNotification,
             2,
         );
+        add_wake_observer(&center, ctx, NSWorkspaceDidWakeNotification);
+        add_wake_observer(&center, ctx, NSWorkspaceScreensDidWakeNotification);
     }
 }
 
 use objc2_app_kit::{
     NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
     NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
+    NSWorkspaceDidWakeNotification, NSWorkspaceScreensDidWakeNotification,
 };
 
 pub fn running_app_pids() -> Vec<i32> {
@@ -94,6 +97,20 @@ fn add_observer(center: &NSNotificationCenter, ctx: *mut c_void, name: &NSString
             let tx = unsafe { &*(ctx as *const mpsc::Sender<DaemonEvent>) };
             let _ = tx.try_send(event);
         }
+    });
+
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+    };
+    std::mem::forget(token);
+}
+
+/// Wake notifications carry no pid — they just mean "resync everything".
+fn add_wake_observer(center: &NSNotificationCenter, ctx: *mut c_void, name: &NSString) {
+    let block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        log::info!("NSWorkspace wake notification — resyncing");
+        let tx = unsafe { &*(ctx as *const mpsc::Sender<DaemonEvent>) };
+        let _ = tx.try_send(DaemonEvent::SystemWoke);
     });
 
     let token = unsafe {

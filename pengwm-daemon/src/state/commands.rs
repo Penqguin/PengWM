@@ -110,6 +110,17 @@ impl StateManager {
                 ws.monocle = mode == LayoutMode::Accordion;
                 self.apply_layout(idx);
             }
+            Command::SelectLayout { preset } => {
+                let idx = self.active_workspace_idx();
+                let ratio = self.main_ratio;
+                self.workspaces[idx].apply_preset(preset, ratio);
+                self.apply_layout(idx);
+            }
+            Command::ResizePane { direction } => {
+                let idx = self.active_workspace_idx();
+                self.workspaces[idx].resize_focused(direction);
+                self.apply_layout(idx);
+            }
             Command::SetGapOuter { pixels } => {
                 self.gap_outer = pixels.max(0) as f64;
                 self.apply_layout(self.active_workspace_idx());

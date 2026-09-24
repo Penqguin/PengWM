@@ -43,6 +43,53 @@ impl MacOsAdapter {
         result
     }
 
+    /// Position-only write with stale-element refresh. Hide never resizes:
+    /// moving offscreen is sufficient and avoids the Firefox reflow storm
+    /// (plus the 3x verify loop in `set_window_rect`).
+    fn set_position_refreshed(&self, window_id: WindowId, x: f64, y: f64) -> anyhow::Result<()> {
+        let (element, pid) = match self.cache_get_element(window_id) {
+            Some(v) => v,
+            None => match self.discover_window(window_id) {
+                Some(v) => v,
+                None => {
+                    anyhow::bail!("element not found in cache for window {}", window_id)
+                }
+            },
+        };
+        match unsafe { ax_element::set_window_position(element, x, y) } {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if e.to_string().contains("kAXErrorInvalidUIElement") {
+                    log::warn!("stale element for window {}, re-discovering", window_id);
+                    if let Some(new_elem) = self.refresh_element(window_id, pid) {
+                        self.ctx.cache_insert(window_id, new_elem, pid);
+                        unsafe {
+                            self.observer_registry.register_window_destroyed(
+                                pid,
+                                new_elem,
+                                &*self.ctx as *const ObserverContext as *mut c_void,
+                            );
+                            self.observer_registry.register_window_moved(
+                                pid,
+                                new_elem,
+                                &*self.ctx as *const ObserverContext as *mut c_void,
+                            );
+                        }
+                        return unsafe { ax_element::set_window_position(new_elem, x, y) };
+                    }
+                    if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
+                        unsafe {
+                            core_foundation::base::CFRelease(
+                                elem as core_foundation::base::CFTypeRef,
+                            )
+                        };
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Fallback scan: try to discover `window_id` by polling every running app.
     /// Used when the cache has no entry (e.g., window created before daemon start
     /// but poll missed, or cache was evicted on stale element). Returns the
@@ -164,6 +211,11 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
+    fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
+        let (element, _) = self.cache_get_element(window_id)?;
+        unsafe { ax_element::get_window_rect(element) }
+    }
+
     fn focus_window(&self, window_id: WindowId) {
         let (element, pid) = match self
             .cache_get_element(window_id)
@@ -194,42 +246,12 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn hide_windows(&self, placements: &std::collections::HashMap<WindowId, HidePlacement>) {
+        // Position-only, always: hiding moves the window offscreen, size is
+        // irrelevant. Any size write triggers Firefox reflow (and the 3x
+        // verify loop in `set_window_rect`), so hide never resizes.
         for (&wid, placement) in placements {
             let rect = placement.rect();
-            let is_far = placement.is_far_offscreen();
-            if !is_far {
-                if let Some((elem, _)) = self.cache_get_element(wid) {
-                    if unsafe {
-                        crate::macos::ax_element::set_window_position(elem, rect.x, rect.y)
-                    }
-                    .is_ok()
-                    {
-                        continue;
-                    }
-                }
-            }
-            if self.set_window_rect(wid, rect).is_ok() {
-                continue;
-            }
-            if let Some((elem, _)) = self.cache_get_element(wid) {
-                if unsafe { crate::macos::ax_element::set_window_position(elem, rect.x, rect.y) }
-                    .is_ok()
-                {
-                    log::debug!(
-                        "hide_windows: window {} position-only hide at {:?}",
-                        wid,
-                        rect
-                    );
-                    continue;
-                }
-            }
-            let fallback = Rect {
-                x: rect.x,
-                y: rect.y,
-                width: 1.0,
-                height: 1.0,
-            };
-            if let Err(e) = self.set_window_rect(wid, fallback) {
+            if let Err(e) = self.set_position_refreshed(wid, rect.x, rect.y) {
                 log::warn!(
                     "hide_windows: failed to hide window {} at {:?}: {}",
                     wid,
@@ -294,6 +316,41 @@ impl OsAdapter for MacOsAdapter {
     #[cfg(test)]
     fn set_rect_calls_for_test(&self) -> usize {
         0
+    }
+
+    #[cfg(test)]
+    fn fail_rect_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("fail_rect_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn fail_transient_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("fail_transient_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn clear_transient_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("clear_transient_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn fail_drift_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("fail_drift_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn clear_drift_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
+        unimplemented!("clear_drift_for_test only for TestAdapter")
+    }
+
+    #[cfg(test)]
+    fn displace_window_for_test(
+        &self,
+        _window_id: pengwm_core::tree::WindowId,
+        _dx: f64,
+        _dy: f64,
+    ) {
+        unimplemented!("displace_window_for_test only for TestAdapter")
     }
 }
 

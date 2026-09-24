@@ -53,14 +53,24 @@ pub unsafe fn ax_window_id_from_element(element: AXUIElementRef) -> Option<Windo
 ///
 /// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
 /// element is valid and that the Accessibility API can be called safely.
-pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Result<()> {
-    let pos_name = CFString::new(kAXPositionAttribute);
-    let size_name = CFString::new(kAXSizeAttribute);
+/// Pure epsilon comparison for verify-and-retry. No FFI so unit-testable
+/// on any platform.
+pub fn rects_close(a: Rect, b: Rect, eps: f64) -> bool {
+    (a.x - b.x).abs() <= eps
+        && (a.y - b.y).abs() <= eps
+        && (a.width - b.width).abs() <= eps
+        && (a.height - b.height).abs() <= eps
+}
 
-    let mut point = CGPoint {
-        x: rect.x,
-        y: rect.y,
-    };
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef`.
+pub unsafe fn set_window_position_raw(
+    element: AXUIElementRef,
+    x: f64,
+    y: f64,
+) -> anyhow::Result<()> {
+    let pos_name = CFString::new(kAXPositionAttribute);
+    let mut point = CGPoint { x, y };
     let pos_value = AXValueCreate(kAXValueTypeCGPoint, &mut point as *mut _ as *mut c_void);
     if pos_value.is_null() {
         anyhow::bail!("AXValueCreate failed for position");
@@ -77,11 +87,18 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
             error_string(err)
         );
     }
+    Ok(())
+}
 
-    let mut size = CGSize {
-        width: rect.width,
-        height: rect.height,
-    };
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef`.
+pub unsafe fn set_window_size_raw(
+    element: AXUIElementRef,
+    width: f64,
+    height: f64,
+) -> anyhow::Result<()> {
+    let size_name = CFString::new(kAXSizeAttribute);
+    let mut size = CGSize { width, height };
     let size_value = AXValueCreate(kAXValueTypeCGSize, &mut size as *mut _ as *mut c_void);
     if size_value.is_null() {
         anyhow::bail!("AXValueCreate failed for size");
@@ -98,8 +115,51 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
             error_string(err)
         );
     }
-
     Ok(())
+}
+
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef`.
+pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Result<()> {
+    // Firefox and other non-native apps often ignore the first AX write or
+    // shift position when size changes (frame-vs-content ordering). Do
+    // position/size/position per attempt with a readback, up to 3 attempts.
+    // A persistent drift must NOT return Ok: callers record `applied_rects`
+    // on success and skip forever, which strands login-time Firefox windows
+    // (session-restore / not-yet-resizable) at the wrong rect until the app
+    // is fully quit + reopened. Return a transient drift error instead so the
+    // write retries on the next layout / 2s sweep.
+    const ATTEMPTS: u32 = 3;
+    const EPS: f64 = 2.0;
+    let mut last_actual: Option<Rect> = None;
+    for attempt in 0..ATTEMPTS {
+        set_window_position_raw(element, rect.x, rect.y)?;
+        set_window_size_raw(element, rect.width, rect.height)?;
+        // Size can shift position — re-assert it.
+        set_window_position_raw(element, rect.x, rect.y)?;
+        match get_window_rect(element) {
+            Some(actual) if rects_close(actual, rect, EPS) => return Ok(()),
+            Some(actual) => {
+                log::debug!(
+                    "set_window_rect drift attempt {}/{} target {:?} actual {:?}",
+                    attempt + 1,
+                    ATTEMPTS,
+                    rect,
+                    actual
+                );
+                last_actual = Some(actual);
+            }
+            None => return Ok(()),
+        }
+    }
+    match last_actual {
+        Some(actual) => anyhow::bail!(
+            "set_window_rect drift did not converge target {:?} actual {:?}",
+            rect,
+            actual
+        ),
+        None => Ok(()),
+    }
 }
 
 /// # Safety
@@ -373,4 +433,44 @@ pub unsafe fn bool_attribute(element: AXUIElementRef, attribute: &str) -> bool {
     let is_true = CFEqual(value, kCFBooleanTrue as CFTypeRef) != 0;
     CFRelease(value);
     is_true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rects_close_within_epsilon() {
+        let a = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 960.0,
+            height: 1040.0,
+        };
+        let b = Rect {
+            x: 1.0,
+            y: 1.0,
+            width: 961.0,
+            height: 1039.0,
+        };
+        assert!(rects_close(a, b, 2.0));
+        assert!(!rects_close(a, b, 0.5));
+    }
+
+    #[test]
+    fn rects_close_rejects_far_drift() {
+        let a = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 960.0,
+            height: 1040.0,
+        };
+        let b = Rect {
+            x: 50.0,
+            y: 0.0,
+            width: 960.0,
+            height: 1040.0,
+        };
+        assert!(!rects_close(a, b, 2.0));
+    }
 }

@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use core_foundation::base::CFRelease;
 use core_foundation::runloop::{
@@ -9,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::config::keybinds::{find_keybind, KeybindConfig, ModifierFlags, MODIFIER_NONE};
 use crate::event_loop::DaemonEvent;
+use crate::prefix::{PrefixKey, PrefixOutcome};
 
 type CGEventRef = *mut c_void;
 type CGEventMask = u64;
@@ -20,6 +22,12 @@ const kCGEventKeyDown: u32 = 10;
 const kCGSessionEventTap: u32 = 1;
 #[allow(non_upper_case_globals)]
 const kCGHeadInsertEventTap: u32 = 0;
+#[allow(non_upper_case_globals)]
+const kCGEventTapOptionDefault: u32 = 0;
+#[allow(non_upper_case_globals)]
+const kCGEventTapDisabledByTimeout: u32 = 0xFFFF_FFFE;
+#[allow(non_upper_case_globals)]
+const kCGEventTapDisabledByUserInput: u32 = 0xFFFF_FFFF;
 
 #[allow(non_upper_case_globals)]
 const kCGKeyboardEventKeycode: u32 = 9;
@@ -34,10 +42,15 @@ const SYSTEM_SAFE_SHORTCUTS: &[(u16, ModifierFlags)] = &[
     (0x31, MODIFIER_CMD | MODIFIER_ALT),   // Cmd+Alt+Space — Finder Spotlight
 ];
 
-pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindConfig>>) {
+pub fn start(
+    event_tx: mpsc::Sender<DaemonEvent>,
+    keybinds: Arc<Mutex<KeybindConfig>>,
+    prefix: Arc<Mutex<PrefixKey>>,
+) {
     let ctx = Box::into_raw(Box::new(Context {
         event_tx,
         keybinds: Arc::clone(&keybinds),
+        prefix: Arc::clone(&prefix),
     })) as *mut c_void;
 
     let event_mask = CGEventMaskBit(kCGEventKeyDown);
@@ -46,7 +59,7 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindCon
         let tap = CGEventTapCreate(
             kCGSessionEventTap,
             kCGHeadInsertEventTap,
-            1, // kCGEventTapOptionListenOnly = 1
+            kCGEventTapOptionDefault, // active filter: returning NULL swallows the event
             event_mask,
             Some(event_tap_callback),
             ctx,
@@ -92,14 +105,22 @@ pub fn start(event_tx: mpsc::Sender<DaemonEvent>, keybinds: Arc<Mutex<KeybindCon
 struct Context {
     event_tx: mpsc::Sender<DaemonEvent>,
     keybinds: Arc<Mutex<KeybindConfig>>,
+    prefix: Arc<Mutex<PrefixKey>>,
 }
 
 unsafe extern "C" fn event_tap_callback(
-    _proxy: CGEventRef,
-    _type: u32,
+    proxy: CGEventRef,
+    etype: u32,
     event: CGEventRef,
     refcon: *mut c_void,
 ) -> CGEventRef {
+    // Active taps are auto-disabled by the OS on timeout or user input changes.
+    // Re-enable fail-open so keybinds keep working.
+    if etype == kCGEventTapDisabledByTimeout || etype == kCGEventTapDisabledByUserInput {
+        CGEventTapEnable(proxy, true);
+        return event;
+    }
+
     let ctx = &*(refcon as *const Context);
 
     let keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) as u16;
@@ -107,9 +128,15 @@ unsafe extern "C" fn event_tap_callback(
 
     let filtered_flags = flags & (MODIFIER_CMD | MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT);
 
-    // Always pass through unmodified keypresses (Tab, Space, Enter, etc.)
-    // so the active event tap cannot interfere with normal keyboard input.
-    if filtered_flags == MODIFIER_NONE {
+    // The prefix owns unmodified keys while armed: a bare follow-up inherits
+    // the prefix modifiers (`prefix, h` behaves like `alt-h`). Everything
+    // else unmodified passes through untouched as before.
+    let prefix_armed = ctx
+        .prefix
+        .lock()
+        .map(|p| p.is_armed(Instant::now()))
+        .unwrap_or(false);
+    if filtered_flags == MODIFIER_NONE && !prefix_armed {
         return event;
     }
 
@@ -118,14 +145,50 @@ unsafe extern "C" fn event_tap_callback(
         return event;
     }
 
-    let keybinds = ctx.keybinds.lock().expect("keybind mutex poisoned");
+    let keybinds = match ctx.keybinds.lock() {
+        Ok(guard) => guard,
+        Err(_) => return event, // fail-open: never block input on lock failure
+    };
+    let mut prefix = match ctx.prefix.lock() {
+        Ok(guard) => guard,
+        Err(_) => return event,
+    };
+    match prefix.on_keydown(keycode, filtered_flags, Instant::now(), &|kc, md| {
+        find_keybind(kc, md, &keybinds)
+    }) {
+        PrefixOutcome::Armed => return std::ptr::null_mut(),
+        PrefixOutcome::Fire(command) => {
+            log::debug!(
+                "Prefix follow-up matched: keycode={}, command={:?}",
+                keycode,
+                command
+            );
+            if ctx
+                .event_tx
+                .try_send(DaemonEvent::Command(command, None))
+                .is_ok()
+            {
+                return std::ptr::null_mut();
+            }
+            return event;
+        }
+        PrefixOutcome::Passthrough => {}
+    }
     if let Some(command) = find_keybind(keycode, filtered_flags, &keybinds) {
         log::debug!(
             "Keybind matched: keycode={}, command={:?}",
             keycode,
             command
         );
-        let _ = ctx.event_tx.try_send(DaemonEvent::Command(command, None));
+        // Fail-open: only swallow when the command was actually queued.
+        // If the channel is full/disconnected, pass through so no keystroke is lost.
+        if ctx
+            .event_tx
+            .try_send(DaemonEvent::Command(command, None))
+            .is_ok()
+        {
+            return std::ptr::null_mut(); // swallow: app never sees this keydown
+        }
         return event;
     }
 
@@ -163,6 +226,7 @@ extern "C" {
 
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
     fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
+    fn CGEventTapEnable(tap: CGEventRef, enable: bool);
 }
 
 type CGEventFlags = u64;

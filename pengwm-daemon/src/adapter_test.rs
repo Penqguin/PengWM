@@ -19,6 +19,17 @@ pub struct TestAdapter {
     pub app_names: RefCell<HashMap<i32, String>>,
     pub hidden_windows: RefCell<HashSet<WindowId>>,
     pub hidden_apps: RefCell<HashSet<i32>>,
+    pub gone_windows: RefCell<HashSet<WindowId>>,
+    /// Windows whose `set_window_rect` fails transiently with
+    /// `kAXErrorFailure` (live resize contention) while the OS still lists
+    /// them. Unlike `gone_windows`, these must stay tracked and retry.
+    pub transient_fail_windows: RefCell<HashSet<WindowId>>,
+    /// Windows stuck in Firefox-style position/size drift: the AX write is
+    /// accepted by the call but never converges, so `set_window_rect`
+    /// returns a transient drift error without updating the OS rect. Models
+    /// login-time not-yet-resizable windows. Must stay tracked and retry —
+    /// never poison `applied_rects`.
+    pub drift_windows: RefCell<HashSet<WindowId>>,
     /// Number of `set_window_rect` calls served. Lets tests observe whether
     /// `apply_layout` skipped redundant writes.
     pub set_rect_calls: Cell<usize>,
@@ -40,6 +51,9 @@ impl Default for TestAdapter {
             app_names: RefCell::new(HashMap::new()),
             hidden_windows: RefCell::new(HashSet::new()),
             hidden_apps: RefCell::new(HashSet::new()),
+            gone_windows: RefCell::new(HashSet::new()),
+            transient_fail_windows: RefCell::new(HashSet::new()),
+            drift_windows: RefCell::new(HashSet::new()),
             set_rect_calls: Cell::new(0),
         }
     }
@@ -88,6 +102,19 @@ impl OsAdapter for TestAdapter {
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
         self.set_rect_calls.set(self.set_rect_calls.get() + 1);
+        if self.gone_windows.borrow().contains(&window_id) {
+            anyhow::bail!("element not found in cache for window {}", window_id);
+        }
+        if self.transient_fail_windows.borrow().contains(&window_id) {
+            anyhow::bail!("AXUIElementSetAttributeValue size error: kAXErrorFailure");
+        }
+        if self.drift_windows.borrow().contains(&window_id) {
+            anyhow::bail!(
+                "set_window_rect drift did not converge target {:?} actual {:?}",
+                rect,
+                self.window_rects.borrow().get(&window_id).copied()
+            );
+        }
         self.window_rects.borrow_mut().insert(window_id, rect);
         Ok(())
     }
@@ -101,6 +128,10 @@ impl OsAdapter for TestAdapter {
         }
     }
 
+    fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
+        self.window_rects.borrow().get(&window_id).copied()
+    }
+
     fn focus_window(&self, window_id: WindowId) {
         self.last_focused.set(Some(window_id));
         if let Some(pid) = self.window_pids.borrow().get(&window_id).copied() {
@@ -109,8 +140,26 @@ impl OsAdapter for TestAdapter {
     }
 
     fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>) {
+        // Position-only like prod: move offscreen, keep size (no reflow).
         for (&wid, placement) in placements {
-            self.window_rects.borrow_mut().insert(wid, placement.rect());
+            let at = placement.rect();
+            let mut rects = self.window_rects.borrow_mut();
+            match rects.get(&wid).copied() {
+                Some(cur) => {
+                    rects.insert(
+                        wid,
+                        Rect {
+                            x: at.x,
+                            y: at.y,
+                            width: cur.width,
+                            height: cur.height,
+                        },
+                    );
+                }
+                None => {
+                    rects.insert(wid, placement.rect());
+                }
+            }
         }
     }
 
@@ -153,10 +202,38 @@ impl OsAdapter for TestAdapter {
     }
 
     fn window_rect_for_test(&self, window_id: WindowId) -> Option<Rect> {
-        self.window_rects.borrow().get(&window_id).copied()
+        self.window_rect(window_id)
     }
 
     fn set_rect_calls_for_test(&self) -> usize {
         self.set_rect_calls.get()
+    }
+
+    fn fail_rect_for_test(&self, window_id: WindowId) {
+        self.gone_windows.borrow_mut().insert(window_id);
+    }
+
+    fn fail_transient_for_test(&self, window_id: WindowId) {
+        self.transient_fail_windows.borrow_mut().insert(window_id);
+    }
+
+    fn clear_transient_for_test(&self, window_id: WindowId) {
+        self.transient_fail_windows.borrow_mut().remove(&window_id);
+    }
+
+    fn fail_drift_for_test(&self, window_id: WindowId) {
+        self.drift_windows.borrow_mut().insert(window_id);
+    }
+
+    fn clear_drift_for_test(&self, window_id: WindowId) {
+        self.drift_windows.borrow_mut().remove(&window_id);
+    }
+
+    fn displace_window_for_test(&self, window_id: WindowId, dx: f64, dy: f64) {
+        let mut rects = self.window_rects.borrow_mut();
+        if let Some(r) = rects.get_mut(&window_id) {
+            r.x += dx;
+            r.y += dy;
+        }
     }
 }

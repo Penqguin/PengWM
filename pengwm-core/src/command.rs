@@ -1,5 +1,6 @@
 use crate::layout::Rect;
 use crate::tree::{Direction, SplitDirection, WindowId};
+use crate::workspace::LayoutPreset;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -29,6 +30,15 @@ pub enum Command {
     ToggleLayout,
     SetLayout {
         mode: LayoutMode,
+    },
+    /// Rearrange the active workspace into a named tmux-style preset.
+    SelectLayout {
+        preset: LayoutPreset,
+    },
+    /// Push the divider one step toward `direction` (arrow-side edge moves
+    /// with the arrow; outward press at the edge shrinks).
+    ResizePane {
+        direction: Direction,
     },
     SetGapOuter {
         pixels: i32,
@@ -114,6 +124,22 @@ impl Command {
         None
     }
 
+    /// True for commands that are safe to fire repeatedly while a prefix is
+    /// armed (resize, focus, …). One-shot commands (close, quit, …) always
+    /// disarm the prefix so a stray repeat can't destroy anything.
+    pub fn is_repeatable(&self) -> bool {
+        matches!(
+            self,
+            Command::Focus { .. }
+                | Command::MoveWindow { .. }
+                | Command::Split { .. }
+                | Command::ResizePane { .. }
+                | Command::SelectLayout { .. }
+                | Command::FocusDisplay { .. }
+                | Command::MoveWindowToDisplay { .. }
+        )
+    }
+
     fn parse_id(n: &str) -> Option<u32> {
         n.parse::<u32>().ok().filter(|&n| n > 0)
     }
@@ -194,6 +220,60 @@ const ACTION_TABLE: &[(&str, Command)] = &[
         "set-layout-accordion",
         Command::SetLayout {
             mode: LayoutMode::Accordion,
+        },
+    ),
+    (
+        "select-layout-even-horizontal",
+        Command::SelectLayout {
+            preset: LayoutPreset::EvenHorizontal,
+        },
+    ),
+    (
+        "select-layout-even-vertical",
+        Command::SelectLayout {
+            preset: LayoutPreset::EvenVertical,
+        },
+    ),
+    (
+        "select-layout-main-horizontal",
+        Command::SelectLayout {
+            preset: LayoutPreset::MainHorizontal,
+        },
+    ),
+    (
+        "select-layout-main-vertical",
+        Command::SelectLayout {
+            preset: LayoutPreset::MainVertical,
+        },
+    ),
+    (
+        "select-layout-tiled",
+        Command::SelectLayout {
+            preset: LayoutPreset::Tiled,
+        },
+    ),
+    (
+        "resize-pane-left",
+        Command::ResizePane {
+            direction: Direction::Left,
+        },
+    ),
+    (
+        "resize-pane-right",
+        Command::ResizePane {
+            direction: Direction::Right,
+        },
+    ),
+    (
+        "resize-pane-up",
+        Command::ResizePane {
+            direction: Direction::Up,
+        },
+    ),
+    (
+        "resize-pane-down",
+        Command::ResizePane {
+            direction: Direction::Down,
         },
     ),
     ("toggle-bar", Command::ToggleBar),
@@ -357,6 +437,25 @@ mod tests {
                 mode: LayoutMode::Accordion
             })
         );
+        for preset in LayoutPreset::all() {
+            let name = format!("select-layout-{}", preset.name());
+            assert_eq!(
+                Command::parse_action(&name),
+                Some(Command::SelectLayout { preset })
+            );
+        }
+        assert_eq!(
+            Command::parse_action("resize-pane-left"),
+            Some(Command::ResizePane {
+                direction: Direction::Left
+            })
+        );
+        assert_eq!(
+            Command::parse_action("resize-pane-down"),
+            Some(Command::ResizePane {
+                direction: Direction::Down
+            })
+        );
         assert_eq!(
             Command::parse_action("set-gap-outer-12"),
             Some(Command::SetGapOuter { pixels: 12 })
@@ -419,5 +518,33 @@ mod tests {
             Command::parse_action("workspace-12"),
             Some(Command::Workspace { id: 12 })
         );
+    }
+
+    #[test]
+    fn command_toggle_bar_roundtrips() {
+        let cmd = Command::ToggleBar;
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: Command = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Command::ToggleBar));
+    }
+
+    #[test]
+    fn bar_state_roundtrips() {
+        use crate::command::{BarMessage, BarState, BarWorkspace};
+        let state = BarState {
+            workspaces: vec![BarWorkspace {
+                name: "ws-1".into(),
+                monitor_id: 1,
+                window_count: 2,
+                active: true,
+                windows: vec!["Safari".into(), "Terminal".into()],
+            }],
+            active_workspace: 0,
+            split_direction: Some(SplitDirection::Vertical),
+            rect: None,
+        };
+        let json = serde_json::to_string(&BarMessage::State(state)).unwrap();
+        let back: BarMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, BarMessage::State(_)));
     }
 }

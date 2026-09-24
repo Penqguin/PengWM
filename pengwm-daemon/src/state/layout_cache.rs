@@ -11,7 +11,7 @@ use super::StateManager;
 /// switch-back from comparing equal to a stale tiled entry. `StateManager`
 /// retains the maps, the workspace tree and the `OsAdapter` — this module
 /// only hides the policy. Everything is `pub(super)` so `mod.rs`,
-/// `commands.rs` and `tests.rs` keep calling the same interface.
+/// commands.rs` and `tests.rs` keep calling the same interface.
 impl StateManager {
     pub(super) fn apply_layout(&mut self, workspace_idx: usize) {
         let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
@@ -34,6 +34,7 @@ impl StateManager {
             );
         }
 
+        let mut dead = Vec::new();
         for (&window_id, rect) in &rects {
             // Skip windows already at their target — redundant AX writes are
             // what makes Firefox crawl (reflow per write).
@@ -44,15 +45,82 @@ impl StateManager {
                 Ok(()) => {
                     self.applied_rects
                         .insert(window_id, (*rect, Instant::now()));
+                    self.layout_fail_logged.remove(&window_id);
                 }
                 Err(e) => {
-                    log::error!(
-                        "apply_layout: set_window_rect failed for window {}: {}",
-                        window_id,
-                        e
-                    );
+                    let msg = e.to_string();
+                    // Permanent-gone signals: the adapter already refreshed +
+                    // re-discovered and still failed. Verify the OS no longer
+                    // lists the window before dropping it (transient AX
+                    // hiccups stay tracked and retry next layout).
+                    if msg.contains("kAXErrorInvalidUIElement")
+                        || msg.contains("element not found in cache")
+                    {
+                        let still_exists = self
+                            .store
+                            .pid_for(window_id)
+                            .map(|pid| self.os.poll_windows_for_pid(pid).contains(&window_id))
+                            .unwrap_or(false);
+                        if !still_exists {
+                            log::warn!(
+                                "apply_layout: window {} gone ({}), untracking",
+                                window_id,
+                                msg
+                            );
+                            dead.push(window_id);
+                            continue;
+                        }
+                    }
+                    // Expected-transient AX contention, not a daemon bug.
+                    // Live resizes reject size writes with kAXErrorFailure /
+                    // kAXErrorCannotComplete until the drag settles, and a
+                    // mid-flight element refresh surfaces InvalidUIElement
+                    // while the window still exists. Warn once per window
+                    // per throttle window, then debug — the write retries on
+                    // the next layout anyway, so ERROR on every retry is spam.
+                    if is_transient_ax_error(&msg) {
+                        self.log_transient_layout_failure(window_id, &msg);
+                    } else {
+                        log::error!(
+                            "apply_layout: set_window_rect failed for window {}: {}",
+                            window_id,
+                            e
+                        );
+                    }
                 }
             }
+        }
+        // Untrack via the normal destroyed path (removes from tree + store,
+        // re-layouts the visible workspace to fill the gap).
+        for window_id in dead {
+            self.on_window_destroyed(window_id);
+        }
+    }
+
+    /// Throttled log for expected-transient layout failures: warn on the
+    /// first failure per window per throttle window, debug on repeats.
+    /// Repeats mean the next layout is still retrying the same contested
+    /// write (e.g. an in-progress live resize), not new information.
+    fn log_transient_layout_failure(&mut self, window_id: WindowId, msg: &str) {
+        const FAIL_LOG_THROTTLE: Duration = Duration::from_secs(5);
+        let now = Instant::now();
+        let repeat = self
+            .layout_fail_logged
+            .get(&window_id)
+            .is_some_and(|last| now.duration_since(*last) < FAIL_LOG_THROTTLE);
+        if repeat {
+            log::debug!(
+                "apply_layout: set_window_rect retry failed for window {}: {}",
+                window_id,
+                msg
+            );
+        } else {
+            log::warn!(
+                "apply_layout: set_window_rect failed for window {}: {} (retrying)",
+                window_id,
+                msg
+            );
+            self.layout_fail_logged.insert(window_id, now);
         }
     }
 
@@ -102,5 +170,56 @@ impl StateManager {
             self.applied_rects
                 .insert(window_id, (rect, Instant::now() - age));
         }
+    }
+}
+
+/// AX failures that are expected while a window is being live-resized or is
+/// mid-flight through an element refresh — the write retries on the next
+/// layout, so these are throttled warnings, not errors. Anything else (e.g.
+/// permission loss) stays an error. Gone-window signals are classified by the
+/// caller via the OS listing check before reaching here.
+fn is_transient_ax_error(msg: &str) -> bool {
+    // Size writes rejected while the user holds the resize handle, or while
+    // the app clamps the size (min/max, fullscreen): the next layout retries.
+    msg.contains("kAXErrorFailure")
+        || msg.contains("kAXErrorCannotComplete")
+        // Stale element for a window the OS still lists: the refresh race,
+        // not a close. (Truly gone windows are untracked by the caller.)
+        || msg.contains("kAXErrorInvalidUIElement")
+        || msg.contains("element not found in cache")
+        // Persistent position/size drift (Firefox frame-vs-content shift,
+        // login-time not-yet-resizable windows): the write never landed so
+        // `applied_rects` must not record success. Retry on next layout.
+        || msg.contains("drift did not converge")
+        || msg.contains("drift attempt")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient_ax_error;
+
+    #[test]
+    fn classifies_live_resize_contention_as_transient() {
+        assert!(is_transient_ax_error(
+            "AXUIElementSetAttributeValue size error: kAXErrorFailure"
+        ));
+        assert!(is_transient_ax_error(
+            "AXUIElementSetAttributeValue size error: kAXErrorCannotComplete"
+        ));
+        assert!(is_transient_ax_error(
+            "AXUIElementSetAttributeValue position error: kAXErrorInvalidUIElement"
+        ));
+        assert!(is_transient_ax_error(
+            "element not found in cache for window 17912"
+        ));
+        assert!(is_transient_ax_error(
+            "set_window_rect drift did not converge target Rect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 } actual Rect { x: 10.0, y: 10.0, width: 100.0, height: 100.0 }"
+        ));
+    }
+
+    #[test]
+    fn unexpected_errors_stay_errors() {
+        assert!(!is_transient_ax_error("AXIsProcessTrusted() == false"));
+        assert!(!is_transient_ax_error("some unknown io failure"));
     }
 }

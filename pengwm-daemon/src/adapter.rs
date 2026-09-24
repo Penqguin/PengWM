@@ -16,6 +16,9 @@ pub trait OsAdapter: ObserverRegistry {
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;
+    /// Read back the current OS rect. Lets verify-and-retry policy and tests
+    /// observe whether a write landed without reaching through FFI.
+    fn window_rect(&self, window_id: WindowId) -> Option<Rect>;
     fn focus_window(&self, window_id: WindowId);
     fn close_window(&self, window_id: WindowId);
     /// Hide windows at precomputed placements. `placements` maps each
@@ -46,6 +49,31 @@ pub trait OsAdapter: ObserverRegistry {
     /// whether redundant writes were skipped.
     #[cfg(test)]
     fn set_rect_calls_for_test(&self) -> usize;
+    /// Mark a window as permanently gone: `set_window_rect` fails with the
+    /// same "element not found" error prod returns after refresh+discover
+    /// miss. Lets tests exercise dead-window cleanup.
+    #[cfg(test)]
+    fn fail_rect_for_test(&self, window_id: WindowId);
+    /// Mark a window as transiently contested: `set_window_rect` fails with
+    /// `kAXErrorFailure` (live resize) while the OS still lists it. Lets
+    /// tests exercise the throttled-retry path (stays tracked, retries).
+    #[cfg(test)]
+    fn fail_transient_for_test(&self, window_id: WindowId);
+    #[cfg(test)]
+    fn clear_transient_for_test(&self, window_id: WindowId);
+    /// Mark a window as drift-stuck: `set_window_rect` returns the transient
+    /// drift error without updating the OS rect. Lets tests exercise the
+    /// login-time Firefox path (tracked-but-misplaced retries, no
+    /// `applied_rects` poisoning).
+    #[cfg(test)]
+    fn fail_drift_for_test(&self, window_id: WindowId);
+    #[cfg(test)]
+    fn clear_drift_for_test(&self, window_id: WindowId);
+    /// Externally displace a window's OS rect (user drag / app move
+    /// simulation). Lets tests exercise the misplaced reconcile without
+    /// reaching through the adapter.
+    #[cfg(test)]
+    fn displace_window_for_test(&self, window_id: WindowId, dx: f64, dy: f64);
 }
 
 #[derive(Clone)]

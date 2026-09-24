@@ -73,6 +73,13 @@ fn daemon_main() {
 
     eprintln!("[1/6] Loading config…");
     let keybinds = Arc::new(Mutex::new(config::keybinds::KeybindConfig::load()));
+    let settings = config::Settings::load();
+    let prefix = Arc::new(Mutex::new(pengwm_daemon::prefix::PrefixKey::new(
+        pengwm_daemon::prefix::PrefixConfig::parse_or_default(
+            &settings.prefix,
+            settings.prefix_timeout_ms,
+        ),
+    )));
 
     #[cfg(target_os = "macos")]
     {
@@ -95,12 +102,13 @@ fn daemon_main() {
     }
 
     eprintln!("[3/6] Initializing event loop and state…");
-    let (mut event_loop, tx) = event_loop::EventLoop::new(Arc::clone(&keybinds));
+    let (mut event_loop, tx) =
+        event_loop::EventLoop::new(Arc::clone(&keybinds), Arc::clone(&prefix));
 
     #[cfg(target_os = "macos")]
     {
         eprintln!("[4/6] Starting global keybind tap…");
-        macos::event_tap::start(tx.clone(), Arc::clone(&keybinds));
+        macos::event_tap::start(tx.clone(), Arc::clone(&keybinds), Arc::clone(&prefix));
 
         eprintln!("[5/6] Attaching app lifecycle observers…");
         macos::ns_workspace::observe(tx.clone());

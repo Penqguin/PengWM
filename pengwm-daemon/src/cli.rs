@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use pengwm_core::command::Command;
 use pengwm_core::tree::{Direction, SplitDirection};
+use pengwm_core::workspace::LayoutPreset;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,6 +34,14 @@ pub enum CliCommand {
     },
     Close,
     ToggleLayout,
+    /// Rearrange the active workspace into a named tmux-style preset
+    SelectLayout {
+        preset: PresetArg,
+    },
+    /// Grow the focused window one step toward a direction (5% steps)
+    ResizePane {
+        direction: DirectionArg,
+    },
     /// Toggle the status bar visibility
     ToggleBar,
     SetGapOuter {
@@ -71,6 +80,15 @@ pub enum SplitArg {
     Vertical,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+pub enum PresetArg {
+    EvenHorizontal,
+    EvenVertical,
+    MainHorizontal,
+    MainVertical,
+    Tiled,
+}
+
 impl From<DirectionArg> for Direction {
     fn from(d: DirectionArg) -> Self {
         match d {
@@ -87,6 +105,18 @@ impl From<SplitArg> for SplitDirection {
         match d {
             SplitArg::Horizontal => SplitDirection::Horizontal,
             SplitArg::Vertical => SplitDirection::Vertical,
+        }
+    }
+}
+
+impl From<PresetArg> for LayoutPreset {
+    fn from(p: PresetArg) -> Self {
+        match p {
+            PresetArg::EvenHorizontal => LayoutPreset::EvenHorizontal,
+            PresetArg::EvenVertical => LayoutPreset::EvenVertical,
+            PresetArg::MainHorizontal => LayoutPreset::MainHorizontal,
+            PresetArg::MainVertical => LayoutPreset::MainVertical,
+            PresetArg::Tiled => LayoutPreset::Tiled,
         }
     }
 }
@@ -108,6 +138,12 @@ impl From<CliCommand> for Command {
             CliCommand::MoveWindowToWorkspace { id } => Command::MoveWindowToWorkspace { id },
             CliCommand::Close => Command::Close,
             CliCommand::ToggleLayout => Command::ToggleLayout,
+            CliCommand::SelectLayout { preset } => Command::SelectLayout {
+                preset: preset.into(),
+            },
+            CliCommand::ResizePane { direction } => Command::ResizePane {
+                direction: direction.into(),
+            },
             CliCommand::ToggleBar => Command::ToggleBar,
             CliCommand::SetGapOuter { pixels } => Command::SetGapOuter { pixels },
             CliCommand::SetGapInner { pixels } => Command::SetGapInner { pixels },

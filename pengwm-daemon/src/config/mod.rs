@@ -54,6 +54,16 @@ pub struct Settings {
     /// focused window is preserved (MRU).
     #[serde(default)]
     pub focus_first_on_switch: bool,
+    /// Share of the split the first window takes in the `main-horizontal` /
+    /// `main-vertical` presets. Clamped to 0.2–0.8 at use.
+    #[serde(default = "default_main_ratio")]
+    pub main_ratio: f64,
+    /// Chord that arms the tmux-style prefix window, e.g. `"alt-space"`.
+    #[serde(default = "default_prefix")]
+    pub prefix: String,
+    /// How long the prefix stays armed for follow-ups, in milliseconds.
+    #[serde(default = "default_prefix_timeout_ms")]
+    pub prefix_timeout_ms: u64,
 }
 
 /// One named workspace and the apps (by bundle id or app name) whose windows
@@ -202,6 +212,18 @@ fn default_max_tiles() -> usize {
     4
 }
 
+fn default_main_ratio() -> f64 {
+    0.6
+}
+
+fn default_prefix() -> String {
+    "alt-space".into()
+}
+
+fn default_prefix_timeout_ms() -> u64 {
+    1000
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -215,6 +237,9 @@ impl Default for Settings {
             workspaces: default_workspaces(),
             restore_last_session: true,
             focus_first_on_switch: false,
+            main_ratio: default_main_ratio(),
+            prefix: default_prefix(),
+            prefix_timeout_ms: default_prefix_timeout_ms(),
         }
     }
 }

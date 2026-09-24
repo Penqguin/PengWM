@@ -11,11 +11,19 @@ use pengwm_daemon::event_loop::EventLoop;
 use pengwm_daemon::macos::ax_element;
 use pengwm_daemon::macos::ax_observer::{ObserverContext, ObserverRegistry};
 use pengwm_daemon::macos::cg_display;
+use pengwm_daemon::prefix::{PrefixConfig, PrefixKey};
+
+fn test_prefix() -> Arc<Mutex<PrefixKey>> {
+    Arc::new(Mutex::new(PrefixKey::new(PrefixConfig::default())))
+}
 
 #[test]
 #[ignore = "requires Accessibility permissions and a GUI environment"]
 fn macos_ffi_integration() {
-    let (_event_loop, _tx) = EventLoop::new(Arc::new(Mutex::new(KeybindConfig::default())));
+    let (_event_loop, _tx) = EventLoop::new(
+        Arc::new(Mutex::new(KeybindConfig::default())),
+        test_prefix(),
+    );
 
     // 1. Query active displays
     let displays = cg_display::active_displays();
@@ -94,7 +102,10 @@ fn observer_registry_create_and_detach() {
 #[test]
 #[ignore = "requires Accessibility permissions and a GUI environment"]
 fn on_window_created_tracks_pid_and_applies_layout() {
-    let (mut event_loop, _tx) = EventLoop::new(Arc::new(Mutex::new(KeybindConfig::default())));
+    let (mut event_loop, _tx) = EventLoop::new(
+        Arc::new(Mutex::new(KeybindConfig::default())),
+        test_prefix(),
+    );
 
     // Drain initial window-discovery events so the state manager's
     // window_pids map is populated for all running apps.

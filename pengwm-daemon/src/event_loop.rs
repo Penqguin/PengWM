@@ -2,6 +2,7 @@ use crate::adapter::OsAdapter;
 use crate::adapter_macos::MacOsAdapter;
 use crate::bar_server::{spawn_bar_server, BarSender};
 use crate::config::keybinds::KeybindConfig;
+use crate::prefix::PrefixKey;
 use crate::state::StateManager;
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopRunInMode};
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,10 @@ pub enum DaemonEvent {
     MonitorRemoved(u32),
     MonitorResized(u32),
 
+    /// Machine woke from sleep: AX refs are stale, display geometry may have
+    /// changed, observers may be dead. `StateManager` resyncs everything.
+    SystemWoke,
+
     /// A `Command` from any source. `Some(tx)` when the caller expects a
     /// `DaemonResponse` (the CLI/IPC client); `None` for fire-and-forget
     /// sources (keybinds, config watcher) that don't get a reply slot.
@@ -39,14 +44,17 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
-    pub fn new(keybinds: Arc<Mutex<KeybindConfig>>) -> (Self, mpsc::Sender<DaemonEvent>) {
+    pub fn new(
+        keybinds: Arc<Mutex<KeybindConfig>>,
+        prefix: Arc<Mutex<PrefixKey>>,
+    ) -> (Self, mpsc::Sender<DaemonEvent>) {
         let (tx, rx) = mpsc::channel(256);
         let event_tx = tx.clone();
         let os: Box<dyn OsAdapter> =
             Box::new(MacOsAdapter::with_callback(Box::new(move |event| {
                 let _ = event_tx.try_send(event);
             })));
-        Self::new_with_adapter(keybinds, os, rx, tx.clone())
+        Self::new_with_adapter(keybinds, prefix, os, rx, tx.clone())
     }
 
     /// Test seam: inject a pre-built adapter (e.g. `TestAdapter`) so the loop
@@ -54,6 +62,7 @@ impl EventLoop {
     /// gated on `Settings::load()` so tests can control it via the config file.
     pub fn new_with_adapter(
         keybinds: Arc<Mutex<KeybindConfig>>,
+        prefix: Arc<Mutex<PrefixKey>>,
         os: Box<dyn OsAdapter>,
         rx: mpsc::Receiver<DaemonEvent>,
         tx: mpsc::Sender<DaemonEvent>,
@@ -72,9 +81,12 @@ impl EventLoop {
             log::info!("menubar.enabled=false — not spawning pengwm-menubar");
             None
         };
+        // The shared prefix state: the event tap mutates it per keystroke and
+        // `StateManager::reload_config` refreshes it, so both hold this Arc.
         let state = StateManager::new(
             tx.clone(),
             keybinds,
+            prefix,
             os,
             bar_sender,
             bar_pid,
@@ -133,6 +145,7 @@ impl EventLoop {
             DaemonEvent::MonitorAdded(id) => self.state.on_monitor_added(id),
             DaemonEvent::MonitorRemoved(id) => self.state.on_monitor_removed(id),
             DaemonEvent::MonitorResized(id) => self.state.on_monitor_resized(id),
+            DaemonEvent::SystemWoke => self.state.on_system_woke(),
             DaemonEvent::Command(cmd, rtx) => self.state.on_command(cmd, rtx),
         }
     }
