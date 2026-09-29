@@ -1,6 +1,7 @@
 use crate::tree::{Arena, NodeData, NodeId, SplitDirection, WindowId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Rect {
@@ -19,6 +20,34 @@ impl Rect {
             height,
         }
     }
+}
+
+/// Tolerance for "already at target" comparisons: matches the 8px the
+/// daemon's misplaced sweep and drag settle use. Anything within this is
+/// "at target" everywhere in the system. Single copy — the daemon's writer,
+/// layout-write cache and reconcile all import this instead of defining
+/// their own.
+pub const LAYOUT_EPSILON: f64 = 8.0;
+
+/// Pure epsilon comparison for verify-and-retry. No FFI so unit-testable
+/// on any platform.
+pub fn rects_close(a: Rect, b: Rect, eps: f64) -> bool {
+    (a.x - b.x).abs() <= eps
+        && (a.y - b.y).abs() <= eps
+        && (a.width - b.width).abs() <= eps
+        && (a.height - b.height).abs() <= eps
+}
+
+/// Grace before a displaced rect reads as external rather than animation
+/// settling. Shared by the moved-note and the misplaced sweep — one value
+/// everywhere in the system.
+pub const DISPLACE_GRACE: Duration = Duration::from_millis(500);
+
+/// Full-rect displacement check: true when `actual` disagrees with `target`
+/// anywhere beyond `LAYOUT_EPSILON`. The one predicate behind both the
+/// moved-note and the misplaced sweep.
+pub fn rects_displaced(a: Rect, b: Rect) -> bool {
+    !rects_close(a, b, LAYOUT_EPSILON)
 }
 
 pub fn calculate_layout(

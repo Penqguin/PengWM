@@ -561,3 +561,38 @@ fn far_offscreen_is_negative_100k() {
         Rect::new(-100_000.0, -100_000.0, 0.0, 0.0)
     );
 }
+
+#[test]
+fn rects_close_within_epsilon() {
+    let a = Rect::new(0.0, 0.0, 960.0, 1040.0);
+    let b = Rect::new(1.0, 1.0, 961.0, 1039.0);
+    assert!(rects_close(a, b, 2.0));
+    assert!(!rects_close(a, b, 0.5));
+}
+
+#[test]
+fn rects_close_rejects_far_drift() {
+    let a = Rect::new(0.0, 0.0, 960.0, 1040.0);
+    let b = Rect::new(50.0, 0.0, 960.0, 1040.0);
+    assert!(!rects_close(a, b, 2.0));
+}
+
+#[test]
+fn write_outcome_ok_predicate() {
+    assert!(WriteOutcome::Ok.is_ok());
+    assert!(!WriteOutcome::Gone.is_ok());
+    assert!(!WriteOutcome::Drift {
+        target: Rect::new(0.0, 0.0, 1.0, 1.0),
+        actual: Rect::new(9.0, 0.0, 1.0, 1.0),
+    }
+    .is_ok());
+}
+
+#[test]
+fn rects_displaced_is_negated_close_at_layout_epsilon() {
+    let a = Rect::new(0.0, 0.0, 960.0, 1040.0);
+    assert!(!rects_displaced(a, a));
+    assert!(!rects_displaced(a, Rect::new(1.0, 1.0, 961.0, 1039.0)));
+    assert!(rects_displaced(a, Rect::new(50.0, 0.0, 960.0, 1040.0)));
+    assert!(rects_displaced(a, Rect::new(0.0, 0.0, 800.0, 1040.0)));
+}
