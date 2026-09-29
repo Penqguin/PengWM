@@ -9,7 +9,7 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 
-use pengwm_core::layout::Rect;
+use pengwm_core::layout::{rects_close, Rect, WriteOutcome, LAYOUT_EPSILON};
 use pengwm_core::tree::WindowId;
 
 pub fn is_process_trusted() -> bool {
@@ -47,19 +47,6 @@ pub unsafe fn ax_window_id_from_element(element: AXUIElementRef) -> Option<Windo
     } else {
         None
     }
-}
-
-/// # Safety
-///
-/// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
-/// element is valid and that the Accessibility API can be called safely.
-/// Pure epsilon comparison for verify-and-retry. No FFI so unit-testable
-/// on any platform.
-pub fn rects_close(a: Rect, b: Rect, eps: f64) -> bool {
-    (a.x - b.x).abs() <= eps
-        && (a.y - b.y).abs() <= eps
-        && (a.width - b.width).abs() <= eps
-        && (a.height - b.height).abs() <= eps
 }
 
 /// # Safety
@@ -120,39 +107,44 @@ pub unsafe fn set_window_size_raw(
 
 /// # Safety
 /// `element` must be a valid, retained `AXUIElementRef`.
-pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Result<()> {
+pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> WriteOutcome {
     // Firefox and other non-native apps often ignore the first AX write or
     // shift position when size changes (frame-vs-content ordering). Do
     // position/size/position per attempt with a readback, up to 3 attempts.
-    // A persistent drift must NOT return Ok: callers record `applied_rects`
+    // A persistent drift must NOT report Ok: callers record `applied_rects`
     // on success and skip forever, which strands login-time Firefox windows
     // (session-restore / not-yet-resizable) at the wrong rect until the app
-    // is fully quit + reopened. Return a transient drift error instead so the
-    // write retries on the next layout / 2s sweep.
+    // is fully quit + reopened. Report Drift instead so the write retries
+    // on the next layout / 2s sweep.
     //
-    // EPS matches the 8px the daemon's misplaced sweep and drag settle use:
-    // a window inside it is "at target" everywhere else, so demanding
-    // tighter here only buys a perpetual 3-attempt storm for windows with a
-    // few-px frame offset. Genuinely misplaced windows (tens/hundreds of px)
-    // still error and retry.
+    // EPS is the shared `LAYOUT_EPSILON`: a window inside it is "at target"
+    // everywhere else, so demanding tighter here only buys a perpetual
+    // 3-attempt storm for windows with a few-px frame offset. Genuinely
+    // misplaced windows (tens/hundreds of px) still report Drift and retry.
     //
     // STABLE_EPS detects a pinned window: readbacks within 2px across
     // attempts mean zero real progress (sub-pixel jitter at most), so a
-    // third attempt cannot converge and bails early with a distinct "drift
-    // pinned" error. The daemon backs off writes for pinned windows instead
-    // of storming them; shifting windows (progress between attempts) keep
-    // the full 3 attempts and the shifting drift error.
+    // third attempt cannot converge and reports Pinned early. The caller
+    // backs off writes for pinned windows instead of storming them;
+    // shifting windows (progress between attempts) keep the full 3 attempts
+    // and the shifting Drift report.
     const ATTEMPTS: u32 = 3;
-    const EPS: f64 = 8.0;
+    const EPS: f64 = LAYOUT_EPSILON;
     const STABLE_EPS: f64 = 2.0;
     let mut last_actual: Option<Rect> = None;
     for attempt in 0..ATTEMPTS {
-        set_window_position_raw(element, rect.x, rect.y)?;
-        set_window_size_raw(element, rect.width, rect.height)?;
+        if let Err(e) = set_window_position_raw(element, rect.x, rect.y) {
+            return WriteOutcome::Transient(e.to_string());
+        }
+        if let Err(e) = set_window_size_raw(element, rect.width, rect.height) {
+            return WriteOutcome::Transient(e.to_string());
+        }
         // Size can shift position — re-assert it.
-        set_window_position_raw(element, rect.x, rect.y)?;
+        if let Err(e) = set_window_position_raw(element, rect.x, rect.y) {
+            return WriteOutcome::Transient(e.to_string());
+        }
         match get_window_rect(element) {
-            Some(actual) if rects_close(actual, rect, EPS) => return Ok(()),
+            Some(actual) if rects_close(actual, rect, EPS) => return WriteOutcome::Ok,
             Some(actual) => {
                 if let Some(prev) = last_actual {
                     if rects_close(prev, actual, STABLE_EPS) {
@@ -163,11 +155,10 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
                             rect,
                             actual
                         );
-                        anyhow::bail!(
-                            "set_window_rect drift pinned target {:?} actual {:?} (stable across attempts)",
-                            rect,
-                            actual
-                        );
+                        return WriteOutcome::Pinned {
+                            target: rect,
+                            actual,
+                        };
                     }
                 }
                 log::debug!(
@@ -179,16 +170,15 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> anyhow::Re
                 );
                 last_actual = Some(actual);
             }
-            None => return Ok(()),
+            None => return WriteOutcome::Ok,
         }
     }
     match last_actual {
-        Some(actual) => anyhow::bail!(
-            "set_window_rect drift did not converge target {:?} actual {:?}",
-            rect,
-            actual
-        ),
-        None => Ok(()),
+        Some(actual) => WriteOutcome::Drift {
+            target: rect,
+            actual,
+        },
+        None => WriteOutcome::Ok,
     }
 }
 
@@ -467,40 +457,6 @@ pub unsafe fn bool_attribute(element: AXUIElementRef, attribute: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn rects_close_within_epsilon() {
-        let a = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 960.0,
-            height: 1040.0,
-        };
-        let b = Rect {
-            x: 1.0,
-            y: 1.0,
-            width: 961.0,
-            height: 1039.0,
-        };
-        assert!(rects_close(a, b, 2.0));
-        assert!(!rects_close(a, b, 0.5));
-    }
-
-    #[test]
-    fn rects_close_rejects_far_drift() {
-        let a = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 960.0,
-            height: 1040.0,
-        };
-        let b = Rect {
-            x: 50.0,
-            y: 0.0,
-            width: 960.0,
-            height: 1040.0,
-        };
-        assert!(!rects_close(a, b, 2.0));
-    }
+    // rects_close is canonical in pengwm-core::layout — tested there.
+    // AX writer behavior is exercised through TestAdapter outcomes.
 }

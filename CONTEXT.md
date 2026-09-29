@@ -31,15 +31,16 @@ pub trait OsAdapter: ObserverRegistry {
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()>;  // &self interior (WindowElementCache); position/size/position x3 with readback (Firefox drift)
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome;  // &self interior (WindowElementCache); position/size/position x3 with readback; typed outcome, never string-matched
     fn window_rect(&self, window_id: WindowId) -> Option<Rect>;  // readback seam for verify-and-retry + tests
     fn close_window(&self, window_id: WindowId);
     fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>); // HidePlacement::BottomEdge vs FarOffscreen; no magic threshold; position-only, never resizes (no Firefox reflow)
     fn window_is_hidden(&self, window_id: WindowId) -> bool;  // kAXMinimized/kAXHidden; drives reconcile
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
     fn app_name(&self, pid: i32) -> Option<String>;
-    // test injectors (cfg(test)) replace as_any_mut downcast:
-    // inject_window / inject_app_name / inject_bundle_id
+    // test vocabulary is inherent to TestAdapter/TestHandle, never on the trait:
+    // inject_window / inject_app_name / inject_bundle_id + set_fault / clear_fault / displace / writes / rect.
+    // Tests hold a TestHandle sharing the boxed adapter's cells (common::setup_with_handle).
 }
 ```
 
@@ -47,7 +48,9 @@ pub trait OsAdapter: ObserverRegistry {
 
 Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturizedNotification` / app-level `kAXApplicationHiddenNotification` fire immediately, and a ~1s `on_tick` reconcile queries `window_is_hidden` per tracked window as a fallback for missed notifications. Both untile the window (like a close) while keeping pid tracking so `on_window_shown` can retile it where it came from.
 
-**WindowStore** — The single owner of wid↔pid↔hidden state owned by `StateManager`. Wraps `HashMap<WindowId, i32>` + `HashMap<i32, Vec<WindowId>>` + `HiddenTracker` (private detail). Exposes `register` / `unregister` / `remove_pid` / `hide` / `reveal` / `pending_for_reconcile(is_hidden)` / `should_reconcile` so `StateManager` never touches raw maps. `HiddenTracker` is private to the store; the predicate seam (`Fn(WindowId)->bool`) stays.
+**WriteOutcome** — The typed result of a layout write across the `OsAdapter` seam (`pengwm-core::layout::write`). Five variants: `Ok` (at target, or unreadable mid-write — the next sweep heals), `Pinned { target, actual }` (readbacks stopped moving; the cache backs off), `Drift { target, actual }` (accepted but never converged; retry, never record success), `Gone` (refresh + discover both missed; the caller applies gone-grace only, no second poll), `Transient(String)` (live-resize contention; the message is log payload, never a match key). The writer classifies; `layout_cache` matches.
+
+**WindowStore** — The single owner of wid↔pid↔hidden state owned by `StateManager`. Owns the pid maps plus five hidden methods (`hide` / `reveal` / `reveal_all` / `is_hidden` / `pending_for_reconcile` / `should_reconcile`) — the seam runs between state and trees: `hide` finds + remembers the workspace index, the caller removes from the tree and re-layouts; `reveal_all` drains remembered `(window, index)` pairs, the caller routes + retiles. `HiddenTracker` is private to the store; the predicate seam (`Fn(WindowId)->bool`) stays.
 
 **HiddenTracker** — Private detail of `WindowStore` that remembers where each hidden/minimized window came from (`HashMap<WindowId, usize>` + `last_reconcile`). Exposes `hide_window` / `take_hidden` / `pending_for_reconcile(is_hidden)` so reconcile is testable via a `Fn(WindowId)->bool` predicate without `as_any_mut` downcast to `TestAdapter`.
 
@@ -57,7 +60,7 @@ Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturize
 
 **DisplaySet** — The display ↔ workspace registry + routing policy owned by `StateManager` (`active: BTreeMap<u32, usize>` + `entries: Vec<WorkspaceEntry>` + `max_tiles`). `BTreeMap` makes iteration deterministic (no `HashMap` random fallback in `active_workspace_idx`). Owns `active` (which flat workspace is visible per monitor), the named-entry set, and the routing policy (`next_with_room`, `target_with_room`, `routed_workspace_idx`, `configured_workspace_name_for_pid`, `active_workspace_idx`, `display_in_direction`, `resolve_workspace`, `workspaces_on`, `is_visible`, `visible_or_first`) so per-monitor workspace resolution, visibility and overflow have locality in one module; `Vec<Workspace>` stays on `StateManager` and is borrowed per call. Exposes `init_workspaces`, `on_added`, `on_removed`, `on_resized` for monitor lifecycle. `capacity::next_with_room` deleted — now `DisplaySet::next_with_room` with `max_tiles` stored on the set. `StateManager` keeps one narrow `active_workspace_idx()` accessor (19 call sites); the other former delegates are deleted. `bootstrap::assemble(display_infos, primary_id, settings, session)` is the single pure assembly for workspaces/displays/gaps (Q2).
 
-**StateManager layout** — `pengwm-daemon/src/state/mod.rs` holds construction, config reload, hide/reveal, and bar publish; `lifecycle.rs` owns the window/app lifecycle, `reconcile.rs` the tick path, `monitors_wake.rs` monitor handling and wake resync; `commands.rs` owns the `Command` dispatch (`impl StateManager`, test-called helpers are `pub(super)`); `layout_cache.rs` owns the layout-write cache policy (`apply_layout`, grace/epsilon invalidate, hidden-rect seeding, dead-window untracking when the OS no longer lists a permanently-failed window); `tests/` holds the suite by domain (`common` harness + `bootstrap_routing`, `lifecycle`, `commands`, `bar`, `layout_cache_hide`, `wake`). Fields stay on `StateManager`; the files only reorganize `impl` blocks.
+**StateManager layout** — `pengwm-daemon/src/state/mod.rs` holds construction, config reload, hide/reveal, and bar publish; `lifecycle.rs` owns the window/app lifecycle, `reconcile.rs` the tick path, `monitors_wake.rs` monitor handling and wake resync; `commands.rs` owns the `Command` dispatch (`impl StateManager`, test-called helpers are `pub(super)`); `layout_cache.rs` owns the `LayoutWriteCache` module — the four write-policy maps (`applied_rects`, `gone_since`, `pin_state`, `layout_fail_logged`) plus the funnel (`should_write` / `record_success` / `record_failure` → `AfterWrite::Keep|Untrack` / `invalidate` / `forget` / `clear_on_wake` / `seed_hidden` / `note_displaced` / `is_displaced`). `StateManager` keeps one field and never touches the maps; destroy/terminate/wake collapse to one `forget` / `clear_on_wake` each; policy tests target the cache directly with no harness; `tests/` holds the suite by domain (`common` harness + `bootstrap_routing`, `lifecycle`, `commands`, `bar`, `layout_cache_hide`, `wake`). Fields stay on `StateManager`; the other files only reorganize `impl` blocks.
 
 **WindowElementCache** — A `HashMap<WindowId, AXUIElementRef>` owned by the unified macOS adapter. Populated on `kAXWindowCreatedNotification` (caller does `CFRetain`), evicted on `kAXUIElementDestroyedNotification` (caller does `CFRelease`). Makes `set_window_rect` O(1) instead of O(n) and seals CFRef memory lifecycle. Maintains a reverse `WindowId → i32` pid map so `set_window_rect` and `close_window` do not require a pid parameter from callers. Resynced on `DaemonEvent::SystemWoke` (`NSWorkspaceDidWake`/`ScreensDidWake`): `StateManager::on_system_woke` refreshes display geometry, clears `applied_rects`, re-attaches observers + re-polls all pids (which re-inserts fresh refs), then re-layouts visible workspaces.
 

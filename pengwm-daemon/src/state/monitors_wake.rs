@@ -55,35 +55,24 @@ impl StateManager {
         // grace restarts too — pre-sleep misses must not kill windows
         // while post-wake AX is still blacked out — and so does the pin
         // count, so post-wake writes aren't backoff-silenced.
-        self.applied_rects.clear();
-        self.layout_fail_logged.clear();
-        self.gone_since.clear();
-        self.pin_state.clear();
+        self.layout_cache.clear_on_wake();
         // Force the background sweep on next tick for windows created mid-sleep.
         self.last_window_sweep = Instant::now() - Duration::from_secs(5);
         self.frontmost_pid = self.os.frontmost_pid();
-        // Re-attach observers + re-poll all running apps. `poll_windows_for_pid`
-        // re-inserts into `WindowElementCache` (releasing stale refs) and
-        // re-registers moved/destroyed notifications.
+        // Re-attach observers on every running app, then re-poll through the
+        // shared discovery loop. Polling re-inserts into `WindowElementCache`
+        // (releasing stale refs) and re-registers moved/destroyed
+        // notifications; the loop tiles windows created mid-sleep.
         let pids: Vec<i32> = self
             .os
             .running_app_pids()
             .into_iter()
             .filter(|pid| !self.excluded_pids.contains(pid))
             .collect();
-        for pid in pids {
-            self.os.attach_observer(pid);
-            for window_id in self.os.poll_windows_for_pid(pid) {
-                if !self.store.contains(window_id) {
-                    log::info!(
-                        "on_system_woke: discovered untracked window {} pid {}",
-                        window_id,
-                        pid
-                    );
-                    self.on_window_created(window_id, pid);
-                }
-            }
+        for pid in &pids {
+            self.os.attach_observer(*pid);
         }
+        self.sync_untracked_windows(pids);
         // Re-tile every visible workspace + bar.
         let visible: Vec<usize> = self.displays.active().values().copied().collect();
         for idx in visible {

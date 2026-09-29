@@ -7,7 +7,7 @@ use crate::macos::ax_observer::{ObserverContext, ObserverRegistry as AxObserverR
 use crate::macos::cg_display;
 use crate::macos::ns_workspace;
 use accessibility_sys::*;
-use pengwm_core::layout::{HidePlacement, Rect};
+use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
 
 pub struct MacOsAdapter {
@@ -116,6 +116,15 @@ impl MacOsAdapter {
     }
 }
 
+/// True when a transient AX message means the cached element is stale
+/// (window re-created under the same id, pid recycled). This is
+/// cache-coherence classification local to the adapter — not write-policy:
+/// AX failures surface as C ints whose only channel is the message string,
+/// so one helper names the check instead of scattering it.
+fn is_stale_element_message(msg: &str) -> bool {
+    msg.contains("kAXErrorInvalidUIElement")
+}
+
 impl OsAdapter for MacOsAdapter {
     fn running_app_pids(&self) -> Vec<i32> {
         ns_workspace::running_app_pids()
@@ -160,7 +169,7 @@ impl OsAdapter for MacOsAdapter {
         cg_display::primary_display_id()
     }
 
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome {
         let (element, pid) = match self.cache_get_element(window_id) {
             Some(v) => v,
             None => match self.discover_window(window_id) {
@@ -171,42 +180,43 @@ impl OsAdapter for MacOsAdapter {
                         window_id,
                         rect
                     );
-                    anyhow::bail!("element not found in cache for window {}", window_id)
+                    return WriteOutcome::Gone;
                 }
             },
         };
         match unsafe { ax_element::set_window_rect(element, rect) } {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("kAXErrorInvalidUIElement") {
-                    log::warn!("stale element for window {}, re-discovering", window_id);
-                    if let Some(new_elem) = self.refresh_element(window_id, pid) {
-                        self.ctx.cache_insert(window_id, new_elem, pid);
-                        unsafe {
-                            self.observer_registry.register_window_destroyed(
-                                pid,
-                                new_elem,
-                                &*self.ctx as *const ObserverContext as *mut c_void,
-                            );
-                            self.observer_registry.register_window_moved(
-                                pid,
-                                new_elem,
-                                &*self.ctx as *const ObserverContext as *mut c_void,
-                            );
-                        }
-                        return unsafe { ax_element::set_window_rect(new_elem, rect) };
-                    }
-                    // Window is gone — evict from cache so we don't keep retrying.
-                    if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
-                        unsafe {
-                            core_foundation::base::CFRelease(
-                                elem as core_foundation::base::CFTypeRef,
-                            )
-                        };
-                    }
+            outcome @ (WriteOutcome::Ok
+            | WriteOutcome::Pinned { .. }
+            | WriteOutcome::Drift { .. }) => outcome,
+            WriteOutcome::Gone => WriteOutcome::Gone,
+            WriteOutcome::Transient(msg) => {
+                if !is_stale_element_message(&msg) {
+                    return WriteOutcome::Transient(msg);
                 }
-                Err(e)
+                log::warn!("stale element for window {}, re-discovering", window_id);
+                if let Some(new_elem) = self.refresh_element(window_id, pid) {
+                    self.ctx.cache_insert(window_id, new_elem, pid);
+                    unsafe {
+                        self.observer_registry.register_window_destroyed(
+                            pid,
+                            new_elem,
+                            &*self.ctx as *const ObserverContext as *mut c_void,
+                        );
+                        self.observer_registry.register_window_moved(
+                            pid,
+                            new_elem,
+                            &*self.ctx as *const ObserverContext as *mut c_void,
+                        );
+                    }
+                    return unsafe { ax_element::set_window_rect(new_elem, rect) };
+                }
+                // Window is gone — evict from cache so we don't keep retrying.
+                if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
+                    unsafe {
+                        core_foundation::base::CFRelease(elem as core_foundation::base::CFTypeRef)
+                    };
+                }
+                WriteOutcome::Gone
             }
         }
     }
@@ -291,81 +301,6 @@ impl OsAdapter for MacOsAdapter {
 
     fn app_name(&self, pid: i32) -> Option<String> {
         ns_workspace::localized_name_for_pid(pid)
-    }
-
-    #[cfg(test)]
-    fn inject_window(&self, _pid: i32, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("inject_window only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn inject_app_name(&self, _pid: i32, _name: String) {
-        unimplemented!("inject_app_name only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn inject_bundle_id(&self, _pid: i32, _bundle: String) {
-        unimplemented!("inject_bundle_id only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn window_rect_for_test(&self, _window_id: pengwm_core::tree::WindowId) -> Option<Rect> {
-        None
-    }
-
-    #[cfg(test)]
-    fn set_rect_calls_for_test(&self) -> usize {
-        0
-    }
-
-    #[cfg(test)]
-    fn fail_rect_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("fail_rect_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn clear_rect_fail_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("clear_rect_fail_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn fail_transient_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("fail_transient_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn clear_transient_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("clear_transient_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn fail_drift_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("fail_drift_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn clear_drift_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("clear_drift_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn fail_pinned_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("fail_pinned_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn clear_pinned_for_test(&self, _window_id: pengwm_core::tree::WindowId) {
-        unimplemented!("clear_pinned_for_test only for TestAdapter")
-    }
-
-    #[cfg(test)]
-    fn displace_window_for_test(
-        &self,
-        _window_id: pengwm_core::tree::WindowId,
-        _dx: f64,
-        _dy: f64,
-    ) {
-        unimplemented!("displace_window_for_test only for TestAdapter")
     }
 }
 

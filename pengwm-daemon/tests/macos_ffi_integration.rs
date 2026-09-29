@@ -58,7 +58,11 @@ fn macos_ffi_integration() {
                 rect.height,
             );
             let result = unsafe { ax_element::set_window_rect(element, moved) };
-            assert!(result.is_ok(), "set_window_rect should succeed");
+            assert!(
+                result.is_ok(),
+                "set_window_rect should succeed, got {:?}",
+                result
+            );
 
             let readback = unsafe { ax_element::get_window_rect(element) };
             assert!(readback.is_some(), "should read back window rect");

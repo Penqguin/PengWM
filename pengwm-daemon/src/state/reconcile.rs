@@ -89,30 +89,13 @@ impl StateManager {
         let _ = window_ids;
     }
 
-    /// Poll every running app for windows the store has never seen and tile
-    /// them via the normal `on_window_created` path (routing, capacity,
-    /// monocle, layout all shared — no duplicate logic). Only brand-new
-    /// window ids are touched: tracked-but-untiled windows are either hidden
-    /// (owned by `HiddenTracker`) or intentionally overflowed at capacity.
+    /// Safety net for windows whose WindowCreated notification never
+    /// arrived (Firefox tear-offs / incognito often don't fire it, or
+    /// fire while transiently non-manageable so the observer drops it).
+    /// Delegates to the shared discovery loop; see `sync_untracked_windows`.
     fn reconcile_new_windows(&mut self) {
-        let pids: Vec<i32> = self
-            .os
-            .running_app_pids()
-            .into_iter()
-            .filter(|pid| !self.excluded_pids.contains(pid))
-            .collect();
-        for pid in pids {
-            for window_id in self.os.poll_windows_for_pid(pid) {
-                if !self.store.contains(window_id) {
-                    log::info!(
-                        "reconcile_new_windows: discovered untracked window {} pid {}",
-                        window_id,
-                        pid
-                    );
-                    self.on_window_created(window_id, pid);
-                }
-            }
-        }
+        let pids: Vec<i32> = self.os.running_app_pids();
+        self.sync_untracked_windows(pids);
     }
 
     /// Re-assert tracked windows whose OS rect disagrees with the tiled
@@ -125,11 +108,9 @@ impl StateManager {
     ///
     /// Guards mirror `note_displaced`: skips hidden windows, the active drag
     /// window, moves within grace/epsilon (our own animation settling), and
-    /// invisible workspaces. Invalidates `applied_rects` for genuinely
+    /// invisible workspaces. Invalidates the write cache for genuinely
     /// displaced windows then re-applies those workspaces.
     fn reconcile_misplaced_windows(&mut self, now: Instant) {
-        const MISPLACED_GRACE: Duration = Duration::from_millis(500);
-        const MISPLACED_EPSILON: f64 = 8.0;
         let drag_window = self.drag.drag_window();
         let mut affected: Vec<usize> = Vec::new();
         // Snapshot visible indices first to avoid borrow conflicts.
@@ -151,18 +132,8 @@ impl StateManager {
                     Some(r) => r,
                     None => continue,
                 };
-                let displaced = (actual.x - target.x).abs() > MISPLACED_EPSILON
-                    || (actual.y - target.y).abs() > MISPLACED_EPSILON
-                    || (actual.width - target.width).abs() > MISPLACED_EPSILON
-                    || (actual.height - target.height).abs() > MISPLACED_EPSILON;
-                if !displaced {
+                if !self.layout_cache.is_displaced(wid, *target, actual, now) {
                     continue;
-                }
-                // Recent writes are animation settling, not external drift.
-                if let Some((_, written_at)) = self.applied_rects.get(&wid) {
-                    if now.duration_since(*written_at) < MISPLACED_GRACE {
-                        continue;
-                    }
                 }
                 log::info!(
                     "reconcile_misplaced: window {} displaced target ({:.0},{:.0} {}x{}) actual ({:.0},{:.0} {}x{}), invalidating",
@@ -176,7 +147,7 @@ impl StateManager {
                     actual.width,
                     actual.height
                 );
-                self.applied_rects.remove(&wid);
+                self.layout_cache.invalidate(wid);
                 misplaced = true;
             }
             if misplaced {

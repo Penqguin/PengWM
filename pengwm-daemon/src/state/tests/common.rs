@@ -3,9 +3,11 @@ use tokio::sync::mpsc;
 
 use super::super::StateManager;
 use crate::adapter::DisplayInfo;
-use crate::adapter_test::TestAdapter;
+use crate::adapter_test::{TestAdapter, TestHandle};
 use crate::bar_server::BarSender;
 use crate::config::keybinds::KeybindConfig;
+
+pub(super) use crate::adapter_test::Fault;
 
 pub(super) fn make_adapter(display_count: u32) -> TestAdapter {
     let mut adapter = TestAdapter::new();
@@ -50,18 +52,27 @@ pub(super) fn test_prefix() -> Arc<Mutex<crate::prefix::PrefixKey>> {
 }
 
 pub(super) fn setup(display_count: u32) -> StateManager {
+    setup_with_handle(display_count).0
+}
+
+pub(super) fn setup_with_handle(display_count: u32) -> (StateManager, TestHandle) {
     let (tx, _) = mpsc::channel(64);
     let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
     let prefix = test_prefix();
     let adapter = make_adapter(display_count);
+    let handle = TestHandle::new(adapter);
+    let boxed: Box<dyn crate::adapter::OsAdapter> = Box::new(handle.shared());
     let (bar_tx, _) = mpsc::channel(64);
-    StateManager::new(
-        tx,
-        keybinds,
-        prefix,
-        Box::new(adapter),
-        BarSender::from_channel(bar_tx),
-        None,
-        vec![],
+    (
+        StateManager::new(
+            tx,
+            keybinds,
+            prefix,
+            boxed,
+            BarSender::from_channel(bar_tx),
+            None,
+            vec![],
+        ),
+        handle,
     )
 }

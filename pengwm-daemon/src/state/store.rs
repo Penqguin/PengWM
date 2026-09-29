@@ -35,11 +35,6 @@ impl WindowStore {
         }
     }
 
-    #[cfg(test)]
-    pub fn with_hidden_last_reconcile(last: Instant) -> Self {
-        Self::with_last_reconcile(last)
-    }
-
     // -- pid maps -----------------------------------------------------------
 
     pub fn register(&mut self, window_id: WindowId, pid: i32) {
@@ -111,54 +106,20 @@ impl WindowStore {
         self.window_pids.is_empty()
     }
 
-    pub fn find_workspace(&self, workspaces: &[Workspace], window_id: WindowId) -> Option<usize> {
-        workspaces
-            .iter()
-            .position(|ws| ws.find_window(window_id).is_some())
-    }
+    // -- hidden state (HiddenTracker is private detail) ----------------------
 
-    // -- hidden delegation (HiddenTracker is private detail) ----------------
-
+    /// True when the window is hidden-tracked (untiled but still owned).
     pub fn is_hidden(&self, window_id: WindowId) -> bool {
         self.hidden.contains(window_id)
     }
 
-    pub fn hidden_workspace(&self, window_id: WindowId) -> Option<usize> {
-        self.hidden.get(window_id)
-    }
-
-    pub fn hidden_len(&self) -> usize {
-        self.hidden.len()
-    }
-
-    pub fn hidden_is_empty(&self) -> bool {
-        self.hidden.is_empty()
-    }
-
-    pub fn hidden_keys(&self) -> Vec<WindowId> {
-        self.hidden.keys()
-    }
-
-    pub fn hidden_drain(&mut self) -> Vec<(WindowId, usize)> {
-        self.hidden.drain()
-    }
-
-    pub fn hidden_remove(&mut self, window_id: WindowId) -> Option<usize> {
-        self.hidden.remove(window_id)
-    }
-
-    pub fn hidden_contains(&self, window_id: WindowId) -> bool {
-        self.hidden.contains(window_id)
-    }
-
-    pub fn take_all_hidden(&mut self) -> Vec<(WindowId, usize)> {
-        self.hidden.drain()
-    }
-
-    pub fn hide(&mut self, window_id: WindowId, workspaces: &mut [Workspace]) -> Option<usize> {
+    /// Remember a tiled window's workspace. Returns the index for the caller
+    /// to remove from the tree and re-layout — the store never mutates trees.
+    pub fn hide(&mut self, window_id: WindowId, workspaces: &[Workspace]) -> Option<usize> {
         self.hidden.hide_window(window_id, workspaces)
     }
 
+    /// Forget a hidden entry and return its remembered workspace index, if any.
     pub fn reveal(&mut self, window_id: WindowId) -> Option<usize> {
         self.hidden.take_hidden(window_id)
     }
@@ -168,39 +129,9 @@ impl WindowStore {
         self.hidden.insert(window_id, idx);
     }
 
-    #[cfg(test)]
-    pub fn set_hidden_reconcile(&mut self, t: Instant) {
-        self.hidden.set_last_reconcile(t);
-    }
-
-    #[cfg(test)]
-    pub fn force_hidden_due(&mut self) {
-        self.hidden.force_due();
-    }
-
-    #[cfg(test)]
-    pub fn set_last_reconcile(&mut self, t: Instant) {
-        self.hidden.set_last_reconcile(t);
-    }
-
-    #[cfg(test)]
-    pub fn force_due(&mut self) {
-        self.hidden.force_due();
-    }
-
-    pub fn get(&self, window_id: WindowId) -> Option<usize> {
-        self.hidden.get(window_id)
-    }
-
-    pub fn contains_hidden(&self, window_id: WindowId) -> bool {
-        self.hidden.contains(window_id)
-    }
-
-    pub fn keys(&self) -> Vec<WindowId> {
-        self.hidden.keys()
-    }
-
-    pub fn drain(&mut self) -> Vec<(WindowId, usize)> {
+    /// Drain every hidden entry with its remembered workspace index. The
+    /// caller retiles each (remembered, routed, or active workspace).
+    pub fn reveal_all(&mut self) -> Vec<(WindowId, usize)> {
         self.hidden.drain()
     }
 
@@ -312,10 +243,13 @@ mod tests {
         let mut r = WindowStore::new();
         r.register(10, 42);
         r.register(20, 42);
-        let idx = r.hide(10, &mut wss).unwrap();
+        let idx = r.hide(10, &wss).unwrap();
         assert_eq!(idx, 0);
-        assert!(wss[0].find_window(10).is_none());
         assert!(r.is_hidden(10));
+        // Tree removal is the caller's job.
+        assert!(wss[0].find_window(10).is_some());
+        wss[0].remove_window(10);
+        assert!(wss[0].find_window(10).is_none());
         let remembered = r.reveal(10).unwrap();
         assert_eq!(remembered, 0);
         assert!(!r.is_hidden(10));
@@ -333,23 +267,23 @@ mod tests {
     }
 
     #[test]
-    fn hide_window_removes_from_workspace_and_remembers_idx() {
-        let mut workspaces = ws_with_windows(&[10, 20]);
+    fn hide_window_remembers_idx_without_mutating_tree() {
+        let workspaces = ws_with_windows(&[10, 20]);
         let mut t = WindowStore::new();
         t.register(10, 42);
         t.register(20, 42);
-        let idx = t.hide(10, &mut workspaces).unwrap();
+        let idx = t.hide(10, &workspaces).unwrap();
         assert_eq!(idx, 0);
-        assert!(workspaces[0].find_window(10).is_none());
-        assert_eq!(t.get(10), Some(0));
+        assert!(workspaces[0].find_window(10).is_some());
+        assert!(t.is_hidden(10));
     }
 
     #[test]
     fn hide_window_returns_none_when_not_tiled() {
-        let mut workspaces = ws_with_windows(&[10]);
+        let workspaces = ws_with_windows(&[10]);
         let mut t = WindowStore::new();
-        assert!(t.hide(99, &mut workspaces).is_none());
-        assert!(t.hidden_is_empty());
+        assert!(t.hide(99, &workspaces).is_none());
+        assert!(!t.is_hidden(99));
     }
 
     #[test]

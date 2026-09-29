@@ -6,17 +6,17 @@ use pengwm_core::workspace::Workspace;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Tracks windows that were minimized / app-hidden: they are removed from the
-/// tiling tree (via `on_window_hidden`) but kept in `window_pids` so they can
-/// be retiled by `on_window_shown`. The map remembers the workspace index they
-/// came from, so `on_window_shown` can route them back.
+/// Tracks windows that were minimized / app-hidden: they leave the tiling
+/// tree but stay in `window_pids` so they can be retiled by
+/// `on_window_shown`. The map remembers the workspace index they came from,
+/// so `on_window_shown` can route them back.
 ///
-/// Owns only the `HiddenTracker` state — `hidden` map + `last_reconcile` — and
-/// borrows `&mut [Workspace]` / `&HashMap<WindowId,i32>` per call. Callers
-/// (StateManager) handle `apply_layout` / `publish_bar_state` after the tracker
-/// returns the affected workspace index. This keeps `OsAdapter` out of the
-/// sub-module and makes reconcile testable via a `Fn(WindowId)->bool`
-/// predicate (no `as_any_mut` downcast).
+/// Owns only the `HiddenTracker` state — `hidden` map + `last_reconcile` —
+/// and borrows `&[Workspace]` per call. Finding, remembering, and tree
+/// removal are split at the seam: the tracker finds + remembers and returns
+/// the index; the caller (`StateManager`) mutates the tree and re-layouts.
+/// This keeps tree ownership in one module and makes reconcile testable via
+/// a `Fn(WindowId)->bool` predicate (no `as_any_mut` downcast).
 pub struct HiddenTracker {
     hidden: HashMap<WindowId, usize>,
     last_reconcile: Instant,
@@ -39,41 +39,15 @@ impl HiddenTracker {
         }
     }
 
-    #[cfg(test)]
-    pub fn set_last_reconcile(&mut self, t: Instant) {
-        self.last_reconcile = t;
-    }
-
-    #[cfg(test)]
-    pub fn force_due(&mut self) {
-        self.last_reconcile = Instant::now() - Duration::from_secs(2) - RECONCILE_INTERVAL;
-    }
-
     pub fn contains(&self, window_id: WindowId) -> bool {
         self.hidden.contains_key(&window_id)
     }
 
-    pub fn get(&self, window_id: WindowId) -> Option<usize> {
-        self.hidden.get(&window_id).copied()
-    }
-
-    pub fn len(&self) -> usize {
-        self.hidden.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.hidden.is_empty()
-    }
-
-    /// Remove a tiled window from its workspace and remember where it came
-    /// from. Returns the workspace index for the caller to `apply_layout`.
-    pub fn hide_window(
-        &mut self,
-        window_id: WindowId,
-        workspaces: &mut [Workspace],
-    ) -> Option<usize> {
+    /// Remember a tiled window's workspace and report the index. The caller
+    /// removes the window from the tree and re-layouts — tree mutation stays
+    /// with the tree owner; the tracker only owns hidden state.
+    pub fn hide_window(&mut self, window_id: WindowId, workspaces: &[Workspace]) -> Option<usize> {
         let idx = find_workspace_for_window(workspaces, window_id)?;
-        workspaces[idx].remove_window(window_id);
         self.hidden.insert(window_id, idx);
         Some(idx)
     }
@@ -90,12 +64,9 @@ impl HiddenTracker {
         self.hidden.remove(&window_id)
     }
 
+    #[cfg(test)]
     pub fn insert(&mut self, window_id: WindowId, idx: usize) -> Option<usize> {
         self.hidden.insert(window_id, idx)
-    }
-
-    pub fn keys(&self) -> Vec<WindowId> {
-        self.hidden.keys().copied().collect()
     }
 
     pub fn drain(&mut self) -> Vec<(WindowId, usize)> {
@@ -168,21 +139,24 @@ mod tests {
     }
 
     #[test]
-    fn hide_window_removes_from_workspace_and_remembers_idx() {
+    fn hide_window_remembers_idx_without_mutating_tree() {
         let mut workspaces = ws_with_windows(&[10, 20]);
         let mut t = HiddenTracker::new();
-        let idx = t.hide_window(10, &mut workspaces).unwrap();
+        let idx = t.hide_window(10, &workspaces).unwrap();
         assert_eq!(idx, 0);
+        // Tree mutation is the caller's job — the tracker only remembers.
+        assert!(workspaces[0].find_window(10).is_some());
+        workspaces[0].remove_window(10);
         assert!(workspaces[0].find_window(10).is_none());
-        assert_eq!(t.get(10), Some(0));
+        assert!(t.contains(10));
     }
 
     #[test]
     fn hide_window_returns_none_when_not_tiled() {
-        let mut workspaces = ws_with_windows(&[10]);
+        let workspaces = ws_with_windows(&[10]);
         let mut t = HiddenTracker::new();
-        assert!(t.hide_window(99, &mut workspaces).is_none());
-        assert!(t.is_empty());
+        assert!(t.hide_window(99, &workspaces).is_none());
+        assert!(!t.contains(99));
     }
 
     #[test]

@@ -1,9 +1,22 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter};
-use pengwm_core::layout::{HidePlacement, Rect};
+use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
+
+/// Fault injection vocabulary for tests. Mirrors the four failure modes of
+/// `WriteOutcome` without the rect payloads: the fake stamps
+/// `target` (the requested rect) and `actual` (the stored OS rect) live at
+/// serve time, so tests name the mode, not the geometry.
+#[derive(Debug, Clone)]
+pub enum Fault {
+    Gone,
+    Transient(String),
+    Drift,
+    Pinned,
+}
 
 pub struct TestAdapter {
     pub running_apps: Vec<i32>,
@@ -19,22 +32,10 @@ pub struct TestAdapter {
     pub app_names: RefCell<HashMap<i32, String>>,
     pub hidden_windows: RefCell<HashSet<WindowId>>,
     pub hidden_apps: RefCell<HashSet<i32>>,
-    pub gone_windows: RefCell<HashSet<WindowId>>,
-    /// Windows whose `set_window_rect` fails transiently with
-    /// `kAXErrorFailure` (live resize contention) while the OS still lists
-    /// them. Unlike `gone_windows`, these must stay tracked and retry.
-    pub transient_fail_windows: RefCell<HashSet<WindowId>>,
-    /// Windows stuck in Firefox-style position/size drift: the AX write is
-    /// accepted by the call but never converges, so `set_window_rect`
-    /// returns a transient drift error without updating the OS rect. Models
-    /// login-time not-yet-resizable windows. Must stay tracked and retry —
-    /// never poison `applied_rects`.
-    pub drift_windows: RefCell<HashSet<WindowId>>,
-    /// Windows whose readbacks stop moving between attempts (busy app event
-    /// loop ignoring writes): `set_window_rect` returns the distinct
-    /// "drift pinned" error without updating the OS rect. Models a Firefox
-    /// window stalled in teardown. Drives the layout-cache pin backoff.
-    pub pinned_windows: RefCell<HashSet<WindowId>>,
+    /// Injected write faults per window. Served as the matching
+    /// `WriteOutcome` without updating the OS rect — the fake and the seam
+    /// share one failure language.
+    pub faults: RefCell<HashMap<WindowId, Fault>>,
     /// Number of `set_window_rect` calls served. Lets tests observe whether
     /// `apply_layout` skipped redundant writes.
     pub set_rect_calls: Cell<usize>,
@@ -56,10 +57,7 @@ impl Default for TestAdapter {
             app_names: RefCell::new(HashMap::new()),
             hidden_windows: RefCell::new(HashSet::new()),
             hidden_apps: RefCell::new(HashSet::new()),
-            gone_windows: RefCell::new(HashSet::new()),
-            transient_fail_windows: RefCell::new(HashSet::new()),
-            drift_windows: RefCell::new(HashSet::new()),
-            pinned_windows: RefCell::new(HashSet::new()),
+            faults: RefCell::new(HashMap::new()),
             set_rect_calls: Cell::new(0),
         }
     }
@@ -69,15 +67,201 @@ impl TestAdapter {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Observer attach/detach with shared-friendly `&self` (interior
+    /// mutability). Both the `ObserverRegistry` impl and the shared
+    /// adapter delegate here.
+    pub fn attach(&self, pid: i32) {
+        self.observers.borrow_mut().insert(pid);
+    }
+
+    pub fn detach(&self, pid: i32) {
+        self.observers.borrow_mut().remove(&pid);
+    }
+
+    /// Inject a write fault: the next `set_window_rect` calls for
+    /// `window_id` serve it without touching the OS rect.
+    pub fn set_fault(&self, window_id: WindowId, fault: Fault) {
+        self.faults.borrow_mut().insert(window_id, fault);
+    }
+
+    /// Clear the fault: the window writes cleanly again (same id) after a
+    /// transient blackout. Lets tests exercise grace-then-heal without
+    /// retiling as new.
+    pub fn clear_fault(&self, window_id: WindowId) {
+        self.faults.borrow_mut().remove(&window_id);
+    }
+
+    /// Externally displace a window's OS rect (user drag / app move
+    /// simulation). Lets tests exercise the misplaced reconcile.
+    pub fn displace(&self, window_id: WindowId, dx: f64, dy: f64) {
+        let mut rects = self.window_rects.borrow_mut();
+        if let Some(r) = rects.get_mut(&window_id) {
+            r.x += dx;
+            r.y += dy;
+        }
+    }
+
+    /// Number of `set_window_rect` calls served. Lets layout tests observe
+    /// whether redundant writes were skipped.
+    pub fn writes(&self) -> usize {
+        self.set_rect_calls.get()
+    }
+
+    /// Current OS rect as the fake sees it.
+    pub fn rect(&self, window_id: WindowId) -> Option<Rect> {
+        self.window_rect(window_id)
+    }
+
+    pub fn inject_window(&self, pid: i32, window_id: WindowId) {
+        self.windows
+            .borrow_mut()
+            .entry(pid)
+            .or_default()
+            .push(window_id);
+        self.window_pids.borrow_mut().insert(window_id, pid);
+    }
+
+    pub fn inject_app_name(&self, pid: i32, name: String) {
+        self.app_names.borrow_mut().insert(pid, name);
+    }
+
+    pub fn inject_bundle_id(&self, pid: i32, bundle: String) {
+        self.bundle_ids.borrow_mut().insert(pid, bundle);
+    }
+}
+
+/// Shared handle to a `TestAdapter` boxed into a `StateManager`. Tests hold
+/// the handle and speak the test vocabulary (`set_fault`, `displace`,
+/// `writes`, `rect`, `inject_*`); the boxed `SharedTestAdapter` speaks the
+/// prod `OsAdapter` interface. One `Rc` underneath, so faults land in the
+/// same cells the layout path reads.
+#[derive(Clone)]
+pub struct TestHandle(Rc<TestAdapter>);
+
+impl TestHandle {
+    pub fn new(adapter: TestAdapter) -> Self {
+        Self(Rc::new(adapter))
+    }
+
+    /// The prod-facing adapter sharing this handle's state. Box it into
+    /// `StateManager::new`.
+    pub fn shared(&self) -> SharedTestAdapter {
+        SharedTestAdapter(self.0.clone())
+    }
+
+    pub fn set_fault(&self, window_id: WindowId, fault: Fault) {
+        self.0.set_fault(window_id, fault)
+    }
+
+    pub fn clear_fault(&self, window_id: WindowId) {
+        self.0.clear_fault(window_id)
+    }
+
+    pub fn displace(&self, window_id: WindowId, dx: f64, dy: f64) {
+        self.0.displace(window_id, dx, dy)
+    }
+
+    pub fn writes(&self) -> usize {
+        self.0.writes()
+    }
+
+    pub fn rect(&self, window_id: WindowId) -> Option<Rect> {
+        self.0.rect(window_id)
+    }
+
+    pub fn inject_window(&self, pid: i32, window_id: WindowId) {
+        self.0.inject_window(pid, window_id)
+    }
+
+    pub fn inject_app_name(&self, pid: i32, name: String) {
+        self.0.inject_app_name(pid, name)
+    }
+
+    pub fn inject_bundle_id(&self, pid: i32, bundle: String) {
+        self.0.inject_bundle_id(pid, bundle)
+    }
+}
+
+/// Prod-facing view of a shared `TestAdapter`: implements only the prod
+/// `OsAdapter` interface by delegating to the shared cells.
+pub struct SharedTestAdapter(Rc<TestAdapter>);
+
+impl ObserverRegistry for SharedTestAdapter {
+    fn attach_observer(&mut self, pid: i32) {
+        self.0.attach(pid);
+    }
+
+    fn detach_observer(&mut self, pid: i32) {
+        self.0.detach(pid);
+    }
+}
+
+impl OsAdapter for SharedTestAdapter {
+    fn running_app_pids(&self) -> Vec<i32> {
+        self.0.running_app_pids()
+    }
+
+    fn frontmost_pid(&self) -> Option<i32> {
+        self.0.frontmost_pid()
+    }
+
+    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId> {
+        self.0.poll_windows_for_pid(pid)
+    }
+
+    fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId> {
+        self.0.focused_window_for_pid(pid)
+    }
+
+    fn active_displays(&self) -> Vec<DisplayInfo> {
+        self.0.active_displays()
+    }
+
+    fn primary_display_id(&self) -> u32 {
+        self.0.primary_display_id()
+    }
+
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome {
+        self.0.set_window_rect(window_id, rect)
+    }
+
+    fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
+        self.0.window_rect(window_id)
+    }
+
+    fn focus_window(&self, window_id: WindowId) {
+        self.0.focus_window(window_id)
+    }
+
+    fn close_window(&self, window_id: WindowId) {
+        self.0.close_window(window_id)
+    }
+
+    fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>) {
+        self.0.hide_windows(placements)
+    }
+
+    fn window_is_hidden(&self, window_id: WindowId) -> bool {
+        self.0.window_is_hidden(window_id)
+    }
+
+    fn app_bundle_id(&self, pid: i32) -> Option<String> {
+        self.0.app_bundle_id(pid)
+    }
+
+    fn app_name(&self, pid: i32) -> Option<String> {
+        self.0.app_name(pid)
+    }
 }
 
 impl ObserverRegistry for TestAdapter {
     fn attach_observer(&mut self, pid: i32) {
-        self.observers.borrow_mut().insert(pid);
+        self.attach(pid);
     }
 
     fn detach_observer(&mut self, pid: i32) {
-        self.observers.borrow_mut().remove(&pid);
+        self.detach(pid);
     }
 }
 
@@ -106,30 +290,27 @@ impl OsAdapter for TestAdapter {
         self.displays.first().map(|d| d.id).unwrap_or(0)
     }
 
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> anyhow::Result<()> {
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome {
         self.set_rect_calls.set(self.set_rect_calls.get() + 1);
-        if self.gone_windows.borrow().contains(&window_id) {
-            anyhow::bail!("element not found in cache for window {}", window_id);
-        }
-        if self.transient_fail_windows.borrow().contains(&window_id) {
-            anyhow::bail!("AXUIElementSetAttributeValue size error: kAXErrorFailure");
-        }
-        if self.drift_windows.borrow().contains(&window_id) {
-            anyhow::bail!(
-                "set_window_rect drift did not converge target {:?} actual {:?}",
-                rect,
-                self.window_rects.borrow().get(&window_id).copied()
-            );
-        }
-        if self.pinned_windows.borrow().contains(&window_id) {
-            anyhow::bail!(
-                "set_window_rect drift pinned target {:?} actual {:?} (stable across attempts)",
-                rect,
-                self.window_rects.borrow().get(&window_id).copied()
-            );
+        if let Some(fault) = self.faults.borrow().get(&window_id).cloned() {
+            // Faults serve the matching outcome without touching the OS
+            // rect. Drift/Pinned stamp target/actual live: the target is
+            // what layout just asked for, the actual is what the OS holds.
+            return match fault {
+                Fault::Gone => WriteOutcome::Gone,
+                Fault::Transient(msg) => WriteOutcome::Transient(msg),
+                Fault::Drift => WriteOutcome::Drift {
+                    target: rect,
+                    actual: self.window_rect(window_id).unwrap_or(rect),
+                },
+                Fault::Pinned => WriteOutcome::Pinned {
+                    target: rect,
+                    actual: self.window_rect(window_id).unwrap_or(rect),
+                },
+            };
         }
         self.window_rects.borrow_mut().insert(window_id, rect);
-        Ok(())
+        WriteOutcome::Ok
     }
 
     fn close_window(&self, window_id: WindowId) {
@@ -195,70 +376,5 @@ impl OsAdapter for TestAdapter {
             .get(&pid)
             .cloned()
             .or_else(|| self.bundle_ids.borrow().get(&pid).cloned())
-    }
-
-    fn inject_window(&self, pid: i32, window_id: WindowId) {
-        self.windows
-            .borrow_mut()
-            .entry(pid)
-            .or_default()
-            .push(window_id);
-        self.window_pids.borrow_mut().insert(window_id, pid);
-    }
-
-    fn inject_app_name(&self, pid: i32, name: String) {
-        self.app_names.borrow_mut().insert(pid, name);
-    }
-
-    fn inject_bundle_id(&self, pid: i32, bundle: String) {
-        self.bundle_ids.borrow_mut().insert(pid, bundle);
-    }
-
-    fn window_rect_for_test(&self, window_id: WindowId) -> Option<Rect> {
-        self.window_rect(window_id)
-    }
-
-    fn set_rect_calls_for_test(&self) -> usize {
-        self.set_rect_calls.get()
-    }
-
-    fn fail_rect_for_test(&self, window_id: WindowId) {
-        self.gone_windows.borrow_mut().insert(window_id);
-    }
-
-    fn clear_rect_fail_for_test(&self, window_id: WindowId) {
-        self.gone_windows.borrow_mut().remove(&window_id);
-    }
-
-    fn fail_transient_for_test(&self, window_id: WindowId) {
-        self.transient_fail_windows.borrow_mut().insert(window_id);
-    }
-
-    fn clear_transient_for_test(&self, window_id: WindowId) {
-        self.transient_fail_windows.borrow_mut().remove(&window_id);
-    }
-
-    fn fail_drift_for_test(&self, window_id: WindowId) {
-        self.drift_windows.borrow_mut().insert(window_id);
-    }
-
-    fn clear_drift_for_test(&self, window_id: WindowId) {
-        self.drift_windows.borrow_mut().remove(&window_id);
-    }
-
-    fn fail_pinned_for_test(&self, window_id: WindowId) {
-        self.pinned_windows.borrow_mut().insert(window_id);
-    }
-
-    fn clear_pinned_for_test(&self, window_id: WindowId) {
-        self.pinned_windows.borrow_mut().remove(&window_id);
-    }
-
-    fn displace_window_for_test(&self, window_id: WindowId, dx: f64, dy: f64) {
-        let mut rects = self.window_rects.borrow_mut();
-        if let Some(r) = rects.get_mut(&window_id) {
-            r.x += dx;
-            r.y += dy;
-        }
     }
 }

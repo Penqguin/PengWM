@@ -1,48 +1,445 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use pengwm_core::layout::Rect;
+use pengwm_core::layout::{
+    rects_close, rects_displaced, Rect, WriteOutcome, DISPLACE_GRACE, LAYOUT_EPSILON,
+};
 use pengwm_core::tree::WindowId;
 
 use super::StateManager;
 
-/// Owns the layout-write cache policy: skip-if-unchanged (the Firefox
-/// reflow storm), the post-write grace/epsilon that keeps our own animation
-/// settling from tripping snap-back, and the hidden-rect seeding that keeps
-/// switch-back from comparing equal to a stale tiled entry. `StateManager`
-/// retains the maps, the workspace tree and the `OsAdapter` — this module
-/// only hides the policy. Everything is `pub(super)` so `mod.rs`,
-/// commands.rs` and `tests.rs` keep calling the same interface.
+/// What the caller must do after recording a failed write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AfterWrite {
+    /// Nothing further: still tracked, retrying, or backed off.
+    Keep,
+    /// The window stayed gone past `GONE_GRACE`: untrack it via the
+    /// normal destroyed path.
+    Untrack,
+}
+
+/// Owns the layout-write cache policy and the maps it reasons about:
+/// skip-if-unchanged (the Firefox reflow storm), the post-write
+/// grace/epsilon that keeps our own animation settling from tripping
+/// snap-back, the gone grace for transient AX blackouts, the pin backoff
+/// for futile writes, and the hidden-rect seeding that keeps switch-back
+/// from comparing equal to a stale tiled entry.
 ///
-/// Two reliability rules live here:
-/// - Read-before-write: when there is no `applied_rects` entry (post-wake
-///   clear, fresh tile), one cheap AX read that already matches the target
-///   skips the write. Reads don't reflow; writes do (Firefox). This makes
-///   wake resync cheap when windows haven't moved.
-/// - Gone grace: a single poll miss never untracks. Post-wake / transient
-///   AX hiccups empty `windows_for_pid` for live windows, so only windows
-///   still missing after `GONE_GRACE` are dropped via the destroyed path.
-/// - Pinned backoff: the writer reports "drift pinned" when consecutive
-///   readbacks stop moving (busy app event loop ignoring writes). After
-///   `PIN_STRIKES` consecutive pins the layout skips writes for `PIN_BACKOFF`
-///   and retries on a timer — time-bounded, never permanent, so a
-///   late-becoming-resizable window heals at most one backoff late.
-impl StateManager {
+/// `StateManager` retains the workspace tree, routing, and the `OsAdapter`
+/// — this module owns every write-policy map, so destroy, terminate, and
+/// wake collapse to one `forget` / `clear_on_wake` each. The interface is
+/// the test surface: policy tests target these methods directly, with no
+/// `StateManager` harness.
+pub(super) struct LayoutWriteCache {
+    /// Last rect successfully pushed to the OS per window (tiles and hides),
+    /// with the write time. `should_write` skips windows already at their
+    /// target so redundant layouts don't hammer the AX API — Firefox reflows
+    /// on every write and visibly crawls under the repeat storm, while native
+    /// apps shrug it off. Only updated on success so failed writes retry.
+    /// Entries are invalidated by `note_displaced` / `is_displaced` when the
+    /// window is genuinely displaced (user drag, app move) so the next layout
+    /// re-asserts — without this, drag snap-back would compare equal and
+    /// wrongly skip.
+    applied_rects: HashMap<WindowId, (Rect, Instant)>,
+    /// Last time a transient failure was log-emitted per window. Live
+    /// resizes make the OS reject size writes on every layout until the drag
+    /// settles — without this, each retry logs again and the log fills with
+    /// spam. Successful writes clear the entry so the next failure episode
+    /// logs fresh.
+    layout_fail_logged: HashMap<WindowId, Instant>,
+    /// First time a tracked window reported `Gone`. A single miss is not
+    /// death: post-wake / transient AX hiccups empty the writer's listing
+    /// for live windows — the same WindowId reappears seconds later.
+    /// Untrack only after the window stays missing past `GONE_GRACE`.
+    /// Cleared on success, destroy, terminate and wake.
+    gone_since: HashMap<WindowId, Instant>,
+    /// Consecutive Pinned reports per window: the writer saw readbacks stop
+    /// moving, meaning further writes are futile (busy app event loop).
+    /// After `PIN_STRIKES` the layout skips writes for `PIN_BACKOFF` and
+    /// retries on a timer instead of storming. Time-bounded, never
+    /// permanent — a late-becoming-resizable window heals at most one
+    /// backoff late. Cleared on success, target change, displace, destroy,
+    /// terminate and wake.
+    pin_state: HashMap<WindowId, PinState>,
+}
+
+impl LayoutWriteCache {
     /// A window the OS stops listing is kept tracked for this long before
-    /// `apply_layout` treats it as genuinely closed. Covers the post-wake
+    /// the caller treats it as genuinely closed. Covers the post-wake
     /// AX blackout and transient refresh races (same WindowId reappearing
     /// seconds later); real closes arrive via the destroyed notification
     /// immediately and don't wait on this.
     const GONE_GRACE: Duration = Duration::from_secs(10);
-    /// Consecutive "drift pinned" failures before writes back off. Three
-    /// strikes is ~3–6s of futility evidence: fast enough to matter, slow
-    /// enough to ride out transient contention without throttling a window
-    /// that is still making progress.
+    /// Consecutive Pinned reports before writes back off. Three strikes is
+    /// ~3–6s of futility evidence: fast enough to matter, slow enough to
+    /// ride out transient contention without throttling a window that is
+    /// still making progress.
     const PIN_STRIKES: u32 = 3;
     /// How long a pinned window's writes are skipped before the next retry.
     /// Bounds the heal delay for a late-becoming-resizable window while
     /// cutting a chronic storm to a fraction of its write volume.
     const PIN_BACKOFF: Duration = Duration::from_secs(15);
 
+    pub(super) fn new() -> Self {
+        Self {
+            applied_rects: HashMap::new(),
+            layout_fail_logged: HashMap::new(),
+            gone_since: HashMap::new(),
+            pin_state: HashMap::new(),
+        }
+    }
+
+    /// The one funnel for "should this window be written": skip-if-unchanged,
+    /// read-before-write, and pin backoff. `actual` is the caller's single
+    /// cheap AX read (reads don't reflow; writes do). Returns false when the
+    /// write is provably redundant, already claimed, or backed off.
+    pub(super) fn should_write(
+        &mut self,
+        window_id: WindowId,
+        target: Rect,
+        actual: Option<Rect>,
+    ) -> bool {
+        // Skip windows already at their target — redundant AX writes are
+        // what makes Firefox crawl (reflow per write).
+        if self.applied_rects.get(&window_id).map(|(r, _)| r) == Some(&target) {
+            return false;
+        }
+        // Read-before-write: with no `applied_rects` entry (post-wake
+        // clear, fresh tile) a single cheap AX read that already matches
+        // the target claims the entry and skips the write. `None`
+        // (unreadable/stale element) falls through to the write, which is
+        // what refreshes the element.
+        if !self.applied_rects.contains_key(&window_id) {
+            if let Some(actual) = actual {
+                if rects_close(actual, target, LAYOUT_EPSILON) {
+                    self.record_success(window_id, target);
+                    return false;
+                }
+            }
+        }
+        // Pinned backoff: a window whose writes provably do nothing skips
+        // the write and retries on a timer. A changed target is a fresh
+        // situation — drop the pin and write.
+        let now = Instant::now();
+        match self.pin_state.get(&window_id).copied() {
+            Some(p) if p.target != target => {
+                self.pin_state.remove(&window_id);
+            }
+            Some(p)
+                if p.strikes >= Self::PIN_STRIKES
+                    && now.duration_since(p.last_attempt) < Self::PIN_BACKOFF =>
+            {
+                log::debug!(
+                    "layout_cache: window {} pinned, backing off write (retry in {:?})",
+                    window_id,
+                    Self::PIN_BACKOFF
+                );
+                return false;
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Record a landed write: claims the skip entry and clears every
+    /// failure episode so the next one logs and retries fresh.
+    pub(super) fn record_success(&mut self, window_id: WindowId, target: Rect) {
+        self.applied_rects
+            .insert(window_id, (target, Instant::now()));
+        self.layout_fail_logged.remove(&window_id);
+        self.gone_since.remove(&window_id);
+        self.pin_state.remove(&window_id);
+    }
+
+    /// Record a failed write and report what the caller must do. `Ok` is
+    /// accepted defensively (callers route it to `record_success`); every
+    /// other outcome updates exactly one episode: pin strikes, gone grace,
+    /// or the throttled transient log. Failed writes never claim the skip
+    /// entry, so the next layout retries.
+    pub(super) fn record_failure(
+        &mut self,
+        window_id: WindowId,
+        target: Rect,
+        outcome: WriteOutcome,
+    ) -> AfterWrite {
+        match outcome {
+            WriteOutcome::Ok => {
+                self.record_success(window_id, target);
+                AfterWrite::Keep
+            }
+            // Pinned window: consecutive readbacks stopped moving, so
+            // further writes are futile (busy app event loop). Count
+            // strikes toward backoff instead of throttled-logging
+            // every failure — the storm is the problem, not the log.
+            // Debug per strike, warn once when backoff engages.
+            WriteOutcome::Pinned { actual, .. } => {
+                let now = Instant::now();
+                let strikes = match self.pin_state.get(&window_id) {
+                    Some(pin) if pin.target == target => pin.strikes + 1,
+                    _ => 1,
+                };
+                self.pin_state.insert(
+                    window_id,
+                    PinState {
+                        strikes,
+                        last_attempt: now,
+                        target,
+                    },
+                );
+                if strikes == Self::PIN_STRIKES {
+                    log::warn!(
+                        "layout_cache: window {} pinned at {:?} (target {:?}), backing off — retrying every {:?}",
+                        window_id,
+                        actual,
+                        target,
+                        Self::PIN_BACKOFF
+                    );
+                } else {
+                    log::debug!(
+                        "layout_cache: window {} pinned strike {}/{} (target {:?} actual {:?})",
+                        window_id,
+                        strikes,
+                        Self::PIN_STRIKES,
+                        target,
+                        actual
+                    );
+                }
+                AfterWrite::Keep
+            }
+            // Gone: the writer already refreshed + re-discovered and still
+            // missed, so no second poll here — just the grace timer.
+            // Post-wake / transient AX blackouts empty the writer's listing
+            // for live windows, so only windows still gone after GONE_GRACE
+            // report Untrack.
+            WriteOutcome::Gone => {
+                let now = Instant::now();
+                match self.gone_since.get(&window_id) {
+                    Some(first) if now.duration_since(*first) >= Self::GONE_GRACE => {
+                        log::warn!(
+                            "layout_cache: window {} still gone after {:?}, untracking",
+                            window_id,
+                            Self::GONE_GRACE,
+                        );
+                        AfterWrite::Untrack
+                    }
+                    Some(_) => {
+                        log::debug!(
+                            "layout_cache: window {} missing, within gone grace — keeping",
+                            window_id,
+                        );
+                        AfterWrite::Keep
+                    }
+                    None => {
+                        log::debug!(
+                            "layout_cache: window {} missing, starting gone grace — keeping",
+                            window_id,
+                        );
+                        self.gone_since.insert(window_id, now);
+                        AfterWrite::Keep
+                    }
+                }
+            }
+            // Drift + transient contention: the write never landed.
+            // Throttled log, retry on the next layout.
+            WriteOutcome::Drift { target, actual } => {
+                self.log_transient(
+                    window_id,
+                    &format!(
+                        "drift did not converge target {:?} actual {:?}",
+                        target, actual
+                    ),
+                );
+                AfterWrite::Keep
+            }
+            WriteOutcome::Transient(msg) => {
+                self.log_transient(window_id, &msg);
+                AfterWrite::Keep
+            }
+        }
+    }
+
+    /// Forget the skip + pin entries so the next layout rewrites promptly.
+    /// A moved window is a fresh situation for the pin count too: it gets
+    /// prompt writes again, not backoff silence.
+    pub(super) fn invalidate(&mut self, window_id: WindowId) {
+        self.applied_rects.remove(&window_id);
+        self.pin_state.remove(&window_id);
+    }
+
+    /// Drop every entry for a window (destroy / terminate paths).
+    pub(super) fn forget(&mut self, window_id: WindowId) {
+        self.applied_rects.remove(&window_id);
+        self.layout_fail_logged.remove(&window_id);
+        self.gone_since.remove(&window_id);
+        self.pin_state.remove(&window_id);
+    }
+
+    /// Drop the whole cache: stale AX refs + moved displays mean every
+    /// "already applied" entry is a lie after sleep. The gone grace
+    /// restarts too — pre-sleep misses must not kill windows while
+    /// post-wake AX is still blacked out — and so does the pin count, so
+    /// post-wake writes aren't backoff-silenced.
+    pub(super) fn clear_on_wake(&mut self) {
+        self.applied_rects.clear();
+        self.layout_fail_logged.clear();
+        self.gone_since.clear();
+        self.pin_state.clear();
+    }
+
+    /// If the window's actual rect genuinely disagrees with where we put it,
+    /// invalidate so the next layout re-asserts (snap-back, app moves).
+    /// Reads within the post-write grace window are our animation settling;
+    /// reads within epsilon are jitter, not a drag. Full-rect, like the
+    /// misplaced sweep: size drift counts too.
+    ///
+    /// `None` (unreadable) with a placed entry also invalidates: the window
+    /// may be gone, and only a write attempt (→ `Gone` → grace) can tell —
+    /// otherwise the skip entry strands it forever with no write ever
+    /// observing the disappearance. `None` with no entry is a no-op.
+    pub(super) fn note_displaced(&mut self, window_id: WindowId, actual: Option<Rect>) {
+        let (target, written_at) = match self.applied_rects.get(&window_id) {
+            Some(v) => *v,
+            None => return,
+        };
+        let displaced = match actual {
+            Some(r) => rects_displaced(r, target),
+            None => true,
+        };
+        if displaced && Instant::now().duration_since(written_at) > DISPLACE_GRACE {
+            log::debug!(
+                "layout_cache: window {} displaced (actual {:?}), invalidating",
+                window_id,
+                actual
+            );
+            self.invalidate(window_id);
+        }
+    }
+
+    /// Full-rect displacement check for the misplaced sweep: true when the
+    /// OS rect genuinely disagrees with the tiled target. Recent writes are
+    /// animation settling, not external drift. The caller invalidates and
+    /// re-applies on true.
+    pub(super) fn is_displaced(
+        &self,
+        window_id: WindowId,
+        target: Rect,
+        actual: Rect,
+        now: Instant,
+    ) -> bool {
+        if !rects_displaced(actual, target) {
+            return false;
+        }
+        if let Some((_, written_at)) = self.applied_rects.get(&window_id) {
+            if now.duration_since(*written_at) < DISPLACE_GRACE {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Record where hidden windows were put: a hidden rect never equals a
+    /// future tile target, so this can't cause a wrongful skip — worst case
+    /// one extra write. Without it, a window hidden after being tiled would
+    /// compare equal to its stale tiled entry and never come back on
+    /// switch-back.
+    pub(super) fn seed_hidden(
+        &mut self,
+        rect: Rect,
+        window_ids: impl IntoIterator<Item = WindowId>,
+    ) {
+        let written_at = Instant::now();
+        for wid in window_ids {
+            self.applied_rects.insert(wid, (rect, written_at));
+        }
+    }
+
+    /// Throttled log for expected-transient failures: warn on the first
+    /// failure per window per throttle window, debug on repeats. Repeats
+    /// mean the next layout is still retrying the same contested write
+    /// (e.g. an in-progress live resize), not new information.
+    fn log_transient(&mut self, window_id: WindowId, msg: &str) {
+        const FAIL_LOG_THROTTLE: Duration = Duration::from_secs(5);
+        let now = Instant::now();
+        let repeat = self
+            .layout_fail_logged
+            .get(&window_id)
+            .is_some_and(|last| now.duration_since(*last) < FAIL_LOG_THROTTLE);
+        if repeat {
+            log::debug!(
+                "layout_cache: write retry failed for window {}: {}",
+                window_id,
+                msg
+            );
+        } else {
+            log::warn!(
+                "layout_cache: write failed for window {}: {} (retrying)",
+                window_id,
+                msg
+            );
+            self.layout_fail_logged.insert(window_id, now);
+        }
+    }
+
+    /// Drop the skip entry so the next layout takes the read-before-write
+    /// path (mirrors the post-wake cleared cache).
+    #[cfg(test)]
+    pub(super) fn drop_applied_for_test(&mut self, window_id: WindowId) {
+        self.applied_rects.remove(&window_id);
+    }
+
+    /// Age the skip entry past `DISPLACE_GRACE` so the next displacement
+    /// check reads it as external, not animation settling.
+    #[cfg(test)]
+    pub(super) fn age_applied_for_test(&mut self, window_id: WindowId, age: Duration) {
+        if let Some((rect, _)) = self.applied_rects.get(&window_id).copied() {
+            self.applied_rects
+                .insert(window_id, (rect, Instant::now() - age));
+        }
+    }
+
+    /// Age the gone-grace entry past `GONE_GRACE` so the next miss untracks
+    /// (mirrors a window staying closed).
+    #[cfg(test)]
+    pub(super) fn age_gone_for_test(&mut self, window_id: WindowId, age: Duration) {
+        if self.gone_since.contains_key(&window_id) {
+            self.gone_since.insert(window_id, Instant::now() - age);
+        }
+    }
+
+    /// Age the pin entry past `PIN_BACKOFF` so the next layout retries a
+    /// backed-off window (mirrors the backoff timer expiring).
+    #[cfg(test)]
+    pub(super) fn age_pin_for_test(&mut self, window_id: WindowId, age: Duration) {
+        if let Some(pin) = self.pin_state.get(&window_id).copied() {
+            self.pin_state.insert(
+                window_id,
+                PinState {
+                    last_attempt: Instant::now() - age,
+                    ..pin
+                },
+            );
+        }
+    }
+
+    /// True when a transient failure was log-emitted for the window and no
+    /// success has cleared it. Lets integration tests observe the throttle
+    /// through the interface instead of the map.
+    #[cfg(test)]
+    pub(super) fn throttle_armed(&self, window_id: WindowId) -> bool {
+        self.layout_fail_logged.contains_key(&window_id)
+    }
+}
+
+/// Consecutive Pinned reports for one window and target, most recently at
+/// `last_attempt`. Keyed per target so a changed target starts fresh.
+#[derive(Clone, Copy)]
+struct PinState {
+    strikes: u32,
+    last_attempt: Instant,
+    target: Rect,
+}
+
+impl StateManager {
     pub(super) fn apply_layout(&mut self, workspace_idx: usize) {
         let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
         self.last_layout_rects = rects.clone();
@@ -66,163 +463,19 @@ impl StateManager {
 
         let mut dead = Vec::new();
         for (&window_id, rect) in &rects {
-            // Skip windows already at their target — redundant AX writes are
-            // what makes Firefox crawl (reflow per write).
-            if self.applied_rects.get(&window_id).map(|(r, _)| r) == Some(rect) {
+            // One cheap AX read feeds the funnel: reads don't reflow,
+            // writes do (Firefox).
+            let actual = self.os.window_rect(window_id);
+            if !self.layout_cache.should_write(window_id, *rect, actual) {
                 continue;
             }
-            // Read-before-write: with no `applied_rects` entry (post-wake
-            // clear, fresh tile) a single cheap AX read that already matches
-            // the target skips the write. Reads don't reflow; writes do
-            // (Firefox). This makes wake resync cheap when windows haven't
-            // moved. `None` (unreadable/stale element) falls through to the
-            // write, which is what refreshes the element.
-            if !self.applied_rects.contains_key(&window_id) {
-                if let Some(actual) = self.os.window_rect(window_id) {
-                    if rects_close(actual, *rect, LAYOUT_EPSILON) {
-                        self.applied_rects
-                            .insert(window_id, (*rect, Instant::now()));
-                        self.gone_since.remove(&window_id);
-                        self.pin_state.remove(&window_id);
-                        continue;
-                    }
-                }
-            }
-            // Pinned backoff: a window whose writes provably do nothing
-            // (consecutive "drift pinned" failures) skips the write and
-            // retries on a timer. Reads above still run, so a window the app
-            // moved itself heals without writing. A changed target is a fresh
-            // situation — drop the pin and write.
-            let now = Instant::now();
-            let pin = self.pin_state.get(&window_id).copied();
-            match pin {
-                Some(p) if p.target != *rect => {
-                    self.pin_state.remove(&window_id);
-                }
-                Some(p)
-                    if p.strikes >= Self::PIN_STRIKES
-                        && now.duration_since(p.last_attempt) < Self::PIN_BACKOFF =>
-                {
-                    log::debug!(
-                        "apply_layout: window {} pinned, backing off write (retry in {:?})",
-                        window_id,
-                        Self::PIN_BACKOFF
-                    );
-                    continue;
-                }
-                _ => {}
-            }
             match self.os.set_window_rect(window_id, *rect) {
-                Ok(()) => {
-                    self.applied_rects
-                        .insert(window_id, (*rect, Instant::now()));
-                    self.layout_fail_logged.remove(&window_id);
-                    self.gone_since.remove(&window_id);
-                    self.pin_state.remove(&window_id);
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    // Pinned window: consecutive readbacks stopped moving, so
-                    // further writes are futile (busy app event loop). Count
-                    // strikes toward backoff instead of throttled-logging
-                    // every failure — the storm is the problem, not the log.
-                    // Debug per strike, warn once when backoff engages.
-                    if msg.contains("drift pinned") {
-                        let now = Instant::now();
-                        let strikes = match self.pin_state.get(&window_id) {
-                            Some(pin) if pin.target == *rect => pin.strikes + 1,
-                            _ => 1,
-                        };
-                        self.pin_state.insert(
-                            window_id,
-                            PinState {
-                                strikes,
-                                last_attempt: now,
-                                target: *rect,
-                            },
-                        );
-                        if strikes == Self::PIN_STRIKES {
-                            log::warn!(
-                                "apply_layout: window {} pinned (ignoring writes), backing off — retrying every {:?}",
-                                window_id,
-                                Self::PIN_BACKOFF
-                            );
-                        } else {
-                            log::debug!(
-                                "apply_layout: window {} pinned strike {}/{} ({})",
-                                window_id,
-                                strikes,
-                                Self::PIN_STRIKES,
-                                msg
-                            );
-                        }
-                        continue;
-                    }
-                    // Permanent-gone signals: the adapter already refreshed +
-                    // re-discovered and still failed. A single poll miss is
-                    // NOT death — post-wake / transient AX blackouts empty
-                    // `windows_for_pid` (used by both the refresh and this
-                    // verify poll) for live windows — so record the first
-                    // miss and only drop the window via the destroyed path
-                    // once it stays missing past GONE_GRACE.
-                    if msg.contains("kAXErrorInvalidUIElement")
-                        || msg.contains("element not found in cache")
+                WriteOutcome::Ok => self.layout_cache.record_success(window_id, *rect),
+                outcome => {
+                    if self.layout_cache.record_failure(window_id, *rect, outcome)
+                        == AfterWrite::Untrack
                     {
-                        let still_exists = self
-                            .store
-                            .pid_for(window_id)
-                            .map(|pid| self.os.poll_windows_for_pid(pid).contains(&window_id))
-                            .unwrap_or(false);
-                        if !still_exists {
-                            let now = Instant::now();
-                            match self.gone_since.get(&window_id) {
-                                Some(first) if now.duration_since(*first) >= Self::GONE_GRACE => {
-                                    log::warn!(
-                                        "apply_layout: window {} still gone after {:?} ({}), untracking",
-                                        window_id,
-                                        Self::GONE_GRACE,
-                                        msg
-                                    );
-                                    dead.push(window_id);
-                                }
-                                Some(_) => {
-                                    log::debug!(
-                                        "apply_layout: window {} missing ({}), within gone grace — keeping",
-                                        window_id,
-                                        msg
-                                    );
-                                }
-                                None => {
-                                    log::debug!(
-                                        "apply_layout: window {} missing ({}), starting gone grace — keeping",
-                                        window_id,
-                                        msg
-                                    );
-                                    self.gone_since.insert(window_id, now);
-                                }
-                            }
-                            continue;
-                        }
-                        // Listed but unwritable (refresh race): fall through
-                        // to transient logging and retry next layout. Clear
-                        // a stale grace entry — the window is back.
-                        self.gone_since.remove(&window_id);
-                    }
-                    // Expected-transient AX contention, not a daemon bug.
-                    // Live resizes reject size writes with kAXErrorFailure /
-                    // kAXErrorCannotComplete until the drag settles, and a
-                    // mid-flight element refresh surfaces InvalidUIElement
-                    // while the window still exists. Warn once per window
-                    // per throttle window, then debug — the write retries on
-                    // the next layout anyway, so ERROR on every retry is spam.
-                    if is_transient_ax_error(&msg) {
-                        self.log_transient_layout_failure(window_id, &msg);
-                    } else {
-                        log::error!(
-                            "apply_layout: set_window_rect failed for window {}: {}",
-                            window_id,
-                            e
-                        );
+                        dead.push(window_id);
                     }
                 }
             }
@@ -233,196 +486,204 @@ impl StateManager {
             self.on_window_destroyed(window_id);
         }
     }
-
-    /// Throttled log for expected-transient layout failures: warn on the
-    /// first failure per window per throttle window, debug on repeats.
-    /// Repeats mean the next layout is still retrying the same contested
-    /// write (e.g. an in-progress live resize), not new information.
-    fn log_transient_layout_failure(&mut self, window_id: WindowId, msg: &str) {
-        const FAIL_LOG_THROTTLE: Duration = Duration::from_secs(5);
-        let now = Instant::now();
-        let repeat = self
-            .layout_fail_logged
-            .get(&window_id)
-            .is_some_and(|last| now.duration_since(*last) < FAIL_LOG_THROTTLE);
-        if repeat {
-            log::debug!(
-                "apply_layout: set_window_rect retry failed for window {}: {}",
-                window_id,
-                msg
-            );
-        } else {
-            log::warn!(
-                "apply_layout: set_window_rect failed for window {}: {} (retrying)",
-                window_id,
-                msg
-            );
-            self.layout_fail_logged.insert(window_id, now);
-        }
-    }
-
-    /// If the window is genuinely displaced from where we put it, forget
-    /// the applied entry so the next layout re-asserts (snap-back, app
-    /// moves). Two guards keep our own writes from tripping this:
-    /// moves within the post-write grace window are our animation
-    /// settling, and moves within a few px are jitter, not a drag.
-    pub(super) fn note_displaced(&mut self, window_id: WindowId, x: f64, y: f64) {
-        const MOVE_GRACE: Duration = Duration::from_millis(500);
-        const MOVE_EPSILON: f64 = 8.0;
-        if let Some((target, written_at)) = self.applied_rects.get(&window_id) {
-            let now = Instant::now();
-            let displaced =
-                (x - target.x).abs() > MOVE_EPSILON || (y - target.y).abs() > MOVE_EPSILON;
-            if displaced && now.duration_since(*written_at) > MOVE_GRACE {
-                log::debug!(
-                    "on_window_moved: window {} displaced to ({:.0},{:.0}), invalidating applied rect",
-                    window_id,
-                    x,
-                    y
-                );
-                self.applied_rects.remove(&window_id);
-                // Fresh situation for the pin count too: a moved window gets
-                // prompt writes again, not backoff silence.
-                self.pin_state.remove(&window_id);
-            }
-        }
-    }
-
-    /// Record where hidden windows were put: a hidden rect never equals a
-    /// future tile target, so this can't cause a wrongful skip — worst case
-    /// one extra write. Without it, a window hidden after being tiled would
-    /// compare equal to its stale tiled entry and never come back on
-    /// switch-back.
-    pub(super) fn seed_hidden_rect(
-        &mut self,
-        rect: Rect,
-        window_ids: impl IntoIterator<Item = WindowId>,
-    ) {
-        let written_at = Instant::now();
-        for wid in window_ids {
-            self.applied_rects.insert(wid, (rect, written_at));
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn age_applied_for_test(&mut self, window_id: WindowId, age: Duration) {
-        if let Some((rect, _)) = self.applied_rects.get(&window_id).copied() {
-            self.applied_rects
-                .insert(window_id, (rect, Instant::now() - age));
-        }
-    }
-
-    /// Drop the skip-if-unchanged entry so the next layout takes the
-    /// read-before-write path (mirrors the post-wake cleared cache).
-    #[cfg(test)]
-    pub(super) fn drop_applied_for_test(&mut self, window_id: WindowId) {
-        self.applied_rects.remove(&window_id);
-    }
-
-    /// Age the gone-grace entry past `GONE_GRACE` so the next missing poll
-    /// untracks (mirrors a window staying closed).
-    #[cfg(test)]
-    pub(super) fn age_gone_for_test(&mut self, window_id: WindowId, age: Duration) {
-        if self.gone_since.contains_key(&window_id) {
-            self.gone_since.insert(window_id, Instant::now() - age);
-        }
-    }
-
-    /// Age the pin entry past `PIN_BACKOFF` so the next layout retries a
-    /// backed-off window (mirrors the backoff timer expiring).
-    #[cfg(test)]
-    pub(super) fn age_pin_for_test(&mut self, window_id: WindowId, age: Duration) {
-        if let Some(pin) = self.pin_state.get(&window_id).copied() {
-            self.pin_state.insert(
-                window_id,
-                PinState {
-                    last_attempt: Instant::now() - age,
-                    ..pin
-                },
-            );
-        }
-    }
-}
-
-/// Consecutive stable-pinned failures for one window and target: the writer
-/// reported "drift pinned" (readbacks stopped moving) `strikes` times in a
-/// row for `target`, most recently at `last_attempt`. Keyed per target so a
-/// changed target starts fresh.
-#[derive(Clone, Copy)]
-pub(super) struct PinState {
-    strikes: u32,
-    last_attempt: Instant,
-    target: Rect,
-}
-
-/// Tolerance for "already at target" comparisons: matches the 8px the
-/// misplaced sweep (`reconcile.rs`) and drag settle (`layout_cache.rs`)
-/// use. Anything within this is "at target" everywhere in the system, so
-/// accepting it here can't cause a wrongful permanent skip — and the AX
-/// writer (`ax_element.rs`) uses the same value so a window it accepts
-/// won't be flagged misplaced by the sweep.
-const LAYOUT_EPSILON: f64 = 8.0;
-
-/// Pure epsilon comparison for the read-before-write skip. Mirrors
-/// `ax_element::rects_close` — keep the two in sync.
-fn rects_close(a: Rect, b: Rect, eps: f64) -> bool {
-    (a.x - b.x).abs() <= eps
-        && (a.y - b.y).abs() <= eps
-        && (a.width - b.width).abs() <= eps
-        && (a.height - b.height).abs() <= eps
-}
-
-/// AX failures that are expected while a window is being live-resized or is
-/// mid-flight through an element refresh — the write retries on the next
-/// layout, so these are throttled warnings, not errors. Anything else (e.g.
-/// permission loss) stays an error. Gone-window signals are classified by the
-/// caller via the OS listing check before reaching here.
-fn is_transient_ax_error(msg: &str) -> bool {
-    // Size writes rejected while the user holds the resize handle, or while
-    // the app clamps the size (min/max, fullscreen): the next layout retries.
-    msg.contains("kAXErrorFailure")
-        || msg.contains("kAXErrorCannotComplete")
-        // Stale element for a window the OS still lists: the refresh race,
-        // not a close. (Truly gone windows are untracked by the caller.)
-        || msg.contains("kAXErrorInvalidUIElement")
-        || msg.contains("element not found in cache")
-        // Persistent position/size drift (Firefox frame-vs-content shift,
-        // login-time not-yet-resizable windows): the write never landed so
-        // `applied_rects` must not record success. Retry on next layout.
-        || msg.contains("drift did not converge")
-        || msg.contains("drift pinned")
-        || msg.contains("drift attempt")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_transient_ax_error;
+    use super::*;
 
-    #[test]
-    fn classifies_live_resize_contention_as_transient() {
-        assert!(is_transient_ax_error(
-            "AXUIElementSetAttributeValue size error: kAXErrorFailure"
-        ));
-        assert!(is_transient_ax_error(
-            "AXUIElementSetAttributeValue size error: kAXErrorCannotComplete"
-        ));
-        assert!(is_transient_ax_error(
-            "AXUIElementSetAttributeValue position error: kAXErrorInvalidUIElement"
-        ));
-        assert!(is_transient_ax_error(
-            "element not found in cache for window 17912"
-        ));
-        assert!(is_transient_ax_error(
-            "set_window_rect drift did not converge target Rect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 } actual Rect { x: 10.0, y: 10.0, width: 100.0, height: 100.0 }"
-        ));
-        assert!(is_transient_ax_error(
-            "set_window_rect drift pinned target Rect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 } actual Rect { x: 10.0, y: 10.0, width: 100.0, height: 100.0 } (stable across attempts)"
-        ));
+    fn target() -> Rect {
+        Rect::new(0.0, 0.0, 960.0, 1040.0)
+    }
+
+    fn cache_with_placed_window() -> (LayoutWriteCache, Rect) {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        cache.record_success(7, t);
+        (cache, t)
     }
 
     #[test]
-    fn unexpected_errors_stay_errors() {
-        assert!(!is_transient_ax_error("AXIsProcessTrusted() == false"));
-        assert!(!is_transient_ax_error("some unknown io failure"));
+    fn skip_when_already_at_target() {
+        let (mut cache, t) = cache_with_placed_window();
+        assert!(!cache.should_write(7, t, None));
+        assert!(!cache.should_write(7, t, Some(Rect::new(500.0, 500.0, 10.0, 10.0))));
+    }
+
+    #[test]
+    fn read_before_write_claims_placed_window() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        // No entry, OS already at target: skip AND claim, so the next
+        // layout skips without even needing the read.
+        assert!(!cache.should_write(7, t, Some(t)));
+        assert!(!cache.should_write(7, t, None));
+    }
+
+    #[test]
+    fn read_before_write_miss_and_unreadable_fall_through() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        assert!(cache.should_write(7, t, Some(Rect::new(500.0, 500.0, 10.0, 10.0))));
+        assert!(cache.should_write(7, t, None));
+    }
+
+    #[test]
+    fn pin_strikes_back_off_then_heal() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let pinned = |c: &LayoutWriteCache| c.pin_state.get(&7).map(|p| p.strikes).unwrap_or(0);
+        for strike in 1..=3 {
+            assert!(cache.should_write(7, t, None));
+            assert_eq!(
+                cache.record_failure(
+                    7,
+                    t,
+                    WriteOutcome::Pinned {
+                        target: t,
+                        actual: Rect::new(500.0, 500.0, 10.0, 10.0),
+                    }
+                ),
+                AfterWrite::Keep
+            );
+            assert_eq!(pinned(&cache), strike);
+        }
+        // Backoff engaged: no write.
+        assert!(!cache.should_write(7, t, None));
+        // Timer expires: retry.
+        cache.age_pin_for_test(7, Duration::from_secs(30));
+        assert!(cache.should_write(7, t, None));
+        // Changed target: fresh situation, immediate write.
+        let other = Rect::new(960.0, 0.0, 960.0, 1040.0);
+        assert!(cache.should_write(7, other, None));
+        // Healed: success clears the pin, skip resumes.
+        cache.record_success(7, t);
+        assert_eq!(pinned(&cache), 0);
+        assert!(!cache.should_write(7, t, None));
+    }
+
+    #[test]
+    fn gone_grace_keeps_then_untracks() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Keep
+        );
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Keep
+        );
+        cache.age_gone_for_test(7, Duration::from_secs(30));
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Untrack
+        );
+    }
+
+    #[test]
+    fn drift_and_transient_never_claim_and_arm_throttle() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        assert_eq!(
+            cache.record_failure(
+                7,
+                t,
+                WriteOutcome::Drift {
+                    target: t,
+                    actual: Rect::new(500.0, 500.0, 10.0, 10.0),
+                }
+            ),
+            AfterWrite::Keep
+        );
+        assert!(cache.should_write(7, t, None));
+        assert!(cache.throttle_armed(7));
+        assert_eq!(
+            cache.record_failure(
+                7,
+                t,
+                WriteOutcome::Transient("kAXErrorFailure (live resize)".into())
+            ),
+            AfterWrite::Keep
+        );
+        assert!(cache.throttle_armed(7));
+        // Success clears the episode.
+        cache.record_success(7, t);
+        assert!(!cache.throttle_armed(7));
+        assert!(!cache.should_write(7, t, None));
+    }
+
+    #[test]
+    fn displaced_outside_grace_invalidates() {
+        let (mut cache, t) = cache_with_placed_window();
+        let far = Rect::new(500.0, 500.0, 960.0, 1040.0);
+        // Fresh write: settling, not a drag — even a far read doesn't invalidate.
+        cache.note_displaced(7, Some(far));
+        assert!(!cache.should_write(7, t, None));
+        // Aged past grace: external move, rewrite.
+        cache.age_applied_for_test(7, Duration::from_secs(5));
+        cache.note_displaced(7, Some(far));
+        assert!(cache.should_write(7, t, None));
+        // Jitter inside epsilon never invalidates, however old.
+        cache.record_success(7, t);
+        cache.age_applied_for_test(7, Duration::from_secs(5));
+        cache.note_displaced(7, Some(Rect::new(1.0, 1.0, 960.0, 1040.0)));
+        assert!(!cache.should_write(7, t, None));
+        // Unreadable element with a placed entry re-probes: the window may
+        // be gone, and only a write attempt (→ Gone → grace) can tell.
+        cache.note_displaced(7, None);
+        assert!(cache.should_write(7, t, None));
+        // Unreadable with no entry is a no-op (nothing claimed to keep).
+        let mut fresh = LayoutWriteCache::new();
+        fresh.note_displaced(7, None);
+        assert!(fresh.should_write(7, t, None));
+    }
+
+    #[test]
+    fn is_displaced_needs_full_rect_mismatch_past_grace() {
+        let (mut cache, t) = cache_with_placed_window();
+        let now = Instant::now();
+        assert!(!cache.is_displaced(7, t, t, now));
+        // Fresh write still settling: position drift doesn't count yet.
+        assert!(!cache.is_displaced(7, t, Rect::new(500.0, 0.0, 960.0, 1040.0), now));
+        // Past grace: position-only drift counts.
+        cache.age_applied_for_test(7, Duration::from_secs(5));
+        let now = Instant::now();
+        assert!(cache.is_displaced(7, t, Rect::new(500.0, 0.0, 960.0, 1040.0), now));
+        // ...but not while our own write is still settling.
+        cache.record_success(7, t);
+        assert!(!cache.is_displaced(7, t, Rect::new(500.0, 0.0, 960.0, 1040.0), Instant::now()));
+        // Size-only drift counts once settled.
+        cache.age_applied_for_test(7, Duration::from_secs(5));
+        assert!(cache.is_displaced(7, t, Rect::new(0.0, 0.0, 800.0, 1040.0), Instant::now()));
+    }
+
+    #[test]
+    fn seeded_hidden_rect_never_skips_a_tile() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        cache.seed_hidden(Rect::new(0.0, 1079.0, 1.0, 1.0), [7]);
+        // Hidden rect != tile target: the next layout must write.
+        assert!(cache.should_write(7, t, Some(Rect::new(0.0, 1079.0, 1.0, 1.0))));
+    }
+
+    #[test]
+    fn forget_and_clear_on_wake_drop_everything() {
+        let (mut cache, t) = cache_with_placed_window();
+        cache.record_failure(7, t, WriteOutcome::Gone);
+        cache.log_transient(7, "boom");
+        cache.forget(7);
+        assert!(cache.should_write(7, t, None));
+        assert!(!cache.throttle_armed(7));
+
+        cache.record_success(7, t);
+        cache.record_failure(7, t, WriteOutcome::Gone);
+        cache.clear_on_wake();
+        // Post-wake: no skip entry (rewrite), no grace (fresh patience).
+        assert!(cache.should_write(7, t, None));
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Keep
+        );
     }
 }

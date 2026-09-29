@@ -64,7 +64,7 @@ fn on_window_hidden_removes_from_tree_but_keeps_pid() {
     sm.on_window_hidden(100);
     assert!(sm.workspaces[0].find_window(100).is_none());
     assert_eq!(sm.store.all_window_pids().get(&100), Some(&42));
-    assert_eq!(sm.store.get(100), Some(0));
+    assert!(sm.store.is_hidden(100));
     assert_eq!(sm.workspaces[0].window_count(), 1);
 }
 
@@ -149,7 +149,7 @@ fn reveal_all_clears_tracker_and_retiles() {
     // Second reveal is idempotent
     let (rtx2, _) = mpsc::channel(1);
     sm.on_command(Command::RevealAll, Some(rtx2));
-    assert!(sm.store.hidden_is_empty());
+    assert!(!sm.store.is_hidden(100));
 }
 
 #[test]
@@ -158,9 +158,9 @@ fn reveal_all_via_hidden_drain_is_idempotent() {
     sm.on_window_created(100, 42);
     sm.on_window_hidden(100);
     sm.reveal_all();
-    assert!(sm.store.hidden_is_empty());
+    assert!(!sm.store.is_hidden(100));
     sm.reveal_all();
-    assert!(sm.store.hidden_is_empty());
+    assert!(!sm.store.is_hidden(100));
 }
 
 #[test]
@@ -169,11 +169,11 @@ fn missed_window_created_sweep_tiles_new_window() {
     // WindowCreated event was ever delivered (missing AX notification
     // or transient non-manageable subrole at creation time). The
     // background sweep must discover it via poll and tile it.
-    let mut sm = setup(1);
+    let (mut sm, handle) = setup_with_handle(1);
     sm.on_window_created(100, 42);
     sm.on_window_created(200, 42);
     // OS-side only: adapter knows 300, StateManager does not.
-    sm.os.inject_window(42, 300);
+    handle.inject_window(42, 300);
     sm.force_window_sweep_for_test();
     sm.on_tick();
     assert!(
@@ -186,9 +186,9 @@ fn missed_window_created_sweep_tiles_new_window() {
 fn app_activated_tiles_new_window_immediately() {
     // Fast path: a tear-off usually focuses its new window, firing
     // AppActivated even when WindowCreated was missed.
-    let mut sm = setup(1);
+    let (mut sm, handle) = setup_with_handle(1);
     sm.on_window_created(100, 42);
-    sm.os.inject_window(42, 300);
+    handle.inject_window(42, 300);
     sm.on_app_activated(42);
     assert!(
         sm.workspaces.iter().any(|ws| ws.find_window(300).is_some()),

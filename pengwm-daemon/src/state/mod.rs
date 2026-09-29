@@ -30,7 +30,7 @@ mod tests;
 use self::bar::{BarReserve, ReloadAction};
 use self::display::DisplaySet;
 use self::drag::DragState;
-use self::layout_cache::PinState;
+use self::layout_cache::LayoutWriteCache;
 use self::store::WindowStore;
 
 pub struct StateManager {
@@ -53,39 +53,10 @@ pub struct StateManager {
     /// `pengwm-bar` process, whose window must not be tiled.
     excluded_pids: Vec<i32>,
     last_layout_rects: HashMap<WindowId, Rect>,
-    /// Last rect successfully pushed to the OS per window (tiles and hides),
-    /// with the write time. `apply_layout` skips windows already at their
-    /// target so redundant layouts don't hammer the AX API — Firefox reflows
-    /// on every write and visibly crawls under the repeat storm, while native
-    /// apps shrug it off. Only updated on success so failed writes retry.
-    /// Entries are invalidated by `on_window_moved` when the window is
-    /// genuinely displaced (user drag, app move) so the next layout
-    /// re-asserts — without this, drag snap-back would compare equal and
-    /// wrongly skip.
-    applied_rects: HashMap<WindowId, (Rect, Instant)>,
-    /// Last time a `set_window_rect` failure was log-emitted per window.
-    /// Live resizes make the OS reject size writes with `kAXErrorFailure`
-    /// on every layout until the drag settles — without this, each retry
-    /// logs again and the log fills with ERROR spam. Successful writes
-    /// clear the entry so the next failure episode logs fresh.
-    layout_fail_logged: HashMap<WindowId, Instant>,
-    /// First time a tracked window failed its write AND the OS no longer
-    /// listed it. A single poll miss is not death: post-wake / transient AX
-    /// hiccups make `windows_for_pid` (used by both the element refresh and
-    /// the gone-verify poll) come back empty while the window is still alive
-    /// — the same WindowId reappears seconds later. Untrack only after the
-    /// window stays missing past `GONE_GRACE`. Cleared on success, destroy,
-    /// terminate and wake.
-    gone_since: HashMap<WindowId, Instant>,
-    /// Consecutive stable-pinned write failures per window (`layout_cache`
-    /// policy): the writer reports "drift pinned" when consecutive readbacks
-    /// stop moving, meaning further writes are futile (busy Firefox event
-    /// loop). After `PIN_STRIKES` the layout skips writes for `PIN_BACKOFF`
-    /// and retries on a timer instead of storming. Time-bounded, never
-    /// permanent — a late-becoming-resizable window heals at most one
-    /// backoff late. Cleared on success, target change, displace, destroy,
-    /// terminate and wake.
-    pin_state: HashMap<WindowId, PinState>,
+    /// Layout-write policy and the maps it reasons about (skip-if-unchanged,
+    /// read-before-write, gone grace, pin backoff, hidden seeding). Owned by
+    /// `LayoutWriteCache` — `StateManager` never touches the maps directly.
+    layout_cache: LayoutWriteCache,
     drag: DragState,
     /// Set when `Command::Quit` is handled; the event loop polls this and
     /// returns so the daemon process can exit.
@@ -173,10 +144,7 @@ impl StateManager {
             bar,
             excluded_pids,
             last_layout_rects: HashMap::new(),
-            applied_rects: HashMap::new(),
-            layout_fail_logged: HashMap::new(),
-            gone_since: HashMap::new(),
-            pin_state: HashMap::new(),
+            layout_cache: LayoutWriteCache::new(),
             drag: DragState::new(),
             shutdown_requested: false,
             switch_debounce_until: None,
@@ -317,7 +285,8 @@ impl StateManager {
             placements.keys()
         );
         self.os.hide_windows(&placements);
-        self.seed_hidden_rect(placement.rect(), placements.keys().copied());
+        self.layout_cache
+            .seed_hidden(placement.rect(), placements.keys().copied());
     }
 
     fn windows_hidden_strategy(&self) -> crate::config::HiddenStrategy {
@@ -329,34 +298,49 @@ impl StateManager {
     }
 
     /// Re-tile every window currently tracked as hidden back into its
-    /// remembered (or routed) workspace and clear `HiddenTracker`. Must clear
-    /// the tracker so future focus/move events are not ignored for now-visible
-    /// windows.
+    /// remembered (or routed) workspace. The store owns the drain; routing
+    /// needs displays + os, so the loop stays here. A retile publishes bar
+    /// state, mirroring `on_window_shown`.
     fn reveal_all(&mut self) {
-        if self.store.hidden_is_empty() {
+        let revealed = self.store.reveal_all();
+        if revealed.is_empty() {
             return;
         }
-        // Snapshot keys to avoid borrow conflict with &mut self in loop.
-        let hidden_ids = self.store.keys();
-        for wid in hidden_ids {
-            // Skip if already re-tiled via earlier iteration
+        let mut retiled = false;
+        for (wid, remembered) in revealed {
+            // Skip if already re-tiled via earlier iteration.
             if self.find_workspace_for_window(wid).is_some() {
-                self.store.hidden_remove(wid);
                 continue;
             }
-            // Reuse on_window_shown which does take_hidden + add_window_to_workspace
-            self.on_window_shown(wid);
+            let pid = match self.store.pid_for(wid) {
+                Some(p) => p,
+                None => continue,
+            };
+            let preferred = if remembered < self.workspaces.len() {
+                remembered
+            } else {
+                self.displays
+                    .routed_workspace_idx(
+                        pid,
+                        &self.workspaces,
+                        self.active_workspace_idx(),
+                        &*self.os,
+                    )
+                    .unwrap_or_else(|| self.active_workspace_idx())
+            };
+            if self.add_window_to_workspace(wid, pid, preferred).is_some() {
+                retiled = true;
+            }
         }
-        // Ensure any remaining entries (e.g. unknown pid) are cleared
-        if !self.store.hidden_is_empty() {
-            for (_, _) in self.store.drain() {}
-        }
-        // Re-layout visible workspaces to ensure tiling clean
+        // Re-layout visible workspaces to ensure tiling clean.
         let visible: Vec<usize> = self.displays.active().values().copied().collect();
         for idx in visible {
             if idx < self.workspaces.len() {
                 self.apply_layout(idx);
             }
+        }
+        if retiled {
+            self.publish_bar_state();
         }
     }
 

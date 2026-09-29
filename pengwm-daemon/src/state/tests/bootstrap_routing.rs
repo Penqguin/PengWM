@@ -185,9 +185,9 @@ fn move_to_full_workspace_aborts_when_no_room_anywhere() {
 
 #[test]
 fn on_window_created_routes_configured_app_to_its_workspace() {
-    let mut sm = setup(1);
-    sm.os.inject_bundle_id(77, "com.google.Chrome".into());
-    sm.os.inject_app_name(77, "Chrome".into());
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(77, "com.google.Chrome".into());
+    handle.inject_app_name(77, "Chrome".into());
 
     sm.on_window_created(777, 77);
 
@@ -201,8 +201,8 @@ fn on_window_created_routes_configured_app_to_its_workspace() {
 
 #[test]
 fn on_window_created_routing_matches_app_name_case_insensitively() {
-    let mut sm = setup(1);
-    sm.os.inject_app_name(88, "spotify".into());
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_app_name(88, "spotify".into());
 
     sm.on_window_created(888, 88);
 
@@ -216,9 +216,9 @@ fn on_window_created_routing_matches_app_name_case_insensitively() {
 
 #[test]
 fn workspace_switch_hides_all_other_workspaces_on_monitor() {
-    let mut sm = setup(1);
+    let (mut sm, handle) = setup_with_handle(1);
     // Route Firefox to Browsing (ws-1) then switch back to Development (ws-0).
-    sm.os.inject_bundle_id(77, "org.mozilla.firefox".into());
+    handle.inject_bundle_id(77, "org.mozilla.firefox".into());
     sm.on_window_created(777, 77);
     let browsing_idx = sm
         .workspaces
@@ -243,8 +243,8 @@ fn workspace_switch_hides_all_other_workspaces_on_monitor() {
 
 #[test]
 fn workspace_switch_debounces_stale_focus() {
-    let mut sm = setup(1);
-    sm.os.inject_bundle_id(77, "org.mozilla.firefox".into());
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(77, "org.mozilla.firefox".into());
     sm.on_window_created(777, 77);
     let browsing_idx = sm
         .workspaces

@@ -95,10 +95,7 @@ impl StateManager {
             }
         }
         self.store.unregister(window_id);
-        self.applied_rects.remove(&window_id);
-        self.layout_fail_logged.remove(&window_id);
-        self.gone_since.remove(&window_id);
-        self.pin_state.remove(&window_id);
+        self.layout_cache.forget(window_id);
         self.publish_bar_state();
     }
 
@@ -106,7 +103,9 @@ impl StateManager {
     /// close) so it stops occupying tiled space, but keep pid tracking so it
     /// can be retiled when it becomes visible again.
     pub fn on_window_hidden(&mut self, window_id: WindowId) {
-        if let Some(idx) = self.store.hide(window_id, &mut self.workspaces) {
+        if let Some(idx) = self.store.hide(window_id, &self.workspaces) {
+            debug_assert!(idx < self.workspaces.len());
+            self.workspaces[idx].remove_window(window_id);
             if self.displays.is_visible(idx, &self.workspaces) {
                 self.apply_layout(idx);
             }
@@ -198,7 +197,11 @@ impl StateManager {
             return;
         }
         let now = Instant::now();
-        self.note_displaced(window_id, x, y);
+        // The event coords drive the drag gesture; displacement reads the OS
+        // rect (cheap, no reflow) so the note shares the sweep's full-rect
+        // predicate instead of trusting possibly-coalesced event coords.
+        let actual = self.os.window_rect(window_id);
+        self.layout_cache.note_displaced(window_id, actual);
         self.drag.on_moved(
             window_id,
             x,
@@ -209,6 +212,30 @@ impl StateManager {
         );
     }
 
+    /// Poll apps for windows the store has never seen and tile them via the
+    /// normal `on_window_created` path (routing, capacity, monocle, layout
+    /// all shared — no duplicate logic). One discovery loop for the tick
+    /// sweep, the app-activate fast path, and wake resync — callers pass
+    /// one pid or all running pids. Only brand-new window ids are touched:
+    /// tracked-but-untiled windows are either hidden (owned by
+    /// `HiddenTracker`) or intentionally overflowed at capacity.
+    pub(super) fn sync_untracked_windows(&mut self, pids: impl IntoIterator<Item = i32>) {
+        for pid in pids {
+            if self.excluded_pids.contains(&pid) {
+                continue;
+            }
+            for window_id in self.os.poll_windows_for_pid(pid) {
+                if !self.store.contains(window_id) {
+                    log::info!(
+                        "sync_untracked: discovered untracked window {} pid {}",
+                        window_id,
+                        pid
+                    );
+                    self.on_window_created(window_id, pid);
+                }
+            }
+        }
+    }
     pub fn on_app_launched(&mut self, pid: i32) {
         log::info!("App launched: pid={}", pid);
         if self.excluded_pids.contains(&pid) {
@@ -229,10 +256,7 @@ impl StateManager {
         self.os.detach_observer(pid);
         let windows = self.store.remove_pid(pid);
         for window_id in windows {
-            self.applied_rects.remove(&window_id);
-            self.layout_fail_logged.remove(&window_id);
-            self.gone_since.remove(&window_id);
-            self.pin_state.remove(&window_id);
+            self.layout_cache.forget(window_id);
             let _ = self
                 .event_tx
                 .try_send(DaemonEvent::WindowDestroyed(window_id));
@@ -247,18 +271,7 @@ impl StateManager {
         // focus, which fires AppActivated even when WindowCreated was missed.
         // A single-pid poll here tiles it immediately instead of waiting for
         // the 2s background sweep. Manageable-filtering still excludes PiP.
-        if !self.excluded_pids.contains(&pid) {
-            for window_id in self.os.poll_windows_for_pid(pid) {
-                if !self.store.contains(window_id) {
-                    log::info!(
-                        "on_app_activated: discovered untracked window {} pid {}",
-                        window_id,
-                        pid
-                    );
-                    self.on_window_created(window_id, pid);
-                }
-            }
-        }
+        self.sync_untracked_windows([pid]);
         if let Some(window_id) = self.os.focused_window_for_pid(pid) {
             self.on_window_focused(window_id);
         } else {
