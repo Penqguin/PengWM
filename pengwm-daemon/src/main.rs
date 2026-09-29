@@ -83,6 +83,10 @@ fn daemon_main() {
 
     #[cfg(target_os = "macos")]
     {
+        // Bound every AX request before the first one is issued: a wedged
+        // app must never stall the run loop that serves keybinds.
+        macos::ax_element::set_global_messaging_timeout(macos::ax_element::MESSAGING_TIMEOUT_SECS);
+
         eprintln!("[2/6] Initializing NSApplication as accessory…");
         use objc2::MainThreadMarker;
         use objc2_app_kit::{

@@ -285,7 +285,7 @@ impl OsAdapter for MacOsAdapter {
                 return true;
             }
             // The whole app hidden (Cmd-H) hides the window too.
-            let app = AXUIElementCreateApplication(pid);
+            let app = ax_element::create_app_element(pid);
             if app.is_null() {
                 return false;
             }

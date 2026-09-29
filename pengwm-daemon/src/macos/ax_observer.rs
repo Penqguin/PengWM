@@ -112,7 +112,7 @@ impl ObserverRegistry {
             return;
         }
 
-        let app = unsafe { AXUIElementCreateApplication(pid) };
+        let app = unsafe { ax_element::create_app_element(pid) };
         if app.is_null() {
             log::warn!("AXUIElementCreateApplication returned null for pid {}", pid);
             return;
@@ -359,6 +359,7 @@ unsafe extern "C" fn observer_callback(
             }
             log::debug!("WindowCreated: {} pid={}", window_id, pid);
             CFRetain(element as CFTypeRef);
+            ax_element::apply_messaging_timeout(element);
             ctx.cache_insert(window_id, element, pid);
 
             // Register per-window destroyed notification so we detect when

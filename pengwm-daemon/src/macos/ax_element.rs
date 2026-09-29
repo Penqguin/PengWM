@@ -31,6 +31,87 @@ pub fn request_trusted_access() {
     let _ = is_process_trusted_with_prompt();
 }
 
+/// Upper bound on how long one AX request may block the daemon.
+///
+/// Every AX call is a synchronous mach RPC into the target app's main
+/// thread, issued from the one thread that also pumps the CGEventTap
+/// (keybinds) and the AX observers. At the system default, an app that
+/// stops servicing its run loop — Firefox right after wake, mid
+/// session-restore — stalls the whole window manager for seconds per
+/// call, and a tap callback that can't run in time gets the tap disabled
+/// by the OS (`kCGEventTapDisabledByTimeout`), dropping keystrokes.
+///
+/// A healthy round trip is well under a millisecond, so this leaves
+/// orders of magnitude of headroom while bounding the stall. Being wrong
+/// is cheap and self-healing: a timed-out request surfaces as
+/// `kAXErrorCannotComplete`, which the write path already classifies as
+/// `Transient` and retries on the next layout or 2s sweep.
+///
+/// This is the one dial. Deliberately tighter than yabai's 1.0s, because
+/// the CGEventTap callback must also run within roughly a second or the
+/// OS disables the tap. Raise it if `focus_window`'s `kAXRaiseAction`
+/// starts missing on heavy apps — that is the first thing a too-tight
+/// value would break.
+pub const MESSAGING_TIMEOUT_SECS: f32 = 0.25;
+
+/// Set the process-wide default AX messaging timeout. Elements without
+/// their own value inherit it, which covers the window elements handed to
+/// us inside `kAXWindows` arrays as well as the app elements we create.
+/// Belt and braces with `apply_messaging_timeout` on the hot paths.
+pub fn set_global_messaging_timeout(seconds: f32) {
+    unsafe {
+        let system_wide = AXUIElementCreateSystemWide();
+        if system_wide.is_null() {
+            log::warn!(
+                "AXUIElementCreateSystemWide returned null — AX calls keep the system default timeout"
+            );
+            return;
+        }
+        let err = AXUIElementSetMessagingTimeout(system_wide, seconds);
+        CFRelease(system_wide as CFTypeRef);
+        if err == kAXErrorSuccess {
+            log::info!("AX messaging timeout set to {}s", seconds);
+        } else {
+            log::warn!(
+                "AXUIElementSetMessagingTimeout(system-wide, {}s) failed: {}",
+                seconds,
+                error_string(err)
+            );
+        }
+    }
+}
+
+/// Apply the daemon's messaging timeout to one element.
+///
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef` (null is a no-op).
+pub unsafe fn apply_messaging_timeout(element: AXUIElementRef) {
+    if element.is_null() {
+        return;
+    }
+    let err = AXUIElementSetMessagingTimeout(element, MESSAGING_TIMEOUT_SECS);
+    if err != kAXErrorSuccess {
+        log::debug!(
+            "AXUIElementSetMessagingTimeout({}s) failed: {}",
+            MESSAGING_TIMEOUT_SECS,
+            error_string(err)
+        );
+    }
+}
+
+/// Create an app-level AX element with the messaging timeout already
+/// applied. The single seam for app elements, so no call site can
+/// silently inherit the system default.
+///
+/// # Safety
+/// `pid` must reference a running process. The caller owns the returned
+/// element and must `CFRelease` it.
+pub unsafe fn create_app_element(pid: i32) -> AXUIElementRef {
+    let app = AXUIElementCreateApplication(pid);
+    apply_messaging_timeout(app);
+    app
+}
+
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn _AXUIElementGetWindow(element: AXUIElementRef, window_id: *mut u32) -> AXError;
@@ -259,7 +340,7 @@ pub unsafe fn focus_window(element: AXUIElementRef, pid: i32) {
         kCFBooleanTrue as CFTypeRef,
     );
 
-    let app = AXUIElementCreateApplication(pid);
+    let app = create_app_element(pid);
     if app.is_null() {
         return;
     }
@@ -307,7 +388,7 @@ pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
 ///
 /// `pid` must reference a valid running process with Accessibility permissions.
 pub unsafe fn focused_window_for_pid(pid: i32) -> Option<WindowId> {
-    let app = AXUIElementCreateApplication(pid);
+    let app = create_app_element(pid);
     if app.is_null() {
         return None;
     }
@@ -343,7 +424,7 @@ pub fn frontmost_pid() -> Option<i32> {
 /// The caller must ensure that `pid` references a valid running process and that
 /// the Accessibility API is called from a trusted process with the necessary permissions.
 pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
-    let app = AXUIElementCreateApplication(pid);
+    let app = create_app_element(pid);
     if app.is_null() {
         return Vec::new();
     }
@@ -374,6 +455,9 @@ pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
         }
         if let Some(window_id) = ax_window_id_from_element(elem) {
             CFRetain(elem as CFTypeRef);
+            // Window elements are separate AXUIElementRefs from the app
+            // element, so they need the timeout applied in their own right.
+            apply_messaging_timeout(elem);
             result.push((elem, window_id));
         }
     }
