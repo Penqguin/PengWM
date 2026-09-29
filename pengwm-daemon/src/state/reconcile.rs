@@ -73,8 +73,6 @@ impl StateManager {
     /// ones that became visible again. Uses predicate injection so tests don't
     /// need `as_any_mut` downcast.
     fn reconcile_hidden_windows(&mut self) {
-        // Snapshot to avoid borrow conflicts with &mut self in the loop.
-        let window_ids: Vec<WindowId> = self.store.all_window_pids().keys().copied().collect();
         let (to_hide, to_show) = self
             .store
             .pending_for_reconcile(&self.workspaces, |wid| self.os.window_is_hidden(wid));
@@ -92,8 +90,6 @@ impl StateManager {
                 self.on_window_shown(wid);
             }
         }
-        // Keep unused variable for clarity if pending logic changes.
-        let _ = window_ids;
     }
 
     /// Safety net for windows whose WindowCreated notification never

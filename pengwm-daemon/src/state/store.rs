@@ -1,20 +1,25 @@
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::Workspace;
 
-use crate::state::hidden::HiddenTracker;
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Single owner of wid↔pid↔hidden state. `HiddenTracker` is a private
-/// implementation detail — its predicate seam (`Fn(WindowId)->bool`) stays
-/// inside the store. `StateManager` retains `Vec<Workspace>` ownership and
-/// borrows it per call. This is the deep module that concentrates the
+/// Single owner of wid↔pid↔hidden state. Hidden windows leave the tiling
+/// tree but stay in `window_pids` so they can be retiled by
+/// `on_window_shown`; the `hidden` map remembers the workspace index they
+/// came from, so `on_window_shown` can route them back. Finding, remembering,
+/// and tree removal split at the seam: the store finds + remembers and
+/// returns the index; the caller (`StateManager`) mutates the tree and
+/// re-layouts. Reconcile stays testable via a `Fn(WindowId)->bool` predicate
+/// (no `as_any_mut` downcast). This is the deep module that concentrates the
 /// "hidden means untiled but still tracked" invariant.
 pub struct WindowStore {
     window_pids: HashMap<WindowId, i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
-    hidden: HiddenTracker,
+    hidden: HashMap<WindowId, usize>,
+    last_reconcile: Instant,
 }
 
 impl WindowStore {
@@ -22,7 +27,8 @@ impl WindowStore {
         Self {
             window_pids: HashMap::new(),
             pid_to_windows: HashMap::new(),
-            hidden: HiddenTracker::new(),
+            hidden: HashMap::new(),
+            last_reconcile: Instant::now(),
         }
     }
 
@@ -31,7 +37,8 @@ impl WindowStore {
         Self {
             window_pids: HashMap::new(),
             pid_to_windows: HashMap::new(),
-            hidden: HiddenTracker::with_last_reconcile(last),
+            hidden: HashMap::new(),
+            last_reconcile: last,
         }
     }
 
@@ -42,12 +49,12 @@ impl WindowStore {
             e.insert(pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
         }
-        self.hidden.remove(window_id);
+        self.hidden.remove(&window_id);
     }
 
     pub fn unregister(&mut self, window_id: WindowId) -> Option<i32> {
         let pid = self.window_pids.remove(&window_id)?;
-        self.hidden.remove(window_id);
+        self.hidden.remove(&window_id);
         if let Some(v) = self.pid_to_windows.get_mut(&pid) {
             v.retain(|&w| w != window_id);
             if v.is_empty() {
@@ -66,14 +73,14 @@ impl WindowStore {
                 }
             }
         }
-        self.hidden.remove(window_id);
+        self.hidden.remove(&window_id);
     }
 
     pub fn remove_pid(&mut self, pid: i32) -> Vec<WindowId> {
         let windows = self.pid_to_windows.remove(&pid).unwrap_or_default();
         for &wid in &windows {
             self.window_pids.remove(&wid);
-            self.hidden.remove(wid);
+            self.hidden.remove(&wid);
         }
         windows
     }
@@ -106,22 +113,28 @@ impl WindowStore {
         self.window_pids.is_empty()
     }
 
-    // -- hidden state (HiddenTracker is private detail) ----------------------
+    // -- hidden state ----------------------------------------------------------
 
     /// True when the window is hidden-tracked (untiled but still owned).
     pub fn is_hidden(&self, window_id: WindowId) -> bool {
-        self.hidden.contains(window_id)
+        self.hidden.contains_key(&window_id)
     }
 
-    /// Remember a tiled window's workspace. Returns the index for the caller
-    /// to remove from the tree and re-layout — the store never mutates trees.
+    /// Remember a tiled window's workspace and report the index. The caller
+    /// removes the window from the tree and re-layouts — tree mutation stays
+    /// with the tree owner; the store only owns hidden state.
     pub fn hide(&mut self, window_id: WindowId, workspaces: &[Workspace]) -> Option<usize> {
-        self.hidden.hide_window(window_id, workspaces)
+        let idx = find_workspace_for_window(workspaces, window_id)?;
+        self.hidden.insert(window_id, idx);
+        Some(idx)
     }
 
     /// Forget a hidden entry and return its remembered workspace index, if any.
+    /// The caller decides the final `preferred` index (falls back to
+    /// `routed_workspace_idx` / `active_workspace_idx`) and calls
+    /// `add_window_to_workspace`.
     pub fn reveal(&mut self, window_id: WindowId) -> Option<usize> {
-        self.hidden.take_hidden(window_id)
+        self.hidden.remove(&window_id)
     }
 
     #[cfg(test)]
@@ -132,13 +145,26 @@ impl WindowStore {
     /// Drain every hidden entry with its remembered workspace index. The
     /// caller retiles each (remembered, routed, or active workspace).
     pub fn reveal_all(&mut self) -> Vec<(WindowId, usize)> {
-        self.hidden.drain()
+        self.hidden.drain().collect()
     }
 
+    /// True when `RECONCILE_INTERVAL` has elapsed since the last reconcile.
+    /// When true, also advances the timestamp so the next call is debounced.
     pub fn should_reconcile(&mut self, now: Instant) -> bool {
-        self.hidden.should_reconcile(now)
+        if now.duration_since(self.last_reconcile) >= RECONCILE_INTERVAL {
+            self.last_reconcile = now;
+            true
+        } else {
+            false
+        }
     }
 
+    /// Compute the two reconcile sets without mutating anything. The caller is
+    /// responsible for iterating the returned vectors and calling `hide` /
+    /// `add_window_to_workspace`.
+    ///
+    /// `is_hidden` is the `OsAdapter::window_is_hidden` predicate in prod
+    /// (`|wid| os.window_is_hidden(wid)`); tests pass a closure over a hash set.
     pub fn pending_for_reconcile<F>(
         &self,
         workspaces: &[Workspace],
@@ -147,8 +173,17 @@ impl WindowStore {
     where
         F: Fn(WindowId) -> bool,
     {
-        self.hidden
-            .pending_for_reconcile(&self.window_pids, workspaces, is_hidden)
+        let mut to_hide = Vec::new();
+        let mut to_show = Vec::new();
+        for &wid in self.window_pids.keys() {
+            let hidden = is_hidden(wid);
+            if hidden && find_workspace_for_window(workspaces, wid).is_some() {
+                to_hide.push(wid);
+            } else if !hidden && self.hidden.contains_key(&wid) {
+                to_show.push(wid);
+            }
+        }
+        (to_hide, to_show)
     }
 
     #[cfg(test)]
@@ -180,6 +215,12 @@ impl Default for WindowStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn find_workspace_for_window(workspaces: &[Workspace], window_id: WindowId) -> Option<usize> {
+    workspaces
+        .iter()
+        .position(|ws| ws.find_window(window_id).is_some())
 }
 
 #[cfg(test)]

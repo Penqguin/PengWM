@@ -9,7 +9,7 @@ use crate::event_loop::DaemonEvent;
 /// moves, and app launch/termination/activation. `StateManager` retains the
 /// workspace tree, `DisplaySet`, layout application and `BarSender` — this
 /// module only orchestrates them. Shared helpers are `pub(super)` so
-/// `reconcile.rs` and `hidden.rs` keep calling the same interface.
+/// `reconcile.rs` keeps calling the same interface.
 impl StateManager {
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
         if self.excluded_pids.contains(&pid) {

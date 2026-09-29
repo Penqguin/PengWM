@@ -18,7 +18,6 @@ pub mod bootstrap;
 pub mod commands;
 pub mod display;
 pub mod drag;
-pub mod hidden;
 pub mod layout_writer;
 pub mod lifecycle;
 pub mod monitors_wake;
