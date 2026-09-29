@@ -264,27 +264,34 @@ fn default_has_preset_layouts_on_alt_ctrl_digits() {
 }
 
 #[test]
-fn from_toml_valid() {
+fn try_from_toml_valid() {
     let toml_str = r#"
 cmd-h = "focus-left"
 cmd-shift-j = "move-window-down"
 cmd-1 = "workspace-1"
 "#;
     let value: toml::Value = toml::from_str(toml_str).unwrap();
-    let config = from_toml_value(&value);
+    let config = try_from_toml_value(&value).unwrap();
     assert_eq!(config.bindings.len(), 3);
 }
 
 #[test]
-fn from_toml_invalid_ignored() {
+fn try_from_toml_rejects_unknown_action() {
     let toml_str = r#"
 cmd-h = "focus-left"
 cmd-x = "bogus-action"
-alt-z = "workspace-0"
 "#;
     let value: toml::Value = toml::from_str(toml_str).unwrap();
-    let config = from_toml_value(&value);
-    assert_eq!(config.bindings.len(), 1);
+    let err = try_from_toml_value(&value).unwrap_err();
+    assert!(err.contains("bogus-action"), "unexpected error: {err}");
+}
+
+#[test]
+fn try_from_toml_rejects_invalid_workspace_id() {
+    let toml_str = r#"alt-z = "workspace-0""#;
+    let value: toml::Value = toml::from_str(toml_str).unwrap();
+    let err = try_from_toml_value(&value).unwrap_err();
+    assert!(err.contains("workspace-0"), "unexpected error: {err}");
 }
 
 #[test]

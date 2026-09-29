@@ -1,6 +1,6 @@
 use pengwm_core::command::Command;
 
-use super::codec::{key_name_to_keycode, parse_action, parse_modifiers, split_keybind_str};
+use super::codec::{key_name_to_keycode, parse_modifiers, split_keybind_str};
 
 pub type ModifierFlags = u64;
 
@@ -35,7 +35,17 @@ impl KeybindConfig {
     pub fn load_from(path: &std::path::Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(contents) => match contents.parse::<toml::Value>() {
-                Ok(value) => from_toml_value(&value),
+                Ok(value) => match try_from_toml_value(&value) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse keybinds '{}': {}. Using defaults.",
+                            path.display(),
+                            e
+                        );
+                        Self::default()
+                    }
+                },
                 Err(e) => {
                     log::warn!(
                         "Failed to parse keybinds '{}': {}. Using defaults.",
@@ -69,36 +79,6 @@ pub fn find_keybind(
     None
 }
 
-pub fn from_toml_value(value: &toml::Value) -> KeybindConfig {
-    let mut bindings = Vec::new();
-    let table = match value.as_table() {
-        Some(t) => t,
-        None => return KeybindConfig { bindings },
-    };
-    for (key_str, action_val) in table {
-        let action_str = match action_val.as_str() {
-            Some(s) => s,
-            None => continue,
-        };
-        let action = match parse_action(action_str) {
-            Some(a) => a,
-            None => continue,
-        };
-        let (modifier_str, key_name) = split_keybind_str(key_str);
-        let modifiers = parse_modifiers(modifier_str);
-        let keycode = match key_name_to_keycode(key_name) {
-            Some(c) => c,
-            None => continue,
-        };
-        bindings.push(Keybind {
-            keycode,
-            modifiers,
-            action,
-        });
-    }
-    KeybindConfig { bindings }
-}
-
 pub fn try_from_toml_value(value: &toml::Value) -> Result<KeybindConfig, String> {
     let mut bindings = Vec::new();
     let table = match value.as_table() {
@@ -110,7 +90,7 @@ pub fn try_from_toml_value(value: &toml::Value) -> Result<KeybindConfig, String>
             Some(s) => s,
             None => return Err(format!("keybind '{key_str}' value must be a string")),
         };
-        let action = parse_action(action_str)
+        let action = Command::parse_action(action_str)
             .ok_or_else(|| format!("unknown action '{action_str}' for keybind '{key_str}'"))?;
         let (modifier_str, key_name) = split_keybind_str(key_str);
         let modifiers = parse_modifiers(modifier_str);

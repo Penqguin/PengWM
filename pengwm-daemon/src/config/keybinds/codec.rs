@@ -1,5 +1,3 @@
-use pengwm_core::command::Command;
-
 use super::store::{
     ModifierFlags, MODIFIER_ALT, MODIFIER_CMD, MODIFIER_CTRL, MODIFIER_NONE, MODIFIER_SHIFT,
 };
@@ -80,10 +78,6 @@ pub fn parse_modifiers(s: &str) -> ModifierFlags {
         }
     }
     flags
-}
-
-pub fn parse_action(s: &str) -> Option<Command> {
-    Command::parse_action(s)
 }
 
 pub(crate) fn split_keybind_str(s: &str) -> (&str, &str) {

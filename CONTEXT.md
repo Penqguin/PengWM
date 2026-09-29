@@ -91,7 +91,7 @@ One definition, two consumers. The `[bar]` wire contract lives in `pengwm-core` 
 
 One `Command` type is the single vocabulary every surface feeds into `StateManager::on_command`:
 
-- **`command::Command::parse_action(s)`** — the one action-string parser (kebab-case of the variant + args: `move-window-left`, `set-layout-tile`, `workspace-3`). Lives in `pengwm-core` with the wire type so the keybind TOML surface can never drift from it. `config/keybinds.rs::parse_action` is a thin passthrough.
+- **`command::Command::parse_action(s)`** — the one action-string parser (kebab-case of the variant + args: `move-window-left`, `set-layout-tile`, `workspace-3`). Lives in `pengwm-core` with the wire type so the keybind TOML surface can never drift from it. The keybind store calls it directly (no passthrough) and fails the whole load on unknown actions — `load_from` warns and falls back to defaults, same as the IPC loader path.
 - **CLI** — clap subcommands map onto the same `Command` (`move-window left` → `Command::MoveWindow`). Names line up with the keybind strings (`swap-*` is gone).
 - **Reply slot** — `DaemonEvent::Command(cmd, Option<Sender<DaemonResponse>>)`. `Some` only for the IPC client; keybinds and the config watcher send `None` and get no reply, so no throwaway response channel is allocated. `on_command` acks only when a slot is present.
 - **PrefixKey** — The chord (default `alt-space`) that arms a ~1s window where the full `Command` vocabulary is reachable from short follow-ups; repeatable commands (resize, focus) fire again without re-arming. Purely additive — direct binds keep working.
