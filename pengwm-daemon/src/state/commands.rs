@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use pengwm_core::command::{BarMessage, Command, DaemonResponse, LayoutMode};
-use pengwm_core::tree::Direction;
+use pengwm_core::tree::{Direction, WindowId};
 use tokio::sync::mpsc;
 
 use super::bar::ToggleAction;
@@ -225,8 +225,8 @@ impl StateManager {
         }
         let window_id = self.workspaces[current].focused_window_id();
         if let Some(wid) = window_id {
-            let dest = match self.displays.target_with_room(&self.workspaces, target) {
-                Some(idx) => idx,
+            let dest = match self.displays.plan_move(&self.workspaces, current, target) {
+                Some(dec) => dec.to,
                 None => {
                     log::warn!(
                         "No workspace has room for {} (cap {}), move aborted",
@@ -237,16 +237,22 @@ impl StateManager {
                     return;
                 }
             };
-            self.workspaces[current].remove_window(wid);
-            if self.displays.is_visible(current, &self.workspaces) {
-                self.apply_layout(current);
-            }
-            self.workspaces[dest].add_window(wid, None);
-            if self.displays.is_visible(dest, &self.workspaces) {
-                self.apply_layout(dest);
-            }
+            self.move_window_between(current, dest, wid);
         }
         self.publish_bar_state();
+    }
+
+    /// Move `wid` from workspace `from` to `to`, re-laying-out visible ends.
+    /// Shared by workspace moves and cross-display moves.
+    fn move_window_between(&mut self, from: usize, to: usize, wid: WindowId) {
+        self.workspaces[from].remove_window(wid);
+        if self.displays.is_visible(from, &self.workspaces) {
+            self.apply_layout(from);
+        }
+        self.workspaces[to].add_window(wid, None);
+        if self.displays.is_visible(to, &self.workspaces) {
+            self.apply_layout(to);
+        }
     }
 
     fn focus_display(&mut self, direction: Direction) {
@@ -254,31 +260,28 @@ impl StateManager {
         if current_idx >= self.workspaces.len() {
             return;
         }
-        let current_mon = self.workspaces[current_idx].monitor_id;
-        let target_mon = match self
-            .displays
-            .display_in_direction(current_mon, direction, &*self.os)
-        {
-            Some(id) => id,
+        let target_idx = match self.displays.direction_target(
+            &self.workspaces,
+            current_idx,
+            direction,
+            &*self.os,
+        ) {
+            Some(idx) => idx,
             None => {
                 log::debug!(
-                    "focus_display {:?} no target from mon {}",
+                    "focus_display {:?} no target from workspace {}",
                     direction,
-                    current_mon
+                    current_idx
                 );
                 return;
             }
         };
-        let target_idx = match self.displays.visible_or_first(target_mon, &self.workspaces) {
-            Some(idx) => idx,
-            None => return,
-        };
         if let Some(wid) = self.workspaces[target_idx].focused_window_id() {
             log::debug!(
-                "focus_display {:?} mon {} -> {} wid {}",
+                "focus_display {:?} workspace {} -> {} wid {}",
                 direction,
-                current_mon,
-                target_mon,
+                current_idx,
+                target_idx,
                 wid
             );
             self.os.focus_window(wid);
@@ -288,7 +291,7 @@ impl StateManager {
             log::debug!(
                 "focus_display {:?} target {} has no windows",
                 direction,
-                target_mon
+                target_idx
             );
             self.publish_bar_state();
         }
@@ -299,49 +302,42 @@ impl StateManager {
         if current_idx >= self.workspaces.len() {
             return;
         }
-        let current_mon = self.workspaces[current_idx].monitor_id;
-        let target_mon = match self
-            .displays
-            .display_in_direction(current_mon, direction, &*self.os)
-        {
-            Some(id) => id,
+        let target_idx = match self.displays.direction_target(
+            &self.workspaces,
+            current_idx,
+            direction,
+            &*self.os,
+        ) {
+            Some(idx) => idx,
             None => return,
         };
         let wid = match self.workspaces[current_idx].focused_window_id() {
             Some(id) => id,
             None => return,
         };
-        let target_idx = match self.displays.visible_or_first(target_mon, &self.workspaces) {
-            Some(idx) => idx,
-            None => return,
-        };
-        let dest = match self.displays.target_with_room(&self.workspaces, target_idx) {
-            Some(idx) => idx,
+        let dest = match self
+            .displays
+            .plan_move(&self.workspaces, current_idx, target_idx)
+        {
+            Some(dec) => dec.to,
             None => {
                 log::warn!(
                     "No room on target display {} for window {}",
-                    target_mon,
+                    self.workspaces[target_idx].monitor_id,
                     wid
                 );
                 return;
             }
         };
         log::debug!(
-            "move_window_to_display {:?} wid {} mon {} -> {} dest {}",
+            "move_window_to_display {:?} wid {} workspace {} -> {} dest {}",
             direction,
             wid,
-            current_mon,
-            target_mon,
+            current_idx,
+            target_idx,
             dest
         );
-        self.workspaces[current_idx].remove_window(wid);
-        if self.displays.is_visible(current_idx, &self.workspaces) {
-            self.apply_layout(current_idx);
-        }
-        self.workspaces[dest].add_window(wid, None);
-        if self.displays.is_visible(dest, &self.workspaces) {
-            self.apply_layout(dest);
-        }
+        self.move_window_between(current_idx, dest, wid);
         self.publish_bar_state();
     }
 }

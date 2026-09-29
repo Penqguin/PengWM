@@ -158,6 +158,43 @@ impl DisplaySet {
         self.next_with_room(workspaces, target)
     }
 
+    /// Decide a focused-window move onto `target`: `target` itself with room,
+    /// else the overflow redirect on the same monitor. `None` when the move
+    /// is a no-op (`from == target`) or no workspace on the monitor has room.
+    /// The caller moves the window and re-layouts visible ends — DisplaySet
+    /// answers, commands execute.
+    pub fn plan_move(
+        &self,
+        workspaces: &[Workspace],
+        from: usize,
+        target: usize,
+    ) -> Option<MoveDecision> {
+        if from == target || from >= workspaces.len() {
+            return None;
+        }
+        self.target_with_room(workspaces, target)
+            .map(|to| MoveDecision { from, to })
+    }
+
+    /// Visible-or-first workspace on the display in `direction` from
+    /// `current`'s monitor. `None` when there is no display that way, or it
+    /// owns no workspace. Answers the first half of both cross-display
+    /// commands so neither re-branches on direction + fallback.
+    pub fn direction_target(
+        &self,
+        workspaces: &[Workspace],
+        current: usize,
+        direction: Direction,
+        os: &dyn OsAdapter,
+    ) -> Option<usize> {
+        if current >= workspaces.len() {
+            return None;
+        }
+        let current_mon = workspaces[current].monitor_id;
+        let target_mon = self.display_in_direction(current_mon, direction, os)?;
+        self.visible_or_first(target_mon, workspaces)
+    }
+
     /// Heuristic for "which workspace is active": the workspace that contains a
     /// window belonging to `frontmost_pid`, mapped through `active` per
     /// monitor. Falls back to arbitrary `active` entry. Absorbed from `Router`.
@@ -240,7 +277,7 @@ impl DisplaySet {
         let displays = os.active_displays();
         let from_disp = displays.iter().find(|d| d.id == from)?;
         let from_cx = from_disp.origin.0 as f64 + from_disp.size.0 as f64 / 2.0;
-        let from_cy = from_disp.origin.1 as f64 + from_disp.size.0 as f64 / 2.0;
+        let from_cy = from_disp.origin.1 as f64 + from_disp.size.1 as f64 / 2.0;
         let mut best: Option<(u32, f64)> = None;
         for d in &displays {
             if d.id == from {
@@ -426,6 +463,14 @@ impl DisplaySet {
         }
         affected
     }
+}
+
+/// A decided focused-window move: the `from` workspace loses the window,
+/// the `to` workspace gains it. Answered by `DisplaySet`, executed by the
+/// caller (tree mutation + visible-end re-layouts stay with `StateManager`).
+pub struct MoveDecision {
+    pub from: usize,
+    pub to: usize,
 }
 
 #[cfg(test)]
@@ -628,5 +673,88 @@ mod tests {
         let pid_to_windows: HashMap<i32, Vec<WindowId>> = HashMap::new();
         let idx = ds.active_workspace_idx(&wss, &pid_to_windows, Some(99));
         assert_eq!(idx, 0);
+    }
+
+    // -- move decisions --
+
+    #[test]
+    fn plan_move_targets_with_room_and_rejects_noop() {
+        let ds = DisplaySet::with_max_tiles(vec![], 2);
+        let wss = vec![
+            Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("b".into(), 1, (0, 0), (1920, 1080)),
+        ];
+        let dec = ds.plan_move(&wss, 0, 1).unwrap();
+        assert_eq!((dec.from, dec.to), (0, 1));
+        assert!(ds.plan_move(&wss, 0, 0).is_none());
+    }
+
+    #[test]
+    fn plan_move_redirects_overflow_and_fails_when_full() {
+        let ds = DisplaySet::with_max_tiles(vec![], 1);
+        let mut wss = vec![
+            Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("b".into(), 1, (0, 0), (1920, 1080)),
+        ];
+        wss[1].add_window(9, None);
+        // Target 1 is full → overflow redirects onto 0 (here, back on `from`;
+        // the caller then moves the window onto itself, a harmless no-op).
+        let dec = ds.plan_move(&wss, 0, 1).unwrap();
+        assert_eq!((dec.from, dec.to), (0, 0));
+        // Both full → no decision.
+        wss[0].add_window(8, None);
+        assert!(ds.plan_move(&wss, 0, 1).is_none());
+    }
+
+    #[test]
+    fn direction_target_resolves_visible_or_first() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_two());
+        let mut adapter = TestAdapter::new();
+        adapter.displays = test_displays_two();
+        use pengwm_core::tree::Direction;
+        // From monitor 1 rightward → visible workspace on monitor 2 (idx 2).
+        assert_eq!(
+            ds.direction_target(&wss, 0, Direction::Right, &adapter),
+            Some(2)
+        );
+        assert!(ds
+            .direction_target(&wss, 0, Direction::Left, &adapter)
+            .is_none());
+    }
+
+    #[test]
+    fn direction_uses_height_for_source_center() {
+        // Regression: `from_cy` once used the display width, shifting the
+        // source center down whenever width != height. Display 2 sits where
+        // only the shifted center reads as "up".
+        let ds = DisplaySet::new(entries_two());
+        let wss = vec![
+            Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("b".into(), 2, (1360, -560), (800, 800)),
+        ];
+        let mut adapter = TestAdapter::new();
+        adapter.displays = vec![
+            DisplayInfo {
+                id: 1,
+                origin: (0, 0),
+                size: (1920, 1080),
+            },
+            DisplayInfo {
+                id: 2,
+                origin: (1360, -560),
+                size: (800, 800),
+            },
+        ];
+        use pengwm_core::tree::Direction;
+        // True center (960, 540): display 2 is rightward, not up.
+        assert!(ds
+            .direction_target(&wss, 0, Direction::Up, &adapter)
+            .is_none());
+        assert_eq!(
+            ds.direction_target(&wss, 0, Direction::Right, &adapter),
+            Some(1)
+        );
     }
 }
