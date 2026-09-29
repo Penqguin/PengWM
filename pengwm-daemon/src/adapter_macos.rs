@@ -43,53 +43,74 @@ impl MacOsAdapter {
         result
     }
 
+    /// Resolve `window_id` to a live `(element, pid)`: cache hit, else a full
+    /// discover scan. One definition for every path that touches an element
+    /// (tile, hide, focus) — no caller re-implements cache-then-discover.
+    fn resolve_element(&self, window_id: WindowId) -> Option<(AXUIElementRef, i32)> {
+        match self.cache_get_element(window_id) {
+            Some(v) => Some(v),
+            None => self.discover_window(window_id),
+        }
+    }
+
+    /// Re-resolve after a stale-element failure: re-poll the owning app,
+    /// re-cache + re-register observers on hit, evict the dead entry on miss.
+    /// Returns the fresh element for one retry.
+    fn refresh_after_stale(&self, window_id: WindowId, pid: i32) -> Option<AXUIElementRef> {
+        if let Some(new_elem) = self.refresh_element(window_id, pid) {
+            self.ctx.cache_insert(window_id, new_elem, pid);
+            unsafe {
+                self.observer_registry.register_window_destroyed(
+                    pid,
+                    new_elem,
+                    &*self.ctx as *const ObserverContext as *mut c_void,
+                );
+                self.observer_registry.register_window_moved(
+                    pid,
+                    new_elem,
+                    &*self.ctx as *const ObserverContext as *mut c_void,
+                );
+            }
+            return Some(new_elem);
+        }
+        self.evict_element(window_id);
+        None
+    }
+
+    /// Drop a dead window's cached element (remove + `CFRelease`). One
+    /// eviction rule for every path — tile, hide, and close.
+    fn evict_element(&self, window_id: WindowId) {
+        use core_foundation::base::{CFRelease, CFTypeRef};
+        if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
+            unsafe { CFRelease(elem as CFTypeRef) };
+        }
+    }
+
     /// Position-only write with stale-element refresh. Hide never resizes:
     /// moving offscreen is sufficient and avoids the Firefox reflow storm
-    /// (plus the 3x verify loop in `set_window_rect`).
+    /// (plus the 3x verify loop in `set_window_rect`). Resolution, refresh,
+    /// and eviction all run through the shared funnel — only the attempt op
+    /// is position-only.
     fn set_position_refreshed(&self, window_id: WindowId, x: f64, y: f64) -> anyhow::Result<()> {
-        let (element, pid) = match self.cache_get_element(window_id) {
+        let (element, pid) = match self.resolve_element(window_id) {
             Some(v) => v,
-            None => match self.discover_window(window_id) {
-                Some(v) => v,
-                None => {
-                    anyhow::bail!("element not found in cache for window {}", window_id)
-                }
-            },
+            None => {
+                anyhow::bail!("element not found in cache for window {}", window_id)
+            }
         };
         // Hiding animates under enhanced UI just like tiling does; see
         // `set_window_rect`.
         let _enhanced_ui = unsafe { ax_element::EnhancedUiGuard::suspend(pid) };
         match unsafe { ax_element::set_window_position(element, x, y) } {
             Ok(()) => Ok(()),
-            Err(e) => {
-                if e.to_string().contains("kAXErrorInvalidUIElement") {
-                    log::warn!("stale element for window {}, re-discovering", window_id);
-                    if let Some(new_elem) = self.refresh_element(window_id, pid) {
-                        self.ctx.cache_insert(window_id, new_elem, pid);
-                        unsafe {
-                            self.observer_registry.register_window_destroyed(
-                                pid,
-                                new_elem,
-                                &*self.ctx as *const ObserverContext as *mut c_void,
-                            );
-                            self.observer_registry.register_window_moved(
-                                pid,
-                                new_elem,
-                                &*self.ctx as *const ObserverContext as *mut c_void,
-                            );
-                        }
-                        return unsafe { ax_element::set_window_position(new_elem, x, y) };
-                    }
-                    if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
-                        unsafe {
-                            core_foundation::base::CFRelease(
-                                elem as core_foundation::base::CFTypeRef,
-                            )
-                        };
-                    }
+            Err(e) if is_stale_element_message(&e.to_string()) => {
+                log::warn!("stale element for window {}, re-discovering", window_id);
+                match self.refresh_after_stale(window_id, pid) {
+                    Some(new_elem) => unsafe { ax_element::set_window_position(new_elem, x, y) },
+                    None => Err(e),
                 }
-                Err(e)
             }
+            Err(e) => Err(e),
         }
     }
 
@@ -144,57 +165,42 @@ impl MacOsAdapter {
                     return WriteOutcome::Transient(msg);
                 }
                 log::warn!("stale element for window {}, re-discovering", window_id);
-                if let Some(new_elem) = self.refresh_element(window_id, pid) {
-                    self.ctx.cache_insert(window_id, new_elem, pid);
-                    unsafe {
-                        self.observer_registry.register_window_destroyed(
-                            pid,
-                            new_elem,
-                            &*self.ctx as *const ObserverContext as *mut c_void,
-                        );
-                        self.observer_registry.register_window_moved(
-                            pid,
-                            new_elem,
-                            &*self.ctx as *const ObserverContext as *mut c_void,
-                        );
+                match self.refresh_after_stale(window_id, pid) {
+                    Some(new_elem) => unsafe { ax_element::set_window_rect(new_elem, rect) },
+                    None => {
+                        // Refresh missed too. Before giving up, say what we know:
+                        // during a post-wake AX blackout this fires for windows
+                        // that are perfectly alive, and the distinction only shows
+                        // up in whether the app answers anything at all.
+                        if log::log_enabled!(log::Level::Debug) {
+                            // `windows_for_pid` hands back retained elements — count
+                            // them, then release. A non-zero count with our window
+                            // absent is a real close; zero across the board is the
+                            // AX blackout, and the window is probably alive.
+                            let listed = unsafe { ax_element::windows_for_pid(pid) };
+                            let ids: Vec<WindowId> = listed.iter().map(|&(_, wid)| wid).collect();
+                            for (elem, _) in listed {
+                                unsafe {
+                                    core_foundation::base::CFRelease(
+                                        elem as core_foundation::base::CFTypeRef,
+                                    )
+                                };
+                            }
+                            log::debug!(
+                                "write_diag win={} outcome=Gone target={:?}\n  refresh_element found no match\n  app: {:?} pid {}\n  app still lists {} window(s): {:?}",
+                                window_id,
+                                rect,
+                                ns_workspace::localized_name_for_pid(pid),
+                                pid,
+                                ids.len(),
+                                ids,
+                            );
+                        }
+                        // Window is gone — evict from cache so we don't keep retrying.
+                        self.evict_element(window_id);
+                        WriteOutcome::Gone
                     }
-                    return unsafe { ax_element::set_window_rect(new_elem, rect) };
                 }
-                // Refresh missed too. Before giving up, say what we know:
-                // during a post-wake AX blackout this fires for windows
-                // that are perfectly alive, and the distinction only shows
-                // up in whether the app answers anything at all.
-                if log::log_enabled!(log::Level::Debug) {
-                    // `windows_for_pid` hands back retained elements — count
-                    // them, then release. A non-zero count with our window
-                    // absent is a real close; zero across the board is the
-                    // AX blackout, and the window is probably alive.
-                    let listed = unsafe { ax_element::windows_for_pid(pid) };
-                    let ids: Vec<WindowId> = listed.iter().map(|&(_, wid)| wid).collect();
-                    for (elem, _) in listed {
-                        unsafe {
-                            core_foundation::base::CFRelease(
-                                elem as core_foundation::base::CFTypeRef,
-                            )
-                        };
-                    }
-                    log::debug!(
-                        "write_diag win={} outcome=Gone target={:?}\n  refresh_element found no match\n  app: {:?} pid {}\n  app still lists {} window(s): {:?}",
-                        window_id,
-                        rect,
-                        ns_workspace::localized_name_for_pid(pid),
-                        pid,
-                        ids.len(),
-                        ids,
-                    );
-                }
-                // Window is gone — evict from cache so we don't keep retrying.
-                if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
-                    unsafe {
-                        core_foundation::base::CFRelease(elem as core_foundation::base::CFTypeRef)
-                    };
-                }
-                WriteOutcome::Gone
             }
         }
     }
@@ -296,19 +302,16 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome {
-        let (element, pid) = match self.cache_get_element(window_id) {
+        let (element, pid) = match self.resolve_element(window_id) {
             Some(v) => v,
-            None => match self.discover_window(window_id) {
-                Some(v) => v,
-                None => {
-                    log::debug!(
-                        "set_window_rect cache miss for {} rect {:?}",
-                        window_id,
-                        rect
-                    );
-                    return WriteOutcome::Gone;
-                }
-            },
+            None => {
+                log::debug!(
+                    "set_window_rect cache miss for {} rect {:?}",
+                    window_id,
+                    rect
+                );
+                return WriteOutcome::Gone;
+            }
         };
         // Suspend `AXEnhancedUserInterface` for the duration of the write.
         // With it on, Chromium- and Gecko-based apps animate every AX frame
@@ -343,10 +346,7 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn focus_window(&self, window_id: WindowId) {
-        let (element, pid) = match self
-            .cache_get_element(window_id)
-            .or_else(|| self.discover_window(window_id))
-        {
+        let (element, pid) = match self.resolve_element(window_id) {
             Some(v) => v,
             None => {
                 log::warn!(
@@ -363,11 +363,7 @@ impl OsAdapter for MacOsAdapter {
         if let Some((element, _pid)) = self.cache_get_element(window_id) {
             unsafe { ax_element::close_window(element) };
             // Remove from cache regardless — the element is no longer valid
-            if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
-                unsafe {
-                    core_foundation::base::CFRelease(elem as core_foundation::base::CFTypeRef)
-                };
-            }
+            self.evict_element(window_id);
         }
     }
 
