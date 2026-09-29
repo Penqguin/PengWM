@@ -125,6 +125,48 @@ fn is_stale_element_message(msg: &str) -> bool {
     msg.contains("kAXErrorInvalidUIElement")
 }
 
+/// One line describing the element a failed write actually landed on.
+///
+/// A write that never converges has three plausible causes and the rect
+/// numbers alone cannot tell them apart: the cached element belongs to a
+/// different window than its key (aliasing), the window refuses geometry
+/// writes (fullscreen / zoomed / fixed-size / off on an inactive Space),
+/// or the app is simply too busy to service the write. This answers all
+/// three at once — `elem_wid` vs `window_id` is the aliasing check,
+/// `settable` is the refusal check, and the app name says who to blame.
+///
+/// Only called on a non-`Ok` outcome, which the pin backoff already rate
+/// limits to roughly one per window per `PIN_BACKOFF`.
+fn log_write_diagnostics(
+    window_id: WindowId,
+    pid: i32,
+    element: AXUIElementRef,
+    target: Rect,
+    outcome: &WriteOutcome,
+) {
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
+    unsafe {
+        let elem_wid = ax_element::ax_window_id_from_element(element);
+        log::debug!(
+            "write_diag win={} outcome={:?} target={:?}\n  element reports window id {:?} (aliased: {})\n  app: {:?} pid {}\n  settable: position={} size={}\n  state: minimized={} hidden={} subrole={:?}",
+            window_id,
+            outcome,
+            target,
+            elem_wid,
+            elem_wid.is_some_and(|w| w != window_id),
+            ns_workspace::localized_name_for_pid(pid),
+            pid,
+            ax_element::is_attribute_settable(element, kAXPositionAttribute),
+            ax_element::is_attribute_settable(element, kAXSizeAttribute),
+            ax_element::bool_attribute(element, kAXMinimizedAttribute),
+            ax_element::bool_attribute(element, kAXHiddenAttribute),
+            ax_element::string_attribute(element, kAXSubroleAttribute),
+        );
+    }
+}
+
 impl OsAdapter for MacOsAdapter {
     fn running_app_pids(&self) -> Vec<i32> {
         ns_workspace::running_app_pids()
@@ -187,7 +229,12 @@ impl OsAdapter for MacOsAdapter {
         match unsafe { ax_element::set_window_rect(element, rect) } {
             outcome @ (WriteOutcome::Ok
             | WriteOutcome::Pinned { .. }
-            | WriteOutcome::Drift { .. }) => outcome,
+            | WriteOutcome::Drift { .. }) => {
+                if !outcome.is_ok() {
+                    log_write_diagnostics(window_id, pid, element, rect, &outcome);
+                }
+                outcome
+            }
             WriteOutcome::Gone => WriteOutcome::Gone,
             WriteOutcome::Transient(msg) => {
                 if !is_stale_element_message(&msg) {
@@ -209,6 +256,34 @@ impl OsAdapter for MacOsAdapter {
                         );
                     }
                     return unsafe { ax_element::set_window_rect(new_elem, rect) };
+                }
+                // Refresh missed too. Before giving up, say what we know:
+                // during a post-wake AX blackout this fires for windows
+                // that are perfectly alive, and the distinction only shows
+                // up in whether the app answers anything at all.
+                if log::log_enabled!(log::Level::Debug) {
+                    // `windows_for_pid` hands back retained elements — count
+                    // them, then release. A non-zero count with our window
+                    // absent is a real close; zero across the board is the
+                    // AX blackout, and the window is probably alive.
+                    let listed = unsafe { ax_element::windows_for_pid(pid) };
+                    let ids: Vec<WindowId> = listed.iter().map(|&(_, wid)| wid).collect();
+                    for (elem, _) in listed {
+                        unsafe {
+                            core_foundation::base::CFRelease(
+                                elem as core_foundation::base::CFTypeRef,
+                            )
+                        };
+                    }
+                    log::debug!(
+                        "write_diag win={} outcome=Gone target={:?}\n  refresh_element found no match\n  app: {:?} pid {}\n  app still lists {} window(s): {:?}",
+                        window_id,
+                        rect,
+                        ns_workspace::localized_name_for_pid(pid),
+                        pid,
+                        ids.len(),
+                        ids,
+                    );
                 }
                 // Window is gone — evict from cache so we don't keep retrying.
                 if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {

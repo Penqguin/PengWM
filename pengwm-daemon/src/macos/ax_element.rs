@@ -227,6 +227,31 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> WriteOutco
         match get_window_rect(element) {
             Some(actual) if rects_close(actual, rect, EPS) => return WriteOutcome::Ok,
             Some(actual) => {
+                // The first miss is the cheapest moment to ask whether this
+                // window accepts geometry writes at all. Native fullscreen,
+                // a zoomed window, or a genuinely fixed-size one reports
+                // non-settable and will never converge — two more attempts
+                // buy nothing but eight more round trips and eight more
+                // reflows. Report it futile and let the pin backoff own the
+                // retry cadence. Checked after attempt 1, not before, so
+                // healthy windows never pay for the query.
+                if attempt == 0 {
+                    let pos_settable = is_attribute_settable(element, kAXPositionAttribute);
+                    let size_settable = is_attribute_settable(element, kAXSizeAttribute);
+                    if !pos_settable || !size_settable {
+                        log::debug!(
+                            "set_window_rect: window refuses geometry writes (position settable={}, size settable={}) target {:?} actual {:?} — not retrying",
+                            pos_settable,
+                            size_settable,
+                            rect,
+                            actual
+                        );
+                        return WriteOutcome::Pinned {
+                            target: rect,
+                            actual,
+                        };
+                    }
+                }
                 if let Some(prev) = last_actual {
                     if rects_close(prev, actual, STABLE_EPS) {
                         log::debug!(
@@ -521,6 +546,46 @@ pub unsafe fn set_window_position(element: AXUIElementRef, x: f64, y: f64) -> an
         );
     }
     Ok(())
+}
+
+/// Whether the app will accept a write to `attribute` on this element.
+///
+/// A window reports its position/size as non-settable when it is in
+/// native fullscreen, zoomed, genuinely fixed-size, or otherwise not
+/// under the app's control right now. Writing anyway costs a full
+/// 3-attempt storm — twelve AX round trips and a reflow per write — to
+/// achieve nothing, so the writer consults this once the first attempt
+/// misses and reports the write futile instead of retrying.
+///
+/// Unreadable (the app didn't answer) is treated as settable: the write
+/// path's existing drift/pin classification is the better judge than a
+/// guess made from a failed query.
+///
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef`.
+pub unsafe fn is_attribute_settable(element: AXUIElementRef, attribute: &str) -> bool {
+    let name = CFString::new(attribute);
+    let mut settable: std::ffi::c_uchar = 0;
+    let err = AXUIElementIsAttributeSettable(element, name.as_concrete_TypeRef(), &mut settable);
+    if err != kAXErrorSuccess {
+        return true;
+    }
+    settable != 0
+}
+
+/// Read a string-valued attribute (role, subrole, title). `None` when the
+/// attribute is absent, unreadable, or not a string.
+///
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef`.
+pub unsafe fn string_attribute(element: AXUIElementRef, attribute: &str) -> Option<String> {
+    let name = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null();
+    let err = AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value);
+    if err != kAXErrorSuccess || value.is_null() {
+        return None;
+    }
+    Some(CFString::wrap_under_create_rule(value as CFStringRef).to_string())
 }
 
 /// # Safety
