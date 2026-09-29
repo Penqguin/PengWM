@@ -548,6 +548,71 @@ pub unsafe fn set_window_position(element: AXUIElementRef, x: f64, y: f64) -> an
     Ok(())
 }
 
+/// App-level attribute assistive tech sets to ask an app for its full
+/// accessibility tree. Not in `accessibility_sys`'s constant set.
+const ENHANCED_USER_INTERFACE: &str = "AXEnhancedUserInterface";
+
+/// Suspends `AXEnhancedUserInterface` on an app for the guard's lifetime.
+///
+/// With it on, Chromium- and Gecko-based apps animate every AX frame
+/// change instead of applying it, so a tiling write visibly crawls the
+/// window into place. `suspend` reads the flag, turns it off only if it
+/// was on, and `Drop` restores it — assistive tech such as VoiceOver
+/// depends on it, so it must never be left off. When the flag was already
+/// off (the normal case) the guard costs one AX read and does nothing else.
+pub struct EnhancedUiGuard {
+    app: AXUIElementRef,
+    was_enabled: bool,
+}
+
+impl EnhancedUiGuard {
+    /// # Safety
+    /// `pid` must reference a running process.
+    pub unsafe fn suspend(pid: i32) -> Self {
+        let app = create_app_element(pid);
+        let was_enabled = !app.is_null() && bool_attribute(app, ENHANCED_USER_INTERFACE);
+        if was_enabled {
+            set_bool_attribute(app, ENHANCED_USER_INTERFACE, false);
+        }
+        Self { app, was_enabled }
+    }
+
+    /// Whether the app had enhanced UI on when the guard was taken.
+    pub fn was_enabled(&self) -> bool {
+        self.was_enabled
+    }
+}
+
+impl Drop for EnhancedUiGuard {
+    fn drop(&mut self) {
+        if self.app.is_null() {
+            return;
+        }
+        unsafe {
+            if self.was_enabled {
+                set_bool_attribute(self.app, ENHANCED_USER_INTERFACE, true);
+            }
+            CFRelease(self.app as CFTypeRef);
+        }
+    }
+}
+
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef`.
+unsafe fn set_bool_attribute(element: AXUIElementRef, attribute: &str, value: bool) {
+    let name = CFString::new(attribute);
+    let cf_value = if value {
+        kCFBooleanTrue
+    } else {
+        core_foundation::boolean::kCFBooleanFalse
+    };
+    let err =
+        AXUIElementSetAttributeValue(element, name.as_concrete_TypeRef(), cf_value as CFTypeRef);
+    if err != kAXErrorSuccess {
+        log::debug!("set {}={} failed: {}", attribute, value, error_string(err));
+    }
+}
+
 /// Whether the app will accept a write to `attribute` on this element.
 ///
 /// A window reports its position/size as non-settable when it is in

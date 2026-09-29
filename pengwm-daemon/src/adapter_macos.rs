@@ -56,6 +56,9 @@ impl MacOsAdapter {
                 }
             },
         };
+        // Hiding animates under enhanced UI just like tiling does; see
+        // `set_window_rect`.
+        let _enhanced_ui = unsafe { ax_element::EnhancedUiGuard::suspend(pid) };
         match unsafe { ax_element::set_window_position(element, x, y) } {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -113,6 +116,87 @@ impl MacOsAdapter {
             }
         }
         None
+    }
+
+    /// Write `rect` through an already-resolved element, refreshing a
+    /// stale element once. Split out of `set_window_rect` so the caller can
+    /// wrap the whole attempt — including the refresh retry — in one
+    /// `EnhancedUiGuard` and one timing measurement.
+    fn write_resolved(
+        &self,
+        window_id: WindowId,
+        element: AXUIElementRef,
+        pid: i32,
+        rect: Rect,
+    ) -> WriteOutcome {
+        match unsafe { ax_element::set_window_rect(element, rect) } {
+            outcome @ (WriteOutcome::Ok
+            | WriteOutcome::Pinned { .. }
+            | WriteOutcome::Drift { .. }) => {
+                if !outcome.is_ok() {
+                    log_write_diagnostics(window_id, pid, element, rect, &outcome);
+                }
+                outcome
+            }
+            WriteOutcome::Gone => WriteOutcome::Gone,
+            WriteOutcome::Transient(msg) => {
+                if !is_stale_element_message(&msg) {
+                    return WriteOutcome::Transient(msg);
+                }
+                log::warn!("stale element for window {}, re-discovering", window_id);
+                if let Some(new_elem) = self.refresh_element(window_id, pid) {
+                    self.ctx.cache_insert(window_id, new_elem, pid);
+                    unsafe {
+                        self.observer_registry.register_window_destroyed(
+                            pid,
+                            new_elem,
+                            &*self.ctx as *const ObserverContext as *mut c_void,
+                        );
+                        self.observer_registry.register_window_moved(
+                            pid,
+                            new_elem,
+                            &*self.ctx as *const ObserverContext as *mut c_void,
+                        );
+                    }
+                    return unsafe { ax_element::set_window_rect(new_elem, rect) };
+                }
+                // Refresh missed too. Before giving up, say what we know:
+                // during a post-wake AX blackout this fires for windows
+                // that are perfectly alive, and the distinction only shows
+                // up in whether the app answers anything at all.
+                if log::log_enabled!(log::Level::Debug) {
+                    // `windows_for_pid` hands back retained elements — count
+                    // them, then release. A non-zero count with our window
+                    // absent is a real close; zero across the board is the
+                    // AX blackout, and the window is probably alive.
+                    let listed = unsafe { ax_element::windows_for_pid(pid) };
+                    let ids: Vec<WindowId> = listed.iter().map(|&(_, wid)| wid).collect();
+                    for (elem, _) in listed {
+                        unsafe {
+                            core_foundation::base::CFRelease(
+                                elem as core_foundation::base::CFTypeRef,
+                            )
+                        };
+                    }
+                    log::debug!(
+                        "write_diag win={} outcome=Gone target={:?}\n  refresh_element found no match\n  app: {:?} pid {}\n  app still lists {} window(s): {:?}",
+                        window_id,
+                        rect,
+                        ns_workspace::localized_name_for_pid(pid),
+                        pid,
+                        ids.len(),
+                        ids,
+                    );
+                }
+                // Window is gone — evict from cache so we don't keep retrying.
+                if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
+                    unsafe {
+                        core_foundation::base::CFRelease(elem as core_foundation::base::CFTypeRef)
+                    };
+                }
+                WriteOutcome::Gone
+            }
+        }
     }
 }
 
@@ -226,74 +310,31 @@ impl OsAdapter for MacOsAdapter {
                 }
             },
         };
-        match unsafe { ax_element::set_window_rect(element, rect) } {
-            outcome @ (WriteOutcome::Ok
-            | WriteOutcome::Pinned { .. }
-            | WriteOutcome::Drift { .. }) => {
-                if !outcome.is_ok() {
-                    log_write_diagnostics(window_id, pid, element, rect, &outcome);
-                }
-                outcome
-            }
-            WriteOutcome::Gone => WriteOutcome::Gone,
-            WriteOutcome::Transient(msg) => {
-                if !is_stale_element_message(&msg) {
-                    return WriteOutcome::Transient(msg);
-                }
-                log::warn!("stale element for window {}, re-discovering", window_id);
-                if let Some(new_elem) = self.refresh_element(window_id, pid) {
-                    self.ctx.cache_insert(window_id, new_elem, pid);
-                    unsafe {
-                        self.observer_registry.register_window_destroyed(
-                            pid,
-                            new_elem,
-                            &*self.ctx as *const ObserverContext as *mut c_void,
-                        );
-                        self.observer_registry.register_window_moved(
-                            pid,
-                            new_elem,
-                            &*self.ctx as *const ObserverContext as *mut c_void,
-                        );
-                    }
-                    return unsafe { ax_element::set_window_rect(new_elem, rect) };
-                }
-                // Refresh missed too. Before giving up, say what we know:
-                // during a post-wake AX blackout this fires for windows
-                // that are perfectly alive, and the distinction only shows
-                // up in whether the app answers anything at all.
-                if log::log_enabled!(log::Level::Debug) {
-                    // `windows_for_pid` hands back retained elements — count
-                    // them, then release. A non-zero count with our window
-                    // absent is a real close; zero across the board is the
-                    // AX blackout, and the window is probably alive.
-                    let listed = unsafe { ax_element::windows_for_pid(pid) };
-                    let ids: Vec<WindowId> = listed.iter().map(|&(_, wid)| wid).collect();
-                    for (elem, _) in listed {
-                        unsafe {
-                            core_foundation::base::CFRelease(
-                                elem as core_foundation::base::CFTypeRef,
-                            )
-                        };
-                    }
-                    log::debug!(
-                        "write_diag win={} outcome=Gone target={:?}\n  refresh_element found no match\n  app: {:?} pid {}\n  app still lists {} window(s): {:?}",
-                        window_id,
-                        rect,
-                        ns_workspace::localized_name_for_pid(pid),
-                        pid,
-                        ids.len(),
-                        ids,
-                    );
-                }
-                // Window is gone — evict from cache so we don't keep retrying.
-                if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
-                    unsafe {
-                        core_foundation::base::CFRelease(elem as core_foundation::base::CFTypeRef)
-                    };
-                }
-                WriteOutcome::Gone
-            }
-        }
+        // Suspend `AXEnhancedUserInterface` for the duration of the write.
+        // With it on, Chromium- and Gecko-based apps animate every AX frame
+        // change, so a workspace switch visibly crawls the window into place
+        // — and the writer's readback lands mid-animation, reads as drift,
+        // and re-writes, restarting the animation. yabai, Rectangle and
+        // Amethyst all toggle it off around frame writes for this reason.
+        // Restored on drop, since assistive tech (VoiceOver) relies on it.
+        let started = std::time::Instant::now();
+        let enhanced_ui = unsafe { ax_element::EnhancedUiGuard::suspend(pid) };
+        let outcome = self.write_resolved(window_id, element, pid, rect);
+        let enhanced_was_on = enhanced_ui.was_enabled();
+        drop(enhanced_ui);
+        log::debug!(
+            "set_window_rect win={} pid={} took {:?} outcome={} enhanced_ui={}",
+            window_id,
+            pid,
+            started.elapsed(),
+            if outcome.is_ok() { "Ok" } else { "failed" },
+            if enhanced_was_on {
+                "ON (suspended for write)"
+            } else {
+                "off"
+            },
+        );
+        outcome
     }
 
     fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
