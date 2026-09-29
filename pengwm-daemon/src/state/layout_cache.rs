@@ -58,8 +58,8 @@ pub(super) struct LayoutWriteCache {
     /// After `PIN_STRIKES` the layout skips writes for `PIN_BACKOFF` and
     /// retries on a timer instead of storming. Time-bounded, never
     /// permanent — a late-becoming-resizable window heals at most one
-    /// backoff late. Cleared on success, target change, displace, destroy,
-    /// terminate and wake.
+    /// backoff late. Cleared on success, target change, destroy, terminate
+    /// and wake — deliberately *not* on displace: see `invalidate`.
     pin_state: HashMap<WindowId, PinState>,
 }
 
@@ -121,14 +121,10 @@ impl LayoutWriteCache {
         // the write and retries on a timer. A changed target is a fresh
         // situation — drop the pin and write.
         let now = Instant::now();
-        match self.pin_state.get(&window_id).copied() {
-            Some(p) if p.target != target => {
+        if let Some(pin) = self.pin_state.get(&window_id).copied() {
+            if pin.target != target {
                 self.pin_state.remove(&window_id);
-            }
-            Some(p)
-                if p.strikes >= Self::PIN_STRIKES
-                    && now.duration_since(p.last_attempt) < Self::PIN_BACKOFF =>
-            {
+            } else if self.pin_backoff_active(window_id, now) {
                 log::debug!(
                     "layout_cache: window {} pinned, backing off write (retry in {:?})",
                     window_id,
@@ -136,9 +132,20 @@ impl LayoutWriteCache {
                 );
                 return false;
             }
-            _ => {}
         }
         true
+    }
+
+    /// True while writes to this window are backed off: `PIN_STRIKES`
+    /// consecutive futile attempts at the same target, the last one inside
+    /// `PIN_BACKOFF`. One definition, two readers — `should_write` gates on
+    /// it, and the misplaced sweep consults it so a pinned window stops
+    /// re-triggering a whole-workspace re-layout on every tick.
+    pub(super) fn pin_backoff_active(&self, window_id: WindowId, now: Instant) -> bool {
+        self.pin_state.get(&window_id).is_some_and(|pin| {
+            pin.strikes >= Self::PIN_STRIKES
+                && now.duration_since(pin.last_attempt) < Self::PIN_BACKOFF
+        })
     }
 
     /// Record a landed write: claims the skip entry and clears every
@@ -258,12 +265,21 @@ impl LayoutWriteCache {
         }
     }
 
-    /// Forget the skip + pin entries so the next layout rewrites promptly.
-    /// A moved window is a fresh situation for the pin count too: it gets
-    /// prompt writes again, not backoff silence.
+    /// Forget the skip entry so the next layout re-asserts the target
+    /// (drag snap-back, app moves, the misplaced sweep).
+    ///
+    /// Deliberately leaves `pin_state` alone. Every caller is observing
+    /// "this window is not where we put it" — which is the *expected*
+    /// state of a pinned window, not new information. Clearing the strike
+    /// count here reset it to 1 on every 2s sweep, so it could never reach
+    /// `PIN_STRIKES` and the backoff never engaged for the one case it
+    /// exists for: a busy app (Firefox after wake) refusing every write,
+    /// stormed with a full 3-attempt rewrite every 2 seconds forever.
+    /// The pin is dropped where it genuinely goes stale instead — a
+    /// changed target (`should_write`), a landed write (`record_success`),
+    /// destroy/terminate (`forget`), and wake (`clear_on_wake`).
     pub(super) fn invalidate(&mut self, window_id: WindowId) {
         self.applied_rects.remove(&window_id);
-        self.pin_state.remove(&window_id);
     }
 
     /// Drop every entry for a window (destroy / terminate paths).
@@ -560,6 +576,35 @@ mod tests {
         cache.record_success(7, t);
         assert_eq!(pinned(&cache), 0);
         assert!(!cache.should_write(7, t, None));
+    }
+
+    #[test]
+    fn invalidate_keeps_pin_evidence() {
+        // The misplaced sweep invalidates a pinned window on every tick —
+        // it reads as displaced *because* it is pinned. Clearing the strike
+        // count there reset the counter to 1 forever, so it could never
+        // reach PIN_STRIKES and the backoff never engaged.
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let actual = Rect::new(500.0, 500.0, 10.0, 10.0);
+        for strike in 1..=3 {
+            assert!(cache.should_write(7, t, None));
+            cache.record_failure(7, t, WriteOutcome::Pinned { target: t, actual });
+            // What the sweep does on every tick.
+            cache.invalidate(7);
+            assert_eq!(cache.pin_state.get(&7).map(|p| p.strikes), Some(strike));
+        }
+        assert!(cache.pin_backoff_active(7, Instant::now()));
+        assert!(
+            !cache.should_write(7, t, None),
+            "backoff must hold across invalidate"
+        );
+        // Still time-bounded, and a landed write still heals it.
+        cache.age_pin_for_test(7, Duration::from_secs(30));
+        assert!(!cache.pin_backoff_active(7, Instant::now()));
+        assert!(cache.should_write(7, t, None));
+        cache.record_success(7, t);
+        assert!(!cache.pin_state.contains_key(&7));
     }
 
     #[test]

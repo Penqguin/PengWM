@@ -128,6 +128,16 @@ impl StateManager {
                 if self.store.is_hidden(wid) {
                     continue;
                 }
+                // Pinned and backed off: the app is provably refusing this
+                // target, so it *will* read as displaced. Re-asserting here
+                // would invalidate, re-layout the whole workspace and storm
+                // the app on every tick — the backoff timer owns the retry
+                // cadence instead. Skipped before the read: reads are cheap
+                // but not free, and this one can only confirm what the pin
+                // already recorded.
+                if self.layout_cache.pin_backoff_active(wid, now) {
+                    continue;
+                }
                 let actual = match self.os.window_rect(wid) {
                     Some(r) => r,
                     None => continue,

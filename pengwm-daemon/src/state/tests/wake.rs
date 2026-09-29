@@ -177,3 +177,69 @@ fn misplaced_sweep_retiles_tracked_window_without_new_id() {
         "misplaced sweep must force a rewrite"
     );
 }
+
+#[test]
+fn pin_backoff_survives_the_misplaced_sweep() {
+    // The post-wake Firefox storm. An app that refuses every write reports
+    // Pinned each time, and `reconcile_misplaced_windows` runs every 2s —
+    // a pinned window always reads as displaced, so the sweep invalidates
+    // it on every tick. If `invalidate` also cleared the strike count, the
+    // counter reset to 1 forever: PIN_STRIKES was unreachable, the backoff
+    // never engaged, and Firefox took a full 3-attempt rewrite (~15 AX
+    // round trips, each a reflow) every 2 seconds indefinitely.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    handle.set_fault(100, Fault::Pinned);
+    handle.displace(100, 500.0, 500.0);
+    // Age the skip entry past DISPLACE_GRACE, as 2s of wall clock would.
+    sm.layout_cache
+        .age_applied_for_test(100, Duration::from_secs(5));
+
+    let mut per_sweep = Vec::new();
+    for _ in 0..6 {
+        let before = handle.writes();
+        sm.force_window_sweep_for_test();
+        sm.on_tick();
+        per_sweep.push(handle.writes() - before);
+    }
+    assert_eq!(
+        per_sweep,
+        vec![1, 1, 1, 0, 0, 0],
+        "backoff must engage after PIN_STRIKES and hold through the sweep"
+    );
+    // Backoff is a write throttle, not an untrack: the window stays owned
+    // and stays tiled, and the workspace keeps its other window placed.
+    assert!(sm.store.contains(100));
+    assert!(sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()));
+    assert!(sm.workspaces.iter().any(|ws| ws.find_window(200).is_some()));
+
+    // Time-bounded, never permanent: when the timer expires the sweep
+    // retries exactly once, then goes quiet again for another backoff.
+    sm.layout_cache
+        .age_pin_for_test(100, Duration::from_secs(30));
+    let before = handle.writes();
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert_eq!(handle.writes() - before, 1, "expired backoff retries once");
+    let before = handle.writes();
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert_eq!(
+        handle.writes() - before,
+        0,
+        "and re-arms rather than storming"
+    );
+
+    // The app finally accepts writes: the pin heals and the window lands.
+    handle.clear_fault(100);
+    sm.layout_cache
+        .age_pin_for_test(100, Duration::from_secs(30));
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.layout_cache
+            .pin_backoff_active(100, std::time::Instant::now()),
+        "a landed write clears the pin"
+    );
+}
