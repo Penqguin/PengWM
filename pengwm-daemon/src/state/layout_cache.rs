@@ -180,6 +180,13 @@ impl LayoutWriteCache {
             // every failure — the storm is the problem, not the log.
             // Debug per strike, warn once when backoff engages.
             WriteOutcome::Pinned { actual, .. } => {
+                // A Pinned report carries a readback, so the element
+                // answered: it is alive, whatever else is wrong. Clear any
+                // gone grace, or a single stale miss from minutes ago
+                // combines with one fresh miss to untrack a live window
+                // instantly — `gone_since` records the *first* miss, and
+                // only a landed write used to clear it.
+                self.gone_since.remove(&window_id);
                 let now = Instant::now();
                 let strikes = match self.pin_state.get(&window_id) {
                     Some(pin) if pin.target == target => pin.strikes + 1,
@@ -249,6 +256,9 @@ impl LayoutWriteCache {
             // Drift + transient contention: the write never landed.
             // Throttled log, retry on the next layout.
             WriteOutcome::Drift { target, actual } => {
+                // Same reasoning as Pinned: a drift report means the
+                // element answered a readback, so it is not gone.
+                self.gone_since.remove(&window_id);
                 self.log_transient(
                     window_id,
                     &format!(
@@ -620,6 +630,46 @@ mod tests {
             AfterWrite::Keep
         );
         cache.age_gone_for_test(7, Duration::from_secs(30));
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Untrack
+        );
+    }
+
+    #[test]
+    fn live_readback_clears_a_stale_gone_grace() {
+        // `gone_since` records the *first* miss and used to survive until
+        // a write landed. A window that missed once, then went minutes
+        // without a successful write (it was at target, so writes were
+        // skipped), got untracked by the very next single miss — the
+        // grace had long since "expired". Any outcome carrying a readback
+        // proves the element is alive and must reset it.
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let actual = Rect::new(500.0, 500.0, 10.0, 10.0);
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Keep
+        );
+        // Minutes pass with the window alive but not written.
+        cache.age_gone_for_test(7, Duration::from_secs(300));
+        // A readback-carrying outcome proves it is alive.
+        cache.record_failure(7, t, WriteOutcome::Pinned { target: t, actual });
+        // The next miss starts a fresh grace instead of untracking.
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Keep,
+            "a live readback must reset the gone grace"
+        );
+        // Drift resets it too.
+        cache.age_gone_for_test(7, Duration::from_secs(300));
+        cache.record_failure(7, t, WriteOutcome::Drift { target: t, actual });
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Keep
+        );
+        // A window that really is gone still untracks.
+        cache.age_gone_for_test(7, Duration::from_secs(300));
         assert_eq!(
             cache.record_failure(7, t, WriteOutcome::Gone),
             AfterWrite::Untrack
