@@ -6,8 +6,6 @@ use pengwm_core::layout::{
 };
 use pengwm_core::tree::WindowId;
 
-use super::StateManager;
-
 /// What the caller must do after recording a failed write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AfterWrite {
@@ -18,18 +16,20 @@ pub(super) enum AfterWrite {
     Untrack,
 }
 
-/// Owns the layout-write cache policy and the maps it reasons about:
-/// skip-if-unchanged (the Firefox reflow storm), the post-write
-/// grace/epsilon that keeps our own animation settling from tripping
-/// snap-back, the gone grace for transient AX blackouts, the pin backoff
-/// for futile writes, and the hidden-rect seeding that keeps switch-back
-/// from comparing equal to a stale tiled entry.
+/// Owns the layout-write funnel and the maps it reasons about: skip-if-unchanged
+/// (the Firefox reflow storm), the post-write grace/epsilon that keeps our own
+/// animation settling from tripping snap-back, the gone grace for transient AX
+/// blackouts, the pin backoff for futile writes, and the hidden-rect seeding
+/// that keeps switch-back from comparing equal to a stale tiled entry.
 ///
-/// `StateManager` retains the workspace tree, routing, and the `OsAdapter`
-/// — this module owns every write-policy map, so destroy, terminate, and
-/// wake collapse to one `forget` / `clear_on_wake` each. The interface is
-/// the test surface: policy tests target these methods directly, with no
-/// `StateManager` harness.
+/// Two funnels, one owner: `plan_writes` decides a layout pass, `sweep_displaced`
+/// decides the misplaced tick. Callers feed one cheap read per window and
+/// execute what comes back — no caller threads `window_rect` through
+/// `should_write` / `is_displaced` by hand anymore. `StateManager` retains the
+/// workspace tree, routing, and the `OsAdapter` — this module owns every
+/// write-policy map, so destroy, terminate, and wake collapse to one `forget` /
+/// `clear_on_wake` each. The interface is the test surface: policy tests target
+/// these methods directly, with no `StateManager` harness.
 pub(super) struct LayoutWriteCache {
     /// Last rect successfully pushed to the OS per window (tiles and hides),
     /// with the write time. `should_write` skips windows already at their
@@ -126,7 +126,7 @@ impl LayoutWriteCache {
                 self.pin_state.remove(&window_id);
             } else if self.pin_backoff_active(window_id, now) {
                 log::debug!(
-                    "layout_cache: window {} pinned, backing off write (retry in {:?})",
+                    "layout_writer: window {} pinned, backing off write (retry in {:?})",
                     window_id,
                     Self::PIN_BACKOFF
                 );
@@ -146,6 +146,27 @@ impl LayoutWriteCache {
             pin.strikes >= Self::PIN_STRIKES
                 && now.duration_since(pin.last_attempt) < Self::PIN_BACKOFF
         })
+    }
+
+    /// The one planning funnel for a layout pass: given tiled targets and one
+    /// cheap AX read per window, return the writes to execute. Runs every
+    /// target through `should_write`, so skip-if-unchanged, read-before-write
+    /// claiming, and pin backoff all apply in one place. Windows absent from
+    /// `actuals` read as unreadable and fall through to the write, which is
+    /// what refreshes a stale element.
+    pub(super) fn plan_writes(
+        &mut self,
+        targets: &HashMap<WindowId, Rect>,
+        actuals: &HashMap<WindowId, Option<Rect>>,
+    ) -> Vec<(WindowId, Rect)> {
+        targets
+            .iter()
+            .filter(|(window_id, target)| {
+                let actual = actuals.get(window_id).copied().flatten();
+                self.should_write(**window_id, **target, actual)
+            })
+            .map(|(&window_id, &target)| (window_id, target))
+            .collect()
     }
 
     /// Record a landed write: claims the skip entry and clears every
@@ -202,7 +223,7 @@ impl LayoutWriteCache {
                 );
                 if strikes == Self::PIN_STRIKES {
                     log::warn!(
-                        "layout_cache: window {} pinned at {:?} (target {:?}), backing off — retrying every {:?}",
+                        "layout_writer: window {} pinned at {:?} (target {:?}), backing off — retrying every {:?}",
                         window_id,
                         actual,
                         target,
@@ -210,7 +231,7 @@ impl LayoutWriteCache {
                     );
                 } else {
                     log::debug!(
-                        "layout_cache: window {} pinned strike {}/{} (target {:?} actual {:?})",
+                        "layout_writer: window {} pinned strike {}/{} (target {:?} actual {:?})",
                         window_id,
                         strikes,
                         Self::PIN_STRIKES,
@@ -230,7 +251,7 @@ impl LayoutWriteCache {
                 match self.gone_since.get(&window_id) {
                     Some(first) if now.duration_since(*first) >= Self::GONE_GRACE => {
                         log::warn!(
-                            "layout_cache: window {} still gone after {:?}, untracking",
+                            "layout_writer: window {} still gone after {:?}, untracking",
                             window_id,
                             Self::GONE_GRACE,
                         );
@@ -238,14 +259,14 @@ impl LayoutWriteCache {
                     }
                     Some(_) => {
                         log::debug!(
-                            "layout_cache: window {} missing, within gone grace — keeping",
+                            "layout_writer: window {} missing, within gone grace — keeping",
                             window_id,
                         );
                         AfterWrite::Keep
                     }
                     None => {
                         log::debug!(
-                            "layout_cache: window {} missing, starting gone grace — keeping",
+                            "layout_writer: window {} missing, starting gone grace — keeping",
                             window_id,
                         );
                         self.gone_since.insert(window_id, now);
@@ -333,7 +354,7 @@ impl LayoutWriteCache {
         };
         if displaced && Instant::now().duration_since(written_at) > DISPLACE_GRACE {
             log::debug!(
-                "layout_cache: window {} displaced (actual {:?}), invalidating",
+                "layout_writer: window {} displaced (actual {:?}), invalidating",
                 window_id,
                 actual
             );
@@ -361,6 +382,61 @@ impl LayoutWriteCache {
             }
         }
         true
+    }
+
+    /// The one sweep funnel for the misplaced tick: given tiled targets and
+    /// one cheap AX read per window, invalidate genuinely displaced windows
+    /// so the next layout re-asserts. `is_skipped` covers caller-owned skips
+    /// (the active drag window, hidden windows) — pin backoff and
+    /// grace/epsilon live here, next to `note_displaced`'s guards, instead of
+    /// mirrored at a second call site. Unreadable windows are left alone:
+    /// only a write attempt (→ `Gone` → grace) can judge them. Returns the
+    /// invalidated windows so the caller can re-apply.
+    pub(super) fn sweep_displaced(
+        &mut self,
+        targets: &HashMap<WindowId, Rect>,
+        actuals: &HashMap<WindowId, Option<Rect>>,
+        now: Instant,
+        is_skipped: impl Fn(WindowId) -> bool,
+    ) -> Vec<WindowId> {
+        let mut invalidated = Vec::new();
+        for (&window_id, &target) in targets {
+            if is_skipped(window_id) {
+                continue;
+            }
+            // Pinned and backed off: the app is provably refusing this
+            // target, so it *will* read as displaced. Re-asserting here
+            // would invalidate, re-layout the whole workspace and storm
+            // the app on every tick — the backoff timer owns the retry
+            // cadence instead. Skipped before the read: reads are cheap
+            // but not free, and this one can only confirm what the pin
+            // already recorded.
+            if self.pin_backoff_active(window_id, now) {
+                continue;
+            }
+            let actual = match actuals.get(&window_id).copied().flatten() {
+                Some(r) => r,
+                None => continue,
+            };
+            if !self.is_displaced(window_id, target, actual, now) {
+                continue;
+            }
+            log::info!(
+                "layout_writer: window {} displaced target ({:.0},{:.0} {}x{}) actual ({:.0},{:.0} {}x{}), invalidating",
+                window_id,
+                target.x,
+                target.y,
+                target.width,
+                target.height,
+                actual.x,
+                actual.y,
+                actual.width,
+                actual.height
+            );
+            self.invalidate(window_id);
+            invalidated.push(window_id);
+        }
+        invalidated
     }
 
     /// Record where hidden windows were put: a hidden rect never equals a
@@ -392,13 +468,13 @@ impl LayoutWriteCache {
             .is_some_and(|last| now.duration_since(*last) < FAIL_LOG_THROTTLE);
         if repeat {
             log::debug!(
-                "layout_cache: write retry failed for window {}: {}",
+                "layout_writer: write retry failed for window {}: {}",
                 window_id,
                 msg
             );
         } else {
             log::warn!(
-                "layout_cache: write failed for window {}: {} (retrying)",
+                "layout_writer: write failed for window {}: {} (retrying)",
                 window_id,
                 msg
             );
@@ -463,55 +539,6 @@ struct PinState {
     strikes: u32,
     last_attempt: Instant,
     target: Rect,
-}
-
-impl StateManager {
-    pub(super) fn apply_layout(&mut self, workspace_idx: usize) {
-        let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
-        self.last_layout_rects = rects.clone();
-
-        log::debug!(
-            "apply_layout ws={} gaps_in={} out={}:",
-            workspace_idx,
-            self.gap_inner,
-            self.gap_outer
-        );
-        for (&window_id, rect) in &rects {
-            log::debug!(
-                "  win={} -> ({:.0},{:.0}) {}x{}",
-                window_id,
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height
-            );
-        }
-
-        let mut dead = Vec::new();
-        for (&window_id, rect) in &rects {
-            // One cheap AX read feeds the funnel: reads don't reflow,
-            // writes do (Firefox).
-            let actual = self.os.window_rect(window_id);
-            if !self.layout_cache.should_write(window_id, *rect, actual) {
-                continue;
-            }
-            match self.os.set_window_rect(window_id, *rect) {
-                WriteOutcome::Ok => self.layout_cache.record_success(window_id, *rect),
-                outcome => {
-                    if self.layout_cache.record_failure(window_id, *rect, outcome)
-                        == AfterWrite::Untrack
-                    {
-                        dead.push(window_id);
-                    }
-                }
-            }
-        }
-        // Untrack via the normal destroyed path (removes from tree + store,
-        // re-layouts the visible workspace to fill the gap).
-        for window_id in dead {
-            self.on_window_destroyed(window_id);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -760,6 +787,78 @@ mod tests {
         cache.seed_hidden(Rect::new(0.0, 1079.0, 1.0, 1.0), [7]);
         // Hidden rect != tile target: the next layout must write.
         assert!(cache.should_write(7, t, Some(Rect::new(0.0, 1079.0, 1.0, 1.0))));
+    }
+
+    #[test]
+    fn plan_writes_batches_the_should_write_funnel() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let other = Rect::new(960.0, 0.0, 960.0, 1040.0);
+        let far = Rect::new(500.0, 500.0, 10.0, 10.0);
+        // 7 already placed at target: skipped without a read.
+        cache.record_success(7, t);
+        let targets: HashMap<WindowId, Rect> = [(7, t), (8, other)].into_iter().collect();
+        // 8 reads far from target: planned. 7 skipped even with a far read.
+        let actuals: HashMap<WindowId, Option<Rect>> =
+            [(7, Some(far)), (8, Some(far))].into_iter().collect();
+        assert_eq!(cache.plan_writes(&targets, &actuals), vec![(8, other)]);
+        // Missing read falls through to the write (stale-element refresh).
+        let actuals: HashMap<WindowId, Option<Rect>> = [(8, None)].into_iter().collect();
+        assert_eq!(cache.plan_writes(&targets, &actuals), vec![(8, other)]);
+        // Read-before-write claims: OS already at target, no entry.
+        let actuals: HashMap<WindowId, Option<Rect>> = [(8, Some(other))].into_iter().collect();
+        assert!(cache.plan_writes(&targets, &actuals).is_empty());
+    }
+
+    #[test]
+    fn sweep_displaced_invalidates_only_genuine_drift() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let far = Rect::new(500.0, 500.0, 960.0, 1040.0);
+        for wid in [7, 8, 9, 10] {
+            cache.record_success(wid, t);
+            cache.age_applied_for_test(wid, Duration::from_secs(5));
+        }
+        let targets: HashMap<WindowId, Rect> =
+            [(7, t), (8, t), (9, t), (10, t)].into_iter().collect();
+        let actuals: HashMap<WindowId, Option<Rect>> = [
+            (7, Some(far)),  // genuinely displaced
+            (8, Some(t)),    // at target
+            (9, None),       // unreadable: left alone
+            (10, Some(far)), // displaced but caller-skipped
+        ]
+        .into_iter()
+        .collect();
+        let invalidated =
+            cache.sweep_displaced(&targets, &actuals, Instant::now(), |wid| wid == 10);
+        assert_eq!(invalidated, vec![7]);
+        // Only 7 rewrites now.
+        assert!(cache.plan_writes(&targets, &actuals).contains(&(7, t)));
+        assert!(!cache.plan_writes(&targets, &actuals).contains(&(8, t)));
+    }
+
+    #[test]
+    fn sweep_displaced_respects_pin_backoff() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let far = Rect::new(500.0, 500.0, 960.0, 1040.0);
+        for _ in 1..=3 {
+            cache.record_failure(
+                7,
+                t,
+                WriteOutcome::Pinned {
+                    target: t,
+                    actual: far,
+                },
+            );
+        }
+        assert!(cache.pin_backoff_active(7, Instant::now()));
+        let targets: HashMap<WindowId, Rect> = [(7, t)].into_iter().collect();
+        let actuals: HashMap<WindowId, Option<Rect>> = [(7, Some(far))].into_iter().collect();
+        // Reads as displaced, but the backoff owns the retry cadence.
+        assert!(cache
+            .sweep_displaced(&targets, &actuals, Instant::now(), |_| false)
+            .is_empty());
     }
 
     #[test]

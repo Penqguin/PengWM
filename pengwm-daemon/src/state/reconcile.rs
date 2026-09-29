@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
 use super::drag::DragTickAction;
@@ -111,61 +113,30 @@ impl StateManager {
     /// (`!contains` only) ever retries it — only a full app quit + reopen
     /// (fresh WindowId) heals it.
     ///
-    /// Guards mirror `note_displaced`: skips hidden windows, the active drag
-    /// window, moves within grace/epsilon (our own animation settling), and
-    /// invisible workspaces. Invalidates the write cache for genuinely
-    /// displaced windows then re-applies those workspaces.
+    /// One sweep funnel: visible workspaces only (invisible ones aren't
+    /// asserted until shown). Displacement judgment lives in
+    /// `LayoutWriteCache::sweep_displaced`; this only feeds reads and
+    /// re-applies what came back invalidated.
     fn reconcile_misplaced_windows(&mut self, now: Instant) {
         let drag_window = self.drag.drag_window();
-        let mut affected: Vec<usize> = Vec::new();
         // Snapshot visible indices first to avoid borrow conflicts.
         let visible: Vec<usize> = self.displays.active().values().copied().collect();
+        let mut affected: Vec<usize> = Vec::new();
         for idx in visible {
             if idx >= self.workspaces.len() {
                 continue;
             }
             let targets = self.workspaces[idx].layout(self.gap_inner, self.gap_outer);
-            let mut misplaced = false;
-            for (&wid, target) in &targets {
-                if Some(wid) == drag_window {
-                    continue;
-                }
-                if self.store.is_hidden(wid) {
-                    continue;
-                }
-                // Pinned and backed off: the app is provably refusing this
-                // target, so it *will* read as displaced. Re-asserting here
-                // would invalidate, re-layout the whole workspace and storm
-                // the app on every tick — the backoff timer owns the retry
-                // cadence instead. Skipped before the read: reads are cheap
-                // but not free, and this one can only confirm what the pin
-                // already recorded.
-                if self.layout_cache.pin_backoff_active(wid, now) {
-                    continue;
-                }
-                let actual = match self.os.window_rect(wid) {
-                    Some(r) => r,
-                    None => continue,
-                };
-                if !self.layout_cache.is_displaced(wid, *target, actual, now) {
-                    continue;
-                }
-                log::info!(
-                    "reconcile_misplaced: window {} displaced target ({:.0},{:.0} {}x{}) actual ({:.0},{:.0} {}x{}), invalidating",
-                    wid,
-                    target.x,
-                    target.y,
-                    target.width,
-                    target.height,
-                    actual.x,
-                    actual.y,
-                    actual.width,
-                    actual.height
-                );
-                self.layout_cache.invalidate(wid);
-                misplaced = true;
-            }
-            if misplaced {
+            let actuals: HashMap<WindowId, Option<Rect>> = targets
+                .keys()
+                .map(|&wid| (wid, self.os.window_rect(wid)))
+                .collect();
+            let invalidated = self
+                .layout_cache
+                .sweep_displaced(&targets, &actuals, now, |wid| {
+                    Some(wid) == drag_window || self.store.is_hidden(wid)
+                });
+            if !invalidated.is_empty() {
                 affected.push(idx);
             }
         }

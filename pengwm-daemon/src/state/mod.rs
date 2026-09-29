@@ -19,7 +19,7 @@ pub mod commands;
 pub mod display;
 pub mod drag;
 pub mod hidden;
-pub mod layout_cache;
+pub mod layout_writer;
 pub mod lifecycle;
 pub mod monitors_wake;
 pub mod reconcile;
@@ -30,7 +30,7 @@ mod tests;
 use self::bar::{BarReserve, ReloadAction};
 use self::display::DisplaySet;
 use self::drag::DragState;
-use self::layout_cache::LayoutWriteCache;
+use self::layout_writer::{AfterWrite, LayoutWriteCache};
 use self::store::WindowStore;
 
 pub struct StateManager {
@@ -375,6 +375,49 @@ impl StateManager {
     #[allow(dead_code)]
     fn set_focus_first_for_test(&mut self, v: bool) {
         self.focus_first_on_switch = v;
+    }
+
+    /// Apply the tiled layout for one workspace: compute targets, take one
+    /// cheap AX read per window (reads don't reflow; writes do), execute the
+    /// writer's plan, and untrack windows proven gone via the normal destroyed
+    /// path (removes from tree + store, re-layouts to fill the gap).
+    pub(super) fn apply_layout(&mut self, workspace_idx: usize) {
+        let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
+        self.last_layout_rects = rects.clone();
+
+        log::debug!(
+            "apply_layout ws={} gaps_in={} out={}:",
+            workspace_idx,
+            self.gap_inner,
+            self.gap_outer
+        );
+        for (&window_id, rect) in &rects {
+            log::debug!(
+                "  win={} -> ({:.0},{:.0}) {}x{}",
+                window_id,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            );
+        }
+
+        let actuals: HashMap<WindowId, Option<Rect>> = rects
+            .keys()
+            .map(|&window_id| (window_id, self.os.window_rect(window_id)))
+            .collect();
+        let mut dead = Vec::new();
+        // `record_failure` routes `Ok` to `record_success` itself, so every
+        // executed write commits through one call.
+        for (window_id, target) in self.layout_cache.plan_writes(&rects, &actuals) {
+            let outcome = self.os.set_window_rect(window_id, target);
+            if self.layout_cache.record_failure(window_id, target, outcome) == AfterWrite::Untrack {
+                dead.push(window_id);
+            }
+        }
+        for window_id in dead {
+            self.on_window_destroyed(window_id);
+        }
     }
 
     /// Global-coordinate rect of the bar strip on the primary display, or
