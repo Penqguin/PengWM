@@ -12,6 +12,11 @@ impl StateManager {
     pub fn on_tick(&mut self) {
         let now = Instant::now();
 
+        // A wake resync waits here for AX to come back. Driven first: the
+        // sweeps below all query AX, and running them against a blacked-out
+        // subsystem is what starts gone-grace timers on live windows.
+        self.drive_wake_resync(now);
+
         // Fallback hidden reconcile via predicate — no downcast.
         if self.store.should_reconcile(now) {
             self.reconcile_hidden_windows();

@@ -21,6 +21,8 @@ fn system_woke_resyncs_and_retiles() {
     // (Without this, placed windows correctly skip and no write happens.)
     handle.displace(200, 200.0, 200.0);
     sm.on_system_woke();
+    // The resync is deferred until AX answers; the tick drives it.
+    sm.on_tick();
     assert!(
         sm.workspaces.iter().any(|ws| ws.find_window(300).is_some()),
         "wake must tile windows missed during sleep"
@@ -143,6 +145,11 @@ fn wake_skips_windows_already_at_target() {
     sm.on_window_created(200, 42);
     let writes_after_tile = handle.writes();
     sm.on_system_woke();
+    sm.on_tick();
+    assert!(
+        !sm.wake_resync_pending(),
+        "AX answered, so the resync committed"
+    );
     assert_eq!(
         handle.writes(),
         writes_after_tile,
@@ -242,4 +249,95 @@ fn pin_backoff_survives_the_misplaced_sweep() {
             .pin_backoff_active(100, std::time::Instant::now()),
         "a landed write clears the pin"
     );
+}
+
+#[test]
+fn wake_resync_waits_for_ax_instead_of_writing_through_stale_elements() {
+    // The bug this exists for: `NSWorkspaceDidWake` arrives while AX is
+    // still blacked out. Resyncing inline polled every app, got nothing
+    // back (so the stale element refs survived), then wrote layouts
+    // through those dead refs — every live window reported Gone and
+    // started a 10s death timer. The resync must wait for AX instead.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    let writes_after_tile = handle.writes();
+
+    handle.set_ax_blackout(true);
+    sm.on_system_woke();
+    assert!(
+        sm.wake_resync_pending(),
+        "wake arms the resync, it does not run it"
+    );
+
+    // Several ticks through the blackout: no writes, and crucially no
+    // gone-grace timers started on windows that are very much alive.
+    for _ in 0..4 {
+        sm.age_wake_probe_for_test();
+        sm.on_tick();
+    }
+    assert!(sm.wake_resync_pending(), "still waiting on AX");
+    assert_eq!(
+        handle.writes(),
+        writes_after_tile,
+        "must not write through stale elements during the blackout"
+    );
+    assert!(sm.store.contains(100) && sm.store.contains(200));
+    assert!(sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()));
+    assert!(sm.workspaces.iter().any(|ws| ws.find_window(200).is_some()));
+
+    // AX comes back, and a window appeared during sleep.
+    handle.set_ax_blackout(false);
+    handle.inject_window(42, 300);
+    handle.displace(200, 300.0, 300.0);
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+
+    assert!(!sm.wake_resync_pending(), "resync commits once AX answers");
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(300).is_some()),
+        "the committed resync tiles windows missed during sleep"
+    );
+    assert!(
+        handle.writes() > writes_after_tile,
+        "the committed resync re-asserts displaced windows"
+    );
+}
+
+#[test]
+fn wake_resync_commits_at_the_deadline_even_if_ax_never_answers() {
+    // A probe that can never succeed (genuinely windowless desktop, or an
+    // AX subsystem that stays wedged) must not leave the resync armed
+    // forever — the deadline forces it through exactly once.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    handle.set_ax_blackout(true);
+    sm.on_system_woke();
+
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(sm.wake_resync_pending(), "not yet at the deadline");
+
+    sm.age_wake_deadline_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.wake_resync_pending(),
+        "deadline commits the resync and disarms it"
+    );
+}
+
+#[test]
+fn double_wake_notification_arms_once() {
+    // macOS fires both NSWorkspaceDidWake and ScreensDidWake for one wake.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    handle.set_ax_blackout(true);
+    sm.on_system_woke();
+    sm.on_system_woke();
+    assert!(sm.wake_resync_pending());
+    // One commit clears it; the duplicate did not queue a second resync.
+    handle.set_ax_blackout(false);
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(!sm.wake_resync_pending());
 }

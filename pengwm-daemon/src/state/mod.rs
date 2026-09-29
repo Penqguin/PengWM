@@ -72,6 +72,27 @@ pub struct StateManager {
     /// no AX notification, or a transient non-manageable subrole at creation).
     /// Throttled so the AX query storm doesn't run on every tick.
     last_window_sweep: Instant,
+    /// Armed by `DaemonEvent::SystemWoke`, drained by `on_tick`. The wake
+    /// notification arrives while the AX subsystem is still blacked out —
+    /// polls come back empty and cached elements are stale — so the resync
+    /// cannot run inline. See `monitors_wake::WakeResync`.
+    wake_resync: Option<WakeResync>,
+}
+
+/// A wake resync waiting for the AX subsystem to come back.
+///
+/// `NSWorkspaceDidWake` fires before apps can answer accessibility
+/// queries. A resync run at that moment polls every app and gets nothing,
+/// so the element cache keeps its stale refs, and the layout writes that
+/// follow all fail `kAXErrorInvalidUIElement` — starting a 10s gone-grace
+/// death timer on every live window. `on_tick` retries until a poll comes
+/// back with windows, or `DEADLINE` passes and it runs anyway.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WakeResync {
+    /// When the wake notification arrived.
+    pub(crate) since: Instant,
+    /// When the last probe ran, so retries are paced.
+    pub(crate) last_probe: Instant,
 }
 
 impl StateManager {
@@ -156,6 +177,7 @@ impl StateManager {
             // after `new` returns — the first sweep + misplaced reconcile is
             // the startup second pass.
             last_window_sweep: Instant::now() - Duration::from_secs(5),
+            wake_resync: None,
         };
 
         // Hide every workspace that isn't the active one for its monitor.

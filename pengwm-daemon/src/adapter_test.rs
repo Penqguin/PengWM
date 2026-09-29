@@ -39,6 +39,11 @@ pub struct TestAdapter {
     /// Number of `set_window_rect` calls served. Lets tests observe whether
     /// `apply_layout` skipped redundant writes.
     pub set_rect_calls: Cell<usize>,
+    /// Simulates the post-wake AX blackout: polls come back empty and
+    /// rects are unreadable, exactly as a live app behaves in the seconds
+    /// after `NSWorkspaceDidWake`, while the windows are still very much
+    /// alive.
+    pub ax_blackout: Cell<bool>,
 }
 
 impl Default for TestAdapter {
@@ -59,6 +64,7 @@ impl Default for TestAdapter {
             hidden_apps: RefCell::new(HashSet::new()),
             faults: RefCell::new(HashMap::new()),
             set_rect_calls: Cell::new(0),
+            ax_blackout: Cell::new(false),
         }
     }
 }
@@ -100,6 +106,13 @@ impl TestAdapter {
             r.x += dx;
             r.y += dy;
         }
+    }
+
+    /// Black out AX: polls return no windows and rects are unreadable,
+    /// while the windows stay alive in the fake. Mirrors the seconds after
+    /// a wake notification.
+    pub fn set_ax_blackout(&self, blacked_out: bool) {
+        self.ax_blackout.set(blacked_out);
     }
 
     /// Number of `set_window_rect` calls served. Lets layout tests observe
@@ -164,6 +177,10 @@ impl TestHandle {
 
     pub fn writes(&self) -> usize {
         self.0.writes()
+    }
+
+    pub fn set_ax_blackout(&self, blacked_out: bool) {
+        self.0.set_ax_blackout(blacked_out)
     }
 
     pub fn rect(&self, window_id: WindowId) -> Option<Rect> {
@@ -275,6 +292,9 @@ impl OsAdapter for TestAdapter {
     }
 
     fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId> {
+        if self.ax_blackout.get() {
+            return Vec::new();
+        }
         self.windows.borrow().get(&pid).cloned().unwrap_or_default()
     }
 
@@ -323,6 +343,9 @@ impl OsAdapter for TestAdapter {
     }
 
     fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
+        if self.ax_blackout.get() {
+            return None;
+        }
         self.window_rects.borrow().get(&window_id).copied()
     }
 
