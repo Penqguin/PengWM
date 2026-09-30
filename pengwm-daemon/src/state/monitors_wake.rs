@@ -9,20 +9,31 @@ use super::{StateManager, WakeResync};
 /// state through the existing `OsAdapter` interface — no new adapter method.
 impl StateManager {
     pub fn on_monitor_added(&mut self, display_id: u32) {
-        if self
+        let Some(sync) = self
             .displays
             .on_added(display_id, &mut self.workspaces, &*self.os)
-            .is_none()
-        {
+        else {
             return;
+        };
+        for idx in sync.relayout {
+            self.apply_layout(idx);
         }
         self.apply_bar_reservation();
         self.publish_bar_state();
     }
 
     pub fn on_monitor_removed(&mut self, _display_id: u32) {
-        self.displays
+        let sync = self
+            .displays
             .on_removed(_display_id, &mut self.workspaces, &*self.os);
+        for idx in sync.hidden {
+            self.hide_workspace(idx);
+        }
+        for idx in sync.relayout {
+            if idx < self.workspaces.len() {
+                self.apply_layout(idx);
+            }
+        }
         self.apply_bar_reservation();
         self.publish_bar_state();
     }

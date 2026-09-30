@@ -30,33 +30,37 @@ impl StateManager {
                 self.apply_layout(idx);
             }
             Command::Workspace { id } => {
-                // Per-monitor: id is 1-based index among workspaces on the
-                // *focused* monitor, not a flat global index.
+                // Global: id is a 1-based index into config order, any output.
+                // A switch to a workspace visible elsewhere swaps (#1/Q2).
                 let n = id as usize;
                 if n != 0 {
                     let current_idx = self.active_workspace_idx();
                     if current_idx < self.workspaces.len() {
-                        let current_mon = self.workspaces[current_idx].monitor_id;
-                        let on_mon = self.displays.workspaces_on(current_mon, &self.workspaces);
-                        if let Some(new_idx) =
-                            self.displays
-                                .resolve_workspace(current_idx, n, &self.workspaces)
+                        if let Some(mon) = self
+                            .displays
+                            .focused_output()
+                            .or_else(|| self.workspaces.get(current_idx).map(|ws| ws.monitor_id))
                         {
-                            if new_idx != current_idx {
-                                self.displays.active_mut().insert(current_mon, new_idx);
-                                for &idx in &on_mon {
-                                    if idx != new_idx {
-                                        self.hide_workspace(idx);
-                                    }
+                            self.displays.set_focused_output(mon);
+                        }
+                        if let Some(target) = self.displays.resolve_workspace(n, &self.workspaces) {
+                            if let Some(dec) =
+                                self.displays
+                                    .plan_switch(target, &mut self.workspaces, &*self.os)
+                            {
+                                for &idx in &dec.hide {
+                                    self.hide_workspace(idx);
                                 }
                                 let maybe_focus = if self.focus_first_on_switch
-                                    && self.workspaces[new_idx].window_count() > 0
+                                    && self.workspaces[dec.show].window_count() > 0
                                 {
-                                    self.workspaces[new_idx].focus_first()
+                                    self.workspaces[dec.show].focus_first()
                                 } else {
                                     None
                                 };
-                                self.apply_layout(new_idx);
+                                for idx in dec.relayout {
+                                    self.apply_layout(idx);
+                                }
                                 if let Some(wid) = maybe_focus {
                                     self.os.focus_window(wid);
                                 }
@@ -65,10 +69,9 @@ impl StateManager {
                             }
                         } else {
                             log::debug!(
-                                "Workspace id {} out of range for monitor {} (has {} workspaces)",
+                                "Workspace id {} out of range (has {} workspaces)",
                                 n,
-                                current_mon,
-                                on_mon.len()
+                                self.workspaces.len()
                             );
                         }
                     }
@@ -77,11 +80,7 @@ impl StateManager {
             Command::MoveWindowToWorkspace { id } => {
                 let n = id as usize;
                 if n != 0 {
-                    let current_idx = self.active_workspace_idx();
-                    if let Some(target) =
-                        self.displays
-                            .resolve_workspace(current_idx, n, &self.workspaces)
-                    {
+                    if let Some(target) = self.displays.resolve_workspace(n, &self.workspaces) {
                         self.move_focused_to_workspace(target);
                     }
                 }
@@ -276,6 +275,10 @@ impl StateManager {
                 return;
             }
         };
+        // Bookkeeping first: focus always lands, even on an empty workspace
+        // (#2/Q9) — otherwise the next switch/move resolves on a stale output.
+        let target_mon = self.workspaces[target_idx].monitor_id;
+        self.displays.set_focused_output(target_mon);
         if let Some(wid) = self.workspaces[target_idx].focused_window_id() {
             log::debug!(
                 "focus_display {:?} workspace {} -> {} wid {}",
@@ -286,8 +289,6 @@ impl StateManager {
             );
             self.os.focus_window(wid);
         } else {
-            // No window to focus — just update frontmost heuristic by focusing display?
-            // Publish so bar/menubar reflect focused display change.
             log::debug!(
                 "focus_display {:?} target {} has no windows",
                 direction,
@@ -297,6 +298,9 @@ impl StateManager {
         }
     }
 
+    /// Throw the focused window onto the visible workspace of the display in
+    /// `direction`. Moves bypass `max_tiles` and always land (#2/Q10); focus
+    /// stays on the source output (#2/Q11).
     fn move_window_to_display(&mut self, direction: Direction) {
         let current_idx = self.active_workspace_idx();
         if current_idx >= self.workspaces.len() {
@@ -311,33 +315,21 @@ impl StateManager {
             Some(idx) => idx,
             None => return,
         };
+        if target_idx == current_idx {
+            return;
+        }
         let wid = match self.workspaces[current_idx].focused_window_id() {
             Some(id) => id,
             None => return,
         };
-        let dest = match self
-            .displays
-            .plan_move(&self.workspaces, current_idx, target_idx)
-        {
-            Some(dec) => dec.to,
-            None => {
-                log::warn!(
-                    "No room on target display {} for window {}",
-                    self.workspaces[target_idx].monitor_id,
-                    wid
-                );
-                return;
-            }
-        };
         log::debug!(
-            "move_window_to_display {:?} wid {} workspace {} -> {} dest {}",
+            "move_window_to_display {:?} wid {} workspace {} -> {}",
             direction,
             wid,
             current_idx,
             target_idx,
-            dest
         );
-        self.move_window_between(current_idx, dest, wid);
+        self.move_window_between(current_idx, target_idx, wid);
         self.publish_bar_state();
     }
 }

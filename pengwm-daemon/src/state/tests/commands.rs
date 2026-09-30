@@ -213,3 +213,87 @@ fn quit_command_requests_shutdown_and_exits_bar() {
         "quitting should tell the bar to exit too"
     );
 }
+
+// -----------------------------------------------------------------------
+// i3-style output behavior (#2) + global switch (#1)
+// -----------------------------------------------------------------------
+
+#[test]
+fn focus_display_to_empty_updates_focused_output() {
+    let mut sm = setup(2);
+    // Output 2 shows workspace 1, which is empty — focus must still land.
+    sm.on_command(
+        Command::FocusDisplay {
+            direction: Direction::Right,
+        },
+        None,
+    );
+    assert_eq!(sm.displays.focused_output(), Some(2));
+    assert_eq!(sm.active_workspace_idx(), 1);
+}
+
+#[test]
+fn move_window_to_display_bypasses_cap_and_keeps_focus() {
+    let mut sm = setup(2);
+    sm.displays.set_max_tiles(1);
+    // Target output's visible workspace is full (other app's window, so the
+    // frontmost heuristic keeps pointing at the source output)…
+    sm.workspaces[1].add_window(900, None);
+    sm.store.register(900, 43);
+    // …source has the focused window.
+    sm.on_window_created(300, 42);
+    let src = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(300).is_some())
+        .expect("window 300 should be tiled");
+    assert_eq!(src, 0);
+
+    sm.on_command(
+        Command::MoveWindowToDisplay {
+            direction: Direction::Right,
+        },
+        None,
+    );
+    assert_eq!(
+        sm.workspaces[1].window_count(),
+        2,
+        "output moves always land, cap is bypassed"
+    );
+    assert!(
+        sm.workspaces[0].find_window(300).is_none(),
+        "window left the source"
+    );
+    assert_eq!(
+        sm.displays.focused_output(),
+        Some(1),
+        "focus stays on the source output"
+    );
+}
+
+#[test]
+fn workspace_switch_to_visible_elsewhere_swaps_outputs() {
+    let mut sm = setup(2);
+    // Output 1 shows ws 0, output 2 shows ws 1. Switch to global ws 2 → swap.
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert_eq!(sm.displays.active().get(&1), Some(&1));
+    assert_eq!(sm.displays.active().get(&2), Some(&0));
+}
+
+#[test]
+fn workspace_switch_to_hidden_pulls_and_hides_previous() {
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.set_hidden_strategy_for_test(crate::config::HiddenStrategy::BottomEdge);
+    sm.on_window_created(100, 42);
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert_eq!(sm.displays.active().get(&1), Some(&1));
+    assert!(
+        sm.workspaces[0].find_window(100).is_some(),
+        "window stays in its tree"
+    );
+    let rect = handle
+        .rect(100)
+        .expect("pulled-away window parks offscreen");
+    let expected = pengwm_core::layout::hidden_rect((0, 0), (1920, 1080));
+    assert_eq!((rect.x, rect.y), (expected.x, expected.y));
+}

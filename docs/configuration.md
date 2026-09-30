@@ -29,10 +29,12 @@ prefix_timeout_ms = 1000
 
 ## Workspaces
 
-On startup the daemon creates a set of named workspaces on every monitor. You
-get five by default — **Development**, **Browsing**, **Notes**, **Music**,
-**Messaging** — and each one routes the windows of its listed apps into it, so
-your editor opens on the Development workspace, Safari on Browsing, and so on.
+On startup the daemon creates one global set of named workspaces — five by
+default (**Development**, **Browsing**, **Notes**, **Music**, **Messaging**) —
+shared across all monitors, i3-style. Each workspace lives on exactly one
+monitor at a time and each monitor shows exactly one workspace. Each entry
+routes the windows of its listed apps into it, so your editor opens on the
+Development workspace, Safari on Browsing, and so on.
 `apps` entries match an app's bundle id or display name (case-insensitively);
 windows from unlisted apps go to the currently focused workspace.
 
@@ -45,7 +47,10 @@ windows from unlisted apps go to the currently focused workspace.
 
 The list replaces the defaults entirely — define your own five (or three, or
 twelve). Workspaces are created at startup, so changing the list requires a
-daemon restart.
+daemon restart. Switching (`workspace-N`, global 1-based config order) to a
+workspace shown on another monitor **swaps** it onto the focused monitor.
+`focus-display` / `move-window-to-display` move focus and windows between
+monitors; moves always land, even on full workspaces.
 
 ```toml
 [[workspaces]]
@@ -71,10 +76,11 @@ name = "Messaging"
 apps = ["com.apple.MobileSMS", "com.hnc.Discord", "Slack", "WhatsApp"]
 ```
 
-Workspaces with `monitor` set only appear on that display; entries without `monitor`
-are cloned to every monitor (so `monitor = 1` on a 2-display setup gives 1+5*1=6
-workspaces). Orphaned workspaces (saved for a disconnected display) are
-remapped to the primary on restore — windows are never dropped.
+Workspaces with `monitor` set start on that display (an initial-output hint);
+entries without `monitor` start on the primary. Workspaces move freely between
+monitors afterwards via switching and display moves. Orphaned workspaces (saved
+for a disconnected display) are remapped to the primary on restore — windows
+are never dropped. `autostart` runs once per workspace regardless of the hint.
 
 ### Session
 

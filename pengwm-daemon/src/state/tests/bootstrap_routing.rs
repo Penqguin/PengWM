@@ -23,13 +23,12 @@ fn creates_workspaces_from_displays() {
 }
 
 #[test]
-fn creates_workspace_set_per_display() {
+fn creates_global_pool_shared_across_displays() {
     let sm = setup(2);
-    assert_eq!(sm.workspaces.len(), 10);
-    assert!(sm.workspaces[..5].iter().all(|w| w.monitor_id == 1));
-    assert!(sm.workspaces[5..].iter().all(|w| w.monitor_id == 2));
+    // One tree per name globally; output 1 shows entry 0, output 2 shows entry 1.
+    assert_eq!(sm.workspaces.len(), 5);
     assert_eq!(sm.displays.active().get(&1), Some(&0));
-    assert_eq!(sm.displays.active().get(&2), Some(&5));
+    assert_eq!(sm.displays.active().get(&2), Some(&1));
 }
 
 #[test]
@@ -50,8 +49,8 @@ fn tracks_existing_windows_at_init() {
 #[test]
 fn move_focused_to_workspace_moves_window() {
     let mut sm = setup(2);
-    // 5 named workspaces per display.
-    assert_eq!(sm.workspaces.len(), 10);
+    // 5 named workspaces globally.
+    assert_eq!(sm.workspaces.len(), 5);
 
     // Add two windows — they go to whatever workspace active_workspace_idx() picks
     sm.on_window_created(100, 42);
@@ -301,13 +300,13 @@ fn per_monitor_workspace_entries_respected() {
                 size: (1920, 1080),
             },
         ],
+        1,
     );
-    // Dev only on monitor 1, Browse on both.
-    assert_eq!(wss.len(), 3);
+    // Global pool: one tree per entry; Dev hinted at 1, Browse homes to
+    // primary; output 1 shows Dev, output 2 shows Browse.
+    assert_eq!(wss.len(), 2);
     assert_eq!(wss[0].name, "Dev");
     assert_eq!(wss[0].monitor_id, 1);
     assert_eq!(wss[1].name, "Browse");
-    assert_eq!(wss[1].monitor_id, 1);
-    assert_eq!(wss[2].name, "Browse");
-    assert_eq!(wss[2].monitor_id, 2);
+    assert_eq!(wss[1].monitor_id, 2);
 }

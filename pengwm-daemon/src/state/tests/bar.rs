@@ -80,13 +80,13 @@ fn apply_bar_reservation_reserves_primary_workspace() {
         ..Default::default()
     };
     sm.apply_bar_reservation();
-    // Display 1 (primary) owns workspaces 0-4, display 2 owns 5-9.
+    // Global pool: output 1 (primary) shows workspace 0, output 2 shows 1.
     assert!(
         sm.workspaces[0].reserved_rect().is_some(),
         "primary monitor workspace should be reserved"
     );
     assert!(
-        sm.workspaces[5].reserved_rect().is_none(),
+        sm.workspaces[1].reserved_rect().is_none(),
         "secondary monitor workspace should not be reserved"
     );
     sm.bar.set_visible(false);
@@ -142,6 +142,37 @@ fn publish_bar_state_reports_active_workspace_and_split() {
         Some(SplitDirection::Vertical),
         "two windows on a widescreen monitor split vertically"
     );
+}
+
+#[test]
+fn publish_bar_state_marks_each_outputs_workspace() {
+    let (tx, _) = mpsc::channel(64);
+    let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
+    let adapter = make_adapter(2);
+    let (bar_tx, mut bar_rx) = mpsc::channel(64);
+    let sm = StateManager::new(
+        tx,
+        keybinds,
+        test_prefix(),
+        Box::new(adapter),
+        BarSender::from_channel(bar_tx),
+        None,
+        vec![],
+    );
+    // Global pool on two outputs: ws 0 @ 1 and ws 1 @ 2 are both visible.
+    assert_eq!(sm.workspaces.len(), 5);
+    let mut last: Option<BarMessage> = None;
+    while let Ok(msg) = bar_rx.try_recv() {
+        last = Some(msg);
+    }
+    let state = match last {
+        Some(BarMessage::State(s)) => s,
+        other => panic!("expected a State publish, got {:?}", other),
+    };
+    assert!(state.workspaces[0].active, "output 1 shows ws 0");
+    assert!(state.workspaces[1].active, "output 2 shows ws 1");
+    assert!(!state.workspaces[2].active, "hidden ws 2 has no marker");
+    assert_eq!(state.active_workspace, 0, "focused output is primary");
 }
 
 #[test]

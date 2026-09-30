@@ -19,6 +19,7 @@ pub struct DisplaySet {
     active: BTreeMap<u32, usize>,
     entries: Vec<WorkspaceEntry>,
     max_tiles: usize,
+    focused_output: Option<u32>,
 }
 
 impl DisplaySet {
@@ -27,6 +28,7 @@ impl DisplaySet {
             active: BTreeMap::new(),
             entries,
             max_tiles: 4,
+            focused_output: None,
         }
     }
 
@@ -35,7 +37,16 @@ impl DisplaySet {
             active: BTreeMap::new(),
             entries,
             max_tiles: max_tiles.max(1),
+            focused_output: None,
         }
+    }
+
+    pub fn focused_output(&self) -> Option<u32> {
+        self.focused_output
+    }
+
+    pub fn set_focused_output(&mut self, monitor: u32) {
+        self.focused_output = Some(monitor);
     }
 
     pub fn active(&self) -> &BTreeMap<u32, usize> {
@@ -62,9 +73,9 @@ impl DisplaySet {
         self.max_tiles = n.max(1);
     }
 
-    // -- per-monitor helpers (Q1: one interface for monitor-local workspace sets) --
+    // -- global pool helpers (one tree per name; `monitor_id` is assignment) --
 
-    /// Flat indices of workspaces on `monitor`.
+    /// Flat indices of workspaces assigned to `monitor`.
     pub fn workspaces_on(&self, monitor: u32, workspaces: &[Workspace]) -> Vec<usize> {
         workspaces
             .iter()
@@ -100,43 +111,25 @@ impl DisplaySet {
         }
     }
 
-    /// Resolve a 1-based per-monitor workspace id `n` (from `Command::Workspace`)
-    /// into a flat workspace index, using `current_idx`'s monitor.
-    pub fn resolve_workspace(
-        &self,
-        current_idx: usize,
-        n: usize,
-        workspaces: &[Workspace],
-    ) -> Option<usize> {
-        if n == 0 || current_idx >= workspaces.len() {
+    /// Resolve a 1-based global workspace id `n` (from `Command::Workspace`)
+    /// into a flat workspace index. Global config order, any output (#1/Q4).
+    pub fn resolve_workspace(&self, n: usize, workspaces: &[Workspace]) -> Option<usize> {
+        if n == 0 || n > workspaces.len() {
             return None;
         }
-        let monitor = workspaces[current_idx].monitor_id;
-        let on_mon = self.workspaces_on(monitor, workspaces);
-        if n > on_mon.len() {
-            return None;
-        }
-        Some(on_mon[n - 1])
+        Some(n - 1)
     }
 
-    /// First workspace after `start` (wrapping within the same monitor) with
-    /// room for another window. `None` when every workspace on that monitor is
-    /// at capacity. Absorbed from `capacity::next_with_room` (deleted).
+    /// First workspace after `start` (wrapping over the global pool) with
+    /// room for another window. `None` when every workspace is at capacity.
+    /// Global spill (#1/Q5): overflow is no longer confined to one monitor.
     pub fn next_with_room(&self, workspaces: &[Workspace], start: usize) -> Option<usize> {
-        if start >= workspaces.len() {
+        if start >= workspaces.len() || workspaces.is_empty() {
             return None;
         }
-        let monitor = workspaces[start].monitor_id;
-        let indices: Vec<usize> = workspaces
-            .iter()
-            .enumerate()
-            .filter(|(_, ws)| ws.monitor_id == monitor)
-            .map(|(i, _)| i)
-            .collect();
-        let pos = indices.iter().position(|&idx| idx == start)?;
-        let n = indices.len();
-        for offset in 1..n {
-            let idx = indices[(pos + offset) % n];
+        let n = workspaces.len();
+        for offset in 1..=n {
+            let idx = (start + offset) % n;
             if workspaces[idx].window_count() < self.max_tiles {
                 return Some(idx);
             }
@@ -145,9 +138,7 @@ impl DisplaySet {
     }
 
     /// Overflow redirect: `target` itself when it has room, else the next
-    /// workspace on the same monitor with room. `None` when the monitor is
-    /// full. Unifies the three redirect sites (create / move / move-display)
-    /// so capacity policy lives with `max_tiles` (locality).
+    /// global workspace with room. `None` when the pool is full.
     pub fn target_with_room(&self, workspaces: &[Workspace], target: usize) -> Option<usize> {
         if target >= workspaces.len() {
             return None;
@@ -159,10 +150,11 @@ impl DisplaySet {
     }
 
     /// Decide a focused-window move onto `target`: `target` itself with room,
-    /// else the overflow redirect on the same monitor. `None` when the move
-    /// is a no-op (`from == target`) or no workspace on the monitor has room.
+    /// else the global overflow redirect. `None` when the move
+    /// is a no-op (`from == target`) or every workspace is full.
     /// The caller moves the window and re-layouts visible ends — DisplaySet
-    /// answers, commands execute.
+    /// answers, commands execute. (Moves to another output bypass the cap
+    /// via `move_window_to_display` — #2/Q10 — and never reach this funnel.)
     pub fn plan_move(
         &self,
         workspaces: &[Workspace],
@@ -174,6 +166,68 @@ impl DisplaySet {
         }
         self.target_with_room(workspaces, target)
             .map(|to| MoveDecision { from, to })
+    }
+
+    /// Decide a switch to global workspace `target` from the focused output
+    /// (#1/Q2): no-op when already shown here; swap assignment when visible
+    /// on another output (the other output falls back to the workspace just
+    /// left); plain pull when hidden. Mutates `active` + `monitor_id` /
+    /// geometry (via `os` display infos) and answers what the caller must
+    /// hide and re-layout — DisplaySet answers, commands execute.
+    pub fn plan_switch(
+        &mut self,
+        target: usize,
+        workspaces: &mut [Workspace],
+        os: &dyn OsAdapter,
+    ) -> Option<SwitchDecision> {
+        if target >= workspaces.len() {
+            return None;
+        }
+        let here = self.focused_output?;
+        let current = self.active.get(&here).copied()?;
+        if target == current || current >= workspaces.len() {
+            return None;
+        }
+        let other_output = self
+            .active
+            .iter()
+            .find(|(_, &idx)| idx == target)
+            .map(|(&mon, _)| mon);
+        match other_output {
+            Some(other) if other != here => {
+                // Swap: target comes here, the workspace just left goes there.
+                let infos = os.active_displays();
+                let here_info = infos.iter().find(|d| d.id == here);
+                let other_info = infos.iter().find(|d| d.id == other);
+                if let (Some(h), Some(o)) = (here_info, other_info) {
+                    workspaces[target].monitor_id = here;
+                    workspaces[target].update_monitor_geometry(h.origin, h.size);
+                    workspaces[current].monitor_id = other;
+                    workspaces[current].update_monitor_geometry(o.origin, o.size);
+                }
+                self.active.insert(here, target);
+                self.active.insert(other, current);
+                Some(SwitchDecision {
+                    show: target,
+                    hide: vec![],
+                    relayout: vec![target, current],
+                })
+            }
+            _ => {
+                // Pull a hidden workspace onto the focused output.
+                let infos = os.active_displays();
+                if let Some(info) = infos.iter().find(|d| d.id == here) {
+                    workspaces[target].monitor_id = here;
+                    workspaces[target].update_monitor_geometry(info.origin, info.size);
+                }
+                self.active.insert(here, target);
+                Some(SwitchDecision {
+                    show: target,
+                    hide: vec![current],
+                    relayout: vec![target],
+                })
+            }
+        }
     }
 
     /// Visible-or-first workspace on the display in `direction` from
@@ -196,8 +250,10 @@ impl DisplaySet {
     }
 
     /// Heuristic for "which workspace is active": the workspace that contains a
-    /// window belonging to `frontmost_pid`, mapped through `active` per
-    /// monitor. Falls back to arbitrary `active` entry. Absorbed from `Router`.
+    /// window belonging to `frontmost_pid` when that workspace is visible;
+    /// else the visible workspace on `focused_output`; else an arbitrary
+    /// `active` entry. The explicit focus cell is the primary answer (#1/Q8);
+    /// the pid heuristic is fallback for external (mouse) focus changes.
     pub fn active_workspace_idx(
         &self,
         workspaces: &[Workspace],
@@ -207,15 +263,18 @@ impl DisplaySet {
         if let Some(pid) = frontmost_pid {
             if let Some(windows) = pid_to_windows.get(&pid) {
                 for &window_id in windows {
-                    for ws in workspaces {
-                        if ws.find_window(window_id).is_some() {
-                            if let Some(&idx) = self.active.get(&ws.monitor_id) {
-                                if idx < workspaces.len() {
-                                    return idx;
-                                }
-                            }
+                    for (idx, ws) in workspaces.iter().enumerate() {
+                        if ws.find_window(window_id).is_some() && self.is_visible(idx, workspaces) {
+                            return idx;
                         }
                     }
+                }
+            }
+        }
+        if let Some(mon) = self.focused_output {
+            if let Some(&idx) = self.active.get(&mon) {
+                if idx < workspaces.len() {
+                    return idx;
                 }
             }
         }
@@ -246,23 +305,17 @@ impl DisplaySet {
     }
 
     /// Flat workspace index a new window from `pid` should land in: the
-    /// configured workspace for the app on the active monitor. `None` when the
-    /// app isn't assigned. Absorbed from `Router`.
+    /// global workspace matching the app's configured name (#1/Q5), wherever
+    /// it currently lives. No auto-pull: the window lands there even when it
+    /// is hidden on another output. `None` when the app isn't assigned.
     pub fn routed_workspace_idx(
         &self,
         pid: i32,
         workspaces: &[Workspace],
-        active_idx: usize,
         os: &dyn OsAdapter,
     ) -> Option<usize> {
-        if active_idx >= workspaces.len() {
-            return None;
-        }
-        let monitor = workspaces[active_idx].monitor_id;
         let name = self.configured_workspace_name_for_pid(pid, os)?;
-        workspaces
-            .iter()
-            .position(|ws| ws.name == name && ws.monitor_id == monitor)
+        workspaces.iter().position(|ws| ws.name == name)
     }
 
     /// Closest display in `direction` from `from`, by center-to-center vector.
@@ -304,51 +357,60 @@ impl DisplaySet {
         best.map(|(id, _)| id)
     }
 
-    /// Initialize `workspaces` + `active` from the current displays. Called
-    /// once from `StateManager::new`. Returns the number of workspaces created
-    /// (for tests).
-    pub fn init_workspaces(&mut self, workspaces: &mut Vec<Workspace>, displays: &[DisplayInfo]) {
+    /// Initialize the global pool: one `Workspace` per config entry, each
+    /// output showing exactly one workspace. `monitor` affinity is an
+    /// initial-output hint (#1/Q3); output `i` initially shows entry `i`
+    /// (wrapping), the rest are hidden. Sets `focused_output` to `primary_id`.
+    /// Returns the number of workspaces created (for tests).
+    pub fn init_workspaces(
+        &mut self,
+        workspaces: &mut Vec<Workspace>,
+        displays: &[DisplayInfo],
+        primary_id: u32,
+    ) -> usize {
         workspaces.clear();
         self.active.clear();
-        // Per-monitor affinity: entries with `monitor` set only appear on that
-        // monitor; `None` means cloned to every monitor (back-compat).
-        for display in displays {
-            let mut base_for_display: Option<usize> = None;
-            for entry in &self.entries {
-                if !Self::entry_applies_to_display(entry, display) {
-                    continue;
-                }
-                if base_for_display.is_none() {
-                    base_for_display = Some(workspaces.len());
-                }
-                workspaces.push(Workspace::new(
-                    entry.name.clone(),
-                    display.id,
-                    display.origin,
-                    display.size,
-                ));
-            }
-            if let Some(base) = base_for_display {
-                self.active.insert(display.id, base);
-            }
+        if displays.is_empty() {
+            return 0;
         }
-        // If no workspace matched any display (e.g. all had affinity for a
-        // disconnected monitor), fall back to cloning `None`-affinity or all
-        // entries onto the first display so we never start empty.
-        if workspaces.is_empty() && !displays.is_empty() {
-            let first = &displays[0];
-            for entry in &self.entries {
-                workspaces.push(Workspace::new(
-                    entry.name.clone(),
-                    first.id,
-                    first.origin,
-                    first.size,
-                ));
-            }
-            if !workspaces.is_empty() {
-                self.active.insert(first.id, 0);
-            }
+        let primary = displays
+            .iter()
+            .find(|d| d.id == primary_id)
+            .or_else(|| displays.first())
+            .unwrap();
+        // One tree per entry; home output = hint match else primary.
+        for entry in &self.entries {
+            let home = displays
+                .iter()
+                .find(|d| Self::entry_applies_to_display(entry, d))
+                .map(|d| d.id);
+            // `entry_applies_to_display` returns true for hint-less entries on
+            // every display, so `find` yields the first display — re-point
+            // hint-less entries at primary for a stable home.
+            let home_id = match &entry.monitor {
+                None => primary.id,
+                Some(_) => home.unwrap_or(primary.id),
+            };
+            let info = displays.iter().find(|d| d.id == home_id).unwrap_or(primary);
+            workspaces.push(Workspace::new(
+                entry.name.clone(),
+                home_id,
+                info.origin,
+                info.size,
+            ));
         }
+        // Output i shows entry i (wrapping); reassign geometry to the output.
+        for (i, display) in displays.iter().enumerate() {
+            if workspaces.is_empty() {
+                break;
+            }
+            let idx = i % workspaces.len();
+            workspaces[idx].monitor_id = display.id;
+            workspaces[idx].update_monitor_geometry(display.origin, display.size);
+            self.active.insert(display.id, idx);
+        }
+        self.focused_output = Some(primary.id);
+        workspaces.len()
     }
 
     pub fn entry_applies_to_display(entry: &WorkspaceEntry, display: &DisplayInfo) -> bool {
@@ -364,78 +426,97 @@ impl DisplaySet {
         }
     }
 
-    /// Handle `MonitorAdded`: clone the workspace entries onto the new display.
-    /// Returns the new workspace indices (for the caller to reserve bar + publish).
+    /// Handle `MonitorAdded`: the new output shows the first hidden workspace,
+    /// else pulls the first global workspace (swap). No new trees are created
+    /// (#1/Q7). Answers what to show/lay out; the caller executes (#3/Q12).
     pub fn on_added(
         &mut self,
         display_id: u32,
-        workspaces: &mut Vec<Workspace>,
+        workspaces: &mut [Workspace],
         os: &dyn OsAdapter,
-    ) -> Option<Vec<usize>> {
+    ) -> Option<TopologySync> {
         let info = os
             .active_displays()
             .into_iter()
             .find(|d| d.id == display_id)?;
-        let mut created = Vec::new();
-        let mut first_for_display: Option<usize> = None;
-        for entry in &self.entries {
-            if !Self::entry_applies_to_display(entry, &info) {
-                continue;
-            }
-            if first_for_display.is_none() {
-                first_for_display = Some(workspaces.len());
-            }
-            workspaces.push(Workspace::new(
-                entry.name.clone(),
-                display_id,
-                info.origin,
-                info.size,
-            ));
-            created.push(workspaces.len() - 1);
-        }
-        if created.is_empty() {
+        if workspaces.is_empty() {
             return None;
         }
-        self.active.insert(display_id, first_for_display.unwrap());
-        Some(created)
+        let visible: std::collections::HashSet<usize> = self.active.values().copied().collect();
+        let shown = (0..workspaces.len())
+            .find(|idx| !visible.contains(idx))
+            .unwrap_or(0);
+        workspaces[shown].monitor_id = display_id;
+        workspaces[shown].update_monitor_geometry(info.origin, info.size);
+        self.active.insert(display_id, shown);
+        Some(TopologySync {
+            shown: vec![shown],
+            hidden: vec![],
+            relayout: vec![shown],
+        })
     }
 
-    /// Handle `MonitorRemoved`: reassign orphaned workspaces to the primary
-    /// display, retain only those on still-active displays, and repair `active`.
-    /// Returns the indices that need re-layout (caller does bar reservation +
-    /// publish). Keeps behavior identical to the old `StateManager::on_monitor_removed`.
+    /// Handle `MonitorRemoved`: workspaces assigned to the removed output move
+    /// to primary (hidden there unless primary shows them); the removed id
+    /// leaves `active`. Names are already unique so no dedup is needed.
+    /// Answers the sync; the caller hides + re-layouts + publishes (#3/Q12).
     pub fn on_removed(
         &mut self,
         removed_id: u32,
         workspaces: &mut Vec<Workspace>,
         os: &dyn OsAdapter,
-    ) {
+    ) -> TopologySync {
+        let was_visible = self.active.get(&removed_id).copied();
         let primary = os.primary_display_id();
-        let primary_origin = os
-            .active_displays()
-            .into_iter()
-            .find(|d| d.id == primary)
-            .map(|d| d.origin)
-            .unwrap_or((0, 0));
+        let primary_info = os.active_displays().into_iter().find(|d| d.id == primary);
+        let (primary_origin, primary_size) = primary_info
+            .map(|d| (d.origin, d.size))
+            .unwrap_or(((0, 0), (1920, 1080)));
         for ws in workspaces.iter_mut() {
             if ws.monitor_id == removed_id {
                 ws.monitor_id = primary;
-                ws.set_monitor_origin(primary_origin);
+                ws.update_monitor_geometry(primary_origin, primary_size);
             }
         }
-        let active_displays = os.active_displays();
-        workspaces.retain(|ws| active_displays.iter().any(|d| d.id == ws.monitor_id));
+        self.active.remove(&removed_id);
+        if self.focused_output == Some(removed_id) {
+            self.focused_output = Some(primary);
+        }
         if workspaces.is_empty() {
             workspaces.push(Workspace::new(
                 "ws-1".into(),
                 primary,
                 primary_origin,
-                (1920, 1080),
+                primary_size,
             ));
         }
-        self.active.retain(|_, idx| *idx < workspaces.len());
-        if self.active.is_empty() {
-            self.active.insert(workspaces[0].monitor_id, 0);
+        // Every live output shows exactly one workspace.
+        let live: Vec<u32> = os.active_displays().iter().map(|d| d.id).collect();
+        for mon in &live {
+            if !self.active.contains_key(mon) {
+                let visible: std::collections::HashSet<usize> =
+                    self.active.values().copied().collect();
+                let shown = (0..workspaces.len()).find(|idx| !visible.contains(idx));
+                if let Some(idx) = shown {
+                    if let Some(info) = os.active_displays().into_iter().find(|d| &d.id == mon) {
+                        workspaces[idx].monitor_id = *mon;
+                        workspaces[idx].update_monitor_geometry(info.origin, info.size);
+                    }
+                    self.active.insert(*mon, idx);
+                } else if !workspaces.is_empty() {
+                    self.active.insert(*mon, 0);
+                }
+            }
+        }
+        let visible_now: std::collections::HashSet<usize> = self.active.values().copied().collect();
+        let hidden = was_visible
+            .filter(|idx| !visible_now.contains(idx))
+            .into_iter()
+            .collect();
+        TopologySync {
+            shown: vec![],
+            hidden,
+            relayout: visible_now.into_iter().collect(),
         }
     }
 
@@ -468,9 +549,32 @@ impl DisplaySet {
 /// A decided focused-window move: the `from` workspace loses the window,
 /// the `to` workspace gains it. Answered by `DisplaySet`, executed by the
 /// caller (tree mutation + visible-end re-layouts stay with `StateManager`).
+#[derive(Debug)]
 pub struct MoveDecision {
     pub from: usize,
     pub to: usize,
+}
+
+/// A decided workspace switch: `show` becomes visible on the focused output,
+/// `hide` are the now-hidden siblings to park offscreen, `relayout` the
+/// workspaces needing `apply_layout`. Answered (plus assignment mutation)
+/// by `DisplaySet`, executed by the caller.
+#[derive(Debug)]
+pub struct SwitchDecision {
+    pub show: usize,
+    pub hide: Vec<usize>,
+    pub relayout: Vec<usize>,
+}
+
+/// A decided monitor-topology sync: `shown` workspaces need layout on their
+/// (new) output, `hidden` are newly parked offscreen, `relayout` the full
+/// set needing `apply_layout`. Answered by `DisplaySet`, executed by the
+/// caller (#3/Q12: hide + layout + bar stay with `StateManager`).
+#[derive(Debug)]
+pub struct TopologySync {
+    pub shown: Vec<usize>,
+    pub hidden: Vec<usize>,
+    pub relayout: Vec<usize>,
 }
 
 #[cfg(test)]
@@ -521,51 +625,88 @@ mod tests {
     }
 
     #[test]
-    fn init_workspaces_creates_per_display_sets() {
+    fn init_workspaces_creates_global_pool() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss = Vec::new();
-        ds.init_workspaces(&mut wss, &test_displays_two());
-        assert_eq!(wss.len(), 4);
-        assert!(wss[..2].iter().all(|ws| ws.monitor_id == 1));
-        assert!(wss[2..].iter().all(|ws| ws.monitor_id == 2));
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
+        // One tree per entry globally; output i shows entry i.
+        assert_eq!(wss.len(), 2);
+        assert_eq!(wss[0].monitor_id, 1);
+        assert_eq!(wss[1].monitor_id, 2);
         assert_eq!(ds.active.get(&1), Some(&0));
-        assert_eq!(ds.active.get(&2), Some(&2));
+        assert_eq!(ds.active.get(&2), Some(&1));
+        assert_eq!(ds.focused_output(), Some(1));
     }
 
     #[test]
-    fn on_added_clones_entries_for_new_display() {
+    fn on_added_shows_first_hidden() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss: Vec<Workspace> = Vec::new();
-        ds.init_workspaces(&mut wss, &test_displays_one());
+        ds.init_workspaces(&mut wss, &test_displays_one(), 1);
         assert_eq!(wss.len(), 2);
 
         let mut adapter = TestAdapter::new();
         adapter.displays = test_displays_two();
-        let created = ds.on_added(2, &mut wss, &adapter).unwrap();
-        assert_eq!(created, vec![2, 3]);
-        assert_eq!(wss.len(), 4);
-        assert_eq!(ds.active.get(&2), Some(&2));
+        // One display shows entry 0; entry 1 is hidden → new output shows it.
+        let sync = ds.on_added(2, &mut wss, &adapter).unwrap();
+        assert_eq!(sync.shown, vec![1]);
+        assert_eq!(sync.relayout, vec![1]);
+        assert!(sync.hidden.is_empty());
+        assert_eq!(wss.len(), 2);
+        assert_eq!(ds.active.get(&2), Some(&1));
+        assert_eq!(wss[1].monitor_id, 2);
     }
 
     #[test]
-    fn on_removed_reassigns_and_cleans() {
+    fn on_added_pulls_first_when_none_hidden() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss: Vec<Workspace> = Vec::new();
-        ds.init_workspaces(&mut wss, &test_displays_two());
-        // Simulate display 2 removed — only display 1 remains. Orphaned
-        // workspaces are reassigned to primary, so all 4 are kept (migrated).
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
+        let mut adapter = TestAdapter::new();
+        adapter.displays = vec![
+            DisplayInfo {
+                id: 1,
+                origin: (0, 0),
+                size: (1920, 1080),
+            },
+            DisplayInfo {
+                id: 2,
+                origin: (1920, 0),
+                size: (1920, 1080),
+            },
+            DisplayInfo {
+                id: 3,
+                origin: (3840, 0),
+                size: (1920, 1080),
+            },
+        ];
+        let sync = ds.on_added(3, &mut wss, &adapter).unwrap();
+        assert_eq!(sync.shown, vec![0]);
+        assert_eq!(ds.active.get(&3), Some(&0));
+    }
+
+    #[test]
+    fn on_removed_reassigns_orphans_to_primary() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss: Vec<Workspace> = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
+        // Display 2 showed entry 1; after removal it is hidden on primary.
         let mut adapter = TestAdapter::new();
         adapter.displays = test_displays_one();
-        ds.on_removed(2, &mut wss, &adapter);
+        let sync = ds.on_removed(2, &mut wss, &adapter);
         assert!(wss.iter().all(|ws| ws.monitor_id == 1));
-        assert_eq!(wss.len(), 4);
+        assert_eq!(wss.len(), 2);
+        assert!(!ds.active().contains_key(&2));
+        // Entry 1 was visible on removed output 2 → now hidden.
+        assert_eq!(sync.hidden, vec![1]);
+        assert!(sync.relayout.contains(&0));
     }
 
     #[test]
     fn on_resized_updates_geometry_and_returns_affected() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss: Vec<Workspace> = Vec::new();
-        ds.init_workspaces(&mut wss, &test_displays_two());
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
         let mut adapter = TestAdapter::new();
         adapter.displays = vec![
             DisplayInfo {
@@ -580,15 +721,15 @@ mod tests {
             },
         ];
         let affected = ds.on_resized(1, &mut wss, &adapter);
-        assert_eq!(affected, vec![0, 1]);
+        assert_eq!(affected, vec![0]);
         assert_eq!(wss[0].monitor_size(), (2560, 1440));
-        assert_eq!(wss[2].monitor_size(), (1920, 1080));
+        assert_eq!(wss[1].monitor_size(), (1920, 1080));
     }
 
-    // -- routing helpers (absorbed from Router + capacity) --
+    // -- routing helpers (global pool) --
 
     #[test]
-    fn next_with_room_wraps_within_monitor() {
+    fn next_with_room_spills_globally() {
         let ds = DisplaySet::with_max_tiles(vec![], 2);
         let mut wss = vec![
             Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
@@ -598,42 +739,42 @@ mod tests {
         wss[0].add_window(1, None);
         wss[0].add_window(2, None);
         assert_eq!(ds.next_with_room(&wss, 0), Some(1));
-        // From 1 the next on same monitor is 0 which is full → None
-        assert_eq!(ds.next_with_room(&wss, 1), None);
+        // Full workspace spills across outputs now: from 1 → 2, not None.
+        assert_eq!(ds.next_with_room(&wss, 1), Some(2));
     }
 
     #[test]
-    fn next_with_room_ignores_other_monitor() {
-        let ds = DisplaySet::with_max_tiles(vec![], 2);
+    fn next_with_room_none_when_pool_full() {
+        let ds = DisplaySet::with_max_tiles(vec![], 1);
         let mut wss = vec![
             Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
             Workspace::new("b".into(), 2, (1920, 0), (1920, 1080)),
         ];
         wss[0].add_window(1, None);
-        wss[0].add_window(2, None);
+        wss[1].add_window(2, None);
         assert_eq!(ds.next_with_room(&wss, 0), None);
     }
 
     #[test]
-    fn resolve_workspace_on_monitor() {
-        let mut ds = DisplaySet::new(entries_two());
-        let mut wss = Vec::new();
-        ds.init_workspaces(&mut wss, &test_displays_two());
-        // wss: [a@1,b@1,a@2,b@2] ; from idx 0 (monitor 1), n=2 → flat 1
-        assert_eq!(ds.resolve_workspace(0, 2, &wss), Some(1));
-        assert_eq!(ds.resolve_workspace(0, 1, &wss), Some(0));
-        // from monitor 2
-        assert_eq!(ds.resolve_workspace(2, 2, &wss), Some(3));
-        assert_eq!(ds.resolve_workspace(0, 3, &wss), None);
+    fn resolve_workspace_is_global() {
+        let ds = DisplaySet::new(entries_two());
+        let wss = vec![
+            Workspace::new("a".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("b".into(), 2, (1920, 0), (1920, 1080)),
+        ];
+        assert_eq!(ds.resolve_workspace(2, &wss), Some(1));
+        assert_eq!(ds.resolve_workspace(1, &wss), Some(0));
+        assert_eq!(ds.resolve_workspace(3, &wss), None);
+        assert_eq!(ds.resolve_workspace(0, &wss), None);
     }
 
     #[test]
-    fn workspaces_on_filters() {
+    fn workspaces_on_reflects_assignment() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss = Vec::new();
-        ds.init_workspaces(&mut wss, &test_displays_two());
-        assert_eq!(ds.workspaces_on(1, &wss), vec![0, 1]);
-        assert_eq!(ds.workspaces_on(2, &wss), vec![2, 3]);
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
+        assert_eq!(ds.workspaces_on(1, &wss), vec![0]);
+        assert_eq!(ds.workspaces_on(2, &wss), vec![1]);
     }
 
     #[test]
@@ -646,15 +787,16 @@ mod tests {
     }
 
     #[test]
-    fn routed_idx_on_active_monitor() {
+    fn routed_idx_matches_global_name() {
         let ds = DisplaySet::new(crate::config::default_workspaces());
         let adapter = TestAdapter::new();
         adapter.inject_bundle_id(10, "com.apple.Safari".into());
         let wss = vec![
             Workspace::new("Development".into(), 1, (0, 0), (1920, 1080)),
-            Workspace::new("Browsing".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("Browsing".into(), 2, (1920, 0), (1920, 1080)),
         ];
-        let idx = ds.routed_workspace_idx(10, &wss, 0, &adapter);
+        // Global match: Browsing lives on output 2, still routed there.
+        let idx = ds.routed_workspace_idx(10, &wss, &adapter);
         assert_eq!(idx, Some(1));
     }
 
@@ -669,6 +811,7 @@ mod tests {
                 origin: (0, 0),
                 size: (1920, 1080),
             }],
+            1,
         );
         let pid_to_windows: HashMap<i32, Vec<WindowId>> = HashMap::new();
         let idx = ds.active_workspace_idx(&wss, &pid_to_windows, Some(99));
@@ -706,18 +849,63 @@ mod tests {
         assert!(ds.plan_move(&wss, 0, 1).is_none());
     }
 
+    // -- switch decisions (global pool pull/swap) --
+
+    #[test]
+    fn plan_switch_pulls_hidden() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_one(), 1);
+        // One output shows 0; 1 is hidden → pull hides 0, shows 1.
+        let mut adapter = TestAdapter::new();
+        adapter.displays = test_displays_one();
+        let dec = ds.plan_switch(1, &mut wss, &adapter).unwrap();
+        assert_eq!(dec.show, 1);
+        assert_eq!(dec.hide, vec![0]);
+        assert_eq!(dec.relayout, vec![1]);
+        assert_eq!(ds.active.get(&1), Some(&1));
+    }
+
+    #[test]
+    fn plan_switch_swaps_when_visible_elsewhere() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
+        // Output 1 shows 0, output 2 shows 1. Focused = 1, switch to 1 → swap.
+        let mut adapter = TestAdapter::new();
+        adapter.displays = test_displays_two();
+        let dec = ds.plan_switch(1, &mut wss, &adapter).unwrap();
+        assert_eq!(dec.show, 1);
+        assert!(dec.hide.is_empty());
+        assert_eq!(ds.active.get(&1), Some(&1));
+        assert_eq!(ds.active.get(&2), Some(&0));
+        assert_eq!(wss[1].monitor_id, 1);
+        assert_eq!(wss[0].monitor_id, 2);
+    }
+
+    #[test]
+    fn plan_switch_noop_when_already_shown() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_one(), 1);
+        let adapter = TestAdapter::new();
+        assert!(ds.plan_switch(0, &mut wss, &adapter).is_none());
+        assert!(ds.plan_switch(9, &mut wss, &adapter).is_none());
+    }
+
     #[test]
     fn direction_target_resolves_visible_or_first() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss = Vec::new();
-        ds.init_workspaces(&mut wss, &test_displays_two());
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
         let mut adapter = TestAdapter::new();
         adapter.displays = test_displays_two();
         use pengwm_core::tree::Direction;
-        // From monitor 1 rightward → visible workspace on monitor 2 (idx 2).
+        // Two workspaces, two outputs: mon 1 shows 0, mon 2 shows 1.
+        // From 0 rightward → visible workspace on monitor 2 (idx 1).
         assert_eq!(
             ds.direction_target(&wss, 0, Direction::Right, &adapter),
-            Some(2)
+            Some(1)
         );
         assert!(ds
             .direction_target(&wss, 0, Direction::Left, &adapter)

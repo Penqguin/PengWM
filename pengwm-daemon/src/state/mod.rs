@@ -131,7 +131,7 @@ impl StateManager {
         let (gap_outer, gap_inner) = (assembled.gap_outer, assembled.gap_inner);
 
         if !use_session && !cfg!(test) {
-            crate::state::bootstrap::maybe_autostart(&entries, &display_infos, use_session);
+            crate::state::bootstrap::maybe_autostart(&entries, use_session);
         }
 
         let frontmost_pid = os.frontmost_pid();
@@ -341,12 +341,7 @@ impl StateManager {
                 remembered
             } else {
                 self.displays
-                    .routed_workspace_idx(
-                        pid,
-                        &self.workspaces,
-                        self.active_workspace_idx(),
-                        &*self.os,
-                    )
+                    .routed_workspace_idx(pid, &self.workspaces, &*self.os)
                     .unwrap_or_else(|| self.active_workspace_idx())
             };
             if self.add_window_to_workspace(wid, pid, preferred).is_some() {
@@ -437,9 +432,12 @@ impl StateManager {
     }
 
     /// Build a fresh `BarState` snapshot and broadcast it to the bar.
+    /// Primary-only bar over the global pool (#4/Q14): every workspace is
+    /// listed, each output's visible workspace carries the active marker
+    /// (`is_visible`, so two outputs → two markers); `active_workspace`
+    /// is the focused one.
     fn publish_bar_state(&mut self) {
         let active_idx = self.active_workspace_idx();
-        let active_monitor = self.workspaces[active_idx].monitor_id;
         let split_direction = self.workspaces[active_idx].focused_split_direction();
 
         let workspaces: Vec<BarWorkspace> = self
@@ -447,13 +445,7 @@ impl StateManager {
             .iter()
             .enumerate()
             .map(|(i, ws)| {
-                let is_active = ws.monitor_id == active_monitor
-                    && self
-                        .displays
-                        .active()
-                        .get(&ws.monitor_id)
-                        .map(|&idx| idx == i)
-                        .unwrap_or(false);
+                let is_active = self.displays.is_visible(i, &self.workspaces);
                 let windows = ws
                     .all_windows()
                     .into_iter()

@@ -37,13 +37,10 @@ fn hide_workspace_far_offscreen_when_configured() {
 fn hide_workspace_per_monitor_second_display() {
     let (mut sm, handle) = setup_with_handle(2);
     sm.set_hidden_strategy_for_test(crate::config::HiddenStrategy::BottomEdge);
-    // Window routed to display 2 via manual add
-    sm.workspaces[5].add_window(999, None);
+    // Global pool: workspace 1 is visible on display 2 (origin 1920,0).
+    sm.workspaces[1].add_window(999, None);
     sm.store.register(999, 42);
-    // Hide workspace 5 (on display 2 origin 1920,0)
-    sm.displays.active_mut().insert(2, 6);
-    // Hide the former visible on display 2
-    sm.hide_workspace(5);
+    sm.hide_workspace(1);
     let expected = pengwm_core::layout::hidden_rect((1920, 0), (1920, 1080));
     let rect = handle.rect(999).expect("hidden window rect should exist");
     assert_eq!(

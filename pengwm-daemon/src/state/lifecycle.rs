@@ -24,7 +24,7 @@ impl StateManager {
         let active = self.active_workspace_idx();
         let preferred = self
             .displays
-            .routed_workspace_idx(pid, &self.workspaces, active, &*self.os)
+            .routed_workspace_idx(pid, &self.workspaces, &*self.os)
             .unwrap_or(active);
         self.add_window_to_workspace(window_id, pid, preferred);
         self.publish_bar_state();
@@ -133,12 +133,7 @@ impl StateManager {
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
                 self.displays
-                    .routed_workspace_idx(
-                        pid,
-                        &self.workspaces,
-                        self.active_workspace_idx(),
-                        &*self.os,
-                    )
+                    .routed_workspace_idx(pid, &self.workspaces, &*self.os)
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
         if self
@@ -174,6 +169,7 @@ impl StateManager {
                     }
                 }
                 let prev = self.displays.active_mut().insert(mon_id, i);
+                self.displays.set_focused_output(mon_id);
                 if let Some(prev_idx) = prev {
                     if prev_idx != i {
                         self.hide_workspace(prev_idx);

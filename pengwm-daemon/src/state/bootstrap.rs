@@ -55,10 +55,16 @@ pub fn assemble(
 
     if use_session {
         let sess = maybe_session.unwrap();
+        // Migrate pre-global-pool sessions: one tree per name (first wins),
+        // orphans remapped to primary, geometry refreshed.
+        let mut seen = std::collections::HashSet::new();
         let primary_info = display_infos.iter().find(|d| d.id == primary_id);
         let primary_origin = primary_info.map(|d| d.origin).unwrap_or((0, 0));
         let primary_size = primary_info.map(|d| d.size).unwrap_or((1920, 1080));
         for ws in &sess.workspaces {
+            if !seen.insert(ws.name.clone()) {
+                continue;
+            }
             let mut ws = ws.clone();
             let exists = display_infos.iter().any(|d| d.id == ws.monitor_id);
             if !exists {
@@ -84,8 +90,14 @@ pub fn assemble(
                 }
             }
         }
+        // Focused output: primary when live, else first active.
+        if display_infos.iter().any(|d| d.id == primary_id) {
+            displays.set_focused_output(primary_id);
+        } else if let Some(&mon) = displays.active().keys().next() {
+            displays.set_focused_output(mon);
+        }
     } else {
-        displays.init_workspaces(&mut workspaces, display_infos);
+        displays.init_workspaces(&mut workspaces, display_infos, primary_id);
     }
 
     // Headless fallback when no displays (tests)
@@ -116,14 +128,11 @@ pub fn assemble(
     }
 }
 
-/// Spawn autostart commands for fresh init (not session restore). Extracted
-/// so `StateManager::new` doesn't contain `sh -c` spawning inline. No-op when
-/// `use_session` is true. `display_infos` is used to check monitor affinity.
-pub fn maybe_autostart(
-    entries: &[WorkspaceEntry],
-    display_infos: &[DisplayInfo],
-    use_session: bool,
-) {
+/// Spawn autostart commands for fresh init (not session restore). One run per
+/// global workspace regardless of its `monitor` hint (#4/Q16): the hint is
+/// placement, not a spawn gate, so undocked launches stay reproducible.
+/// No-op when `use_session` is true.
+pub fn maybe_autostart(entries: &[WorkspaceEntry], use_session: bool) {
     if use_session {
         return;
     }
@@ -131,16 +140,6 @@ pub fn maybe_autostart(
     // and can be tested by passing empty entries.
     for entry in entries {
         if entry.autostart.is_empty() {
-            continue;
-        }
-        let applies = if entry.monitor.is_none() {
-            !display_infos.is_empty()
-        } else {
-            display_infos
-                .iter()
-                .any(|d| DisplaySet::entry_applies_to_display(entry, d))
-        };
-        if !applies {
             continue;
         }
         for cmd in &entry.autostart {
