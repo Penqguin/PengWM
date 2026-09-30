@@ -4,6 +4,7 @@
 - [Configuration](configuration.md)
 - [Commands](commands.md)
 - [Architecture](architecture.md)
+- [Troubleshooting](troubleshooting.md)
 
 ## Overview
 

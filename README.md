@@ -37,8 +37,10 @@ If no file exists, defaults are used and a config watcher reloads changes at run
 ```toml
 gap_outer = 10
 gap_inner = 5
-mod_key = "cmd"
+max_tiles = 4
 restricted_apps = []
+prefix = "alt-space"
+prefix_timeout_ms = 1000
 
 [bar]
 enabled = true
@@ -73,6 +75,8 @@ alt-shift-right = "move-window-right"
 
 alt-1 = "workspace-1"
 alt-shift-1 = "move-window-to-workspace-1"
+alt-ctrl-left  = "focus-display-left"
+alt-ctrl-shift-right = "move-window-to-display-right"
 alt-/ = "set-layout-tile"
 alt-, = "set-layout-accordion"
 alt-b = "toggle-bar"
@@ -82,10 +86,12 @@ cmd-shift-r = "reload-config"
 **Modifiers:** `cmd`, `alt`/`option`, `ctrl`/`control`, `shift` (join with `-`).
 
 **Actions:** `focus-{left,right,up,down}`, `move-window-{left,right,up,down}`,
-`workspace-{id}`, `move-window-to-workspace-{id}`, `split-horizontal`, `split-vertical`,
-`close`, `set-layout-tile`, `set-layout-accordion`, `set-gap-outer-{pixels}`,
+`workspace-{id}`, `move-window-to-workspace-{id}`, `focus-display-{left,right,up,down}`,
+`move-window-to-display-{left,right,up,down}`, `split-horizontal`, `split-vertical`,
+`close`, `set-layout-tile`, `set-layout-accordion`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
+`resize-pane-{left,right,up,down}`, `set-gap-outer-{pixels}`,
 `set-gap-inner-{pixels}`, `toggle-layout`, `toggle-bar`, `reload-config`, `query-state`,
-`quit`.
+`reveal-all`, `quit`.
 
 ## Status Bar
 
@@ -97,11 +103,14 @@ and corner-radius options.
 
 ## Workspaces
 
-On startup PengWM creates five named workspaces — **Development**, **Browsing**,
-**Notes**, **Music**, **Messaging** — on every monitor. Each routes the windows
-of its configured apps into it (match by bundle id or app name, case-insensitive),
-so apps land in the workspace you use them in. Override or replace them with
-`[[workspaces]]` tables in config.toml; see
+On startup PengWM creates one global set of five named workspaces —
+**Development**, **Browsing**, **Notes**, **Music**, **Messaging** — shared
+across all monitors, i3-style. Each workspace lives on exactly one monitor at
+a time and each monitor shows exactly one workspace; switching to a workspace
+shown on another monitor swaps it onto the focused monitor. Each routes the
+windows of its configured apps into it (match by bundle id or app name,
+case-insensitive), so apps land in the workspace you use them in. Override or
+replace them with `[[workspaces]]` tables in config.toml; see
 [docs/configuration.md](docs/configuration.md).
 
 ## Menubar
@@ -121,12 +130,19 @@ pengwm move-window <left|right|up|down>
 pengwm split <horizontal|vertical>
 pengwm workspace <id>
 pengwm move-window-to-workspace <id>
+pengwm focus-display <left|right|up|down>
+pengwm move-window-to-display <left|right|up|down>
 pengwm close
 pengwm toggle-layout
+pengwm select-layout <even-horizontal|even-vertical|main-horizontal|main-vertical|tiled>
+pengwm resize-pane <left|right|up|down>
+pengwm toggle-bar
 pengwm set-gap-outer <pixels>
 pengwm set-gap-inner <pixels>
 pengwm reload-config
 pengwm state
+pengwm reveal-all
+pengwm clear-session
 pengwm quit
 ```
 
@@ -140,6 +156,8 @@ pengwm-menubar/    The `pengwm-menubar` menu-bar icon — workspace/app list
 ```
 
 See [docs/](docs/) for full architecture, configuration, and command reference.
+Stuck? Start with [docs/troubleshooting.md](docs/troubleshooting.md). Upgrading
+past v0.5? See [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
@@ -151,22 +169,16 @@ Run the full test suite (works on any platform — no macOS FFI required):
 cargo test
 ```
 
-This runs ~90+ tests covering:
+This runs the full suite covering:
 
 - **Layout engine:** window placement, gaps, ratios, nested splits, monocle
 - **Workspace tree:** add/remove/focus/swap windows, split direction alternation
+- **DisplaySet:** global workspace pool, swap-on-switch, output moves, monitor add/remove
 - **StateManager:** command dispatch, event handling, workspace switching
+- **Layout-write policy:** skip-if-unchanged, gone grace, pinned-write backoff
+- **Wake resync:** deferred AX probing, deadline commit
 - **Keybind parsing:** modifier combinations, action names, TOML parsing
 - **IPC round-trip:** UDS send/receive/response (macOS only, no AX required)
-
-For macOS-specific integration tests (requires AX permissions):
-
-```bash
-cargo test -- --include-ignored
-```
-
-These test the real Accessibility API: window rect get/set, observer attach/detach,
-and end-to-end window-created flow. They're `#[ignore]`d by default.
 
 ### Visual / Interactive Testing
 

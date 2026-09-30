@@ -212,6 +212,8 @@ Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 | ------------------------------------------------------------ | --------------------------------------------- |
 | `focus-left` / `focus-right` / `focus-up` / `focus-down`     | Move focus in direction                       |
 | `move-window-left` / `move-window-right` / `move-window-up` / `move-window-down` | Move focused window into the neighbor's space |
+| `focus-display-left` / `focus-display-right` / `focus-display-up` / `focus-display-down` | Move focus to the monitor in direction (defaults: `alt-ctrl-arrows`) |
+| `move-window-to-display-left` / `move-window-to-display-right` / `move-window-to-display-up` / `move-window-to-display-down` | Throw focused window to the monitor in direction (defaults: `alt-ctrl-shift-arrows`) |
 | `workspace-1` .. `workspace-9`                               | Switch to workspace                           |
 | `move-window-to-workspace-1` .. `move-window-to-workspace-9` | Move window to workspace                      |
 | `split-horizontal` / `split-vertical`                        | Split the focused area                        |
