@@ -60,7 +60,10 @@ fn magnified_window_is_centered_overlay() {
     let rects = ws.layout(5.0, 10.0);
     let mag = &rects[&100];
     assert!(mag.width < 1920.0 && mag.height < 1080.0);
-    assert!(mag.x > 0.0 && mag.y > 0.0, "magnify centers, not fullscreen");
+    assert!(
+        mag.x > 0.0 && mag.y > 0.0,
+        "magnify centers, not fullscreen"
+    );
     assert!(rects.contains_key(&200), "sibling stays tiled underneath");
 }
 

@@ -5,16 +5,21 @@
 **LayoutPolicy** — The strategy used to arrange windows within a workspace.
 - *Tiling* — Windows are arranged in splits according to the tree structure.
 - *Magnify* — One pinned window overlays as a centered 75%x75% tmux-popup; tiling underneath stays computed but obscured.
+- *Popups* — Workspace-bound overlay windows (dialogs, floating panels, restricted apps) that never join the tree; each renders as a magnify-style centered overlay.
 
 **LayoutPreset** — One of five named tmux-style arrangements (`even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`) applied via `Workspace::apply_preset`, which rewrites the tree into a canonical shape with weighted ratios. The `main-*` presets honor `main-ratio` (default 0.6).
 
 **ResizePane** — Growing or shrinking the focused window by shifting the split ratios around it one step (5%, clamped at a 10% minimum pane share). Manual sizes survive structural edits; only a preset re-equalizes.
 _Avoid_: pane (tmux word for window)
 
+**Popup** — A window a Workspace tracks but never tiles. It renders as a centered overlay (magnify geometry, ratio from `popup_ratio`, default 0.75) on the workspace active on the monitor that contained it at creation. Sources: every Standard window of a `restricted_apps` bundle, plus — for any managed app — the `AXDialog`, `AXSystemDialog`, `AXFloatingWindow` subroles; `AXSheet` and unknown subroles stay dropped. Classified once at creation (first-classification-wins). Placed at creation and re-placed on wake; afterwards the user may drag it — nothing re-centers it. Hides with its workspace through the normal parking path and comes back on top on switch-back. Never counts against `max_tiles`, never participates in drag-swap, never swept as displaced, never persisted across sessions.
+
+**WindowClass** — The typed classification of a window returned across the `OsAdapter` seam (`window_kind(window_id)`), replacing the binary manageable/dropped gate: discovery classifies instead of dropping, so tree routing, popup routing, and the background sweep share one answer. `Standard` tiles; `Dialog`/`SystemDialog`/`Floating` pop; `Sheet`/unknown drop as today.
+
 **Workspace** — An independent window tree on a single monitor. The deepened interface exposes:
-- `layout(gap_inner, gap_outer) -> HashMap<WindowId, Rect>` — single method that computes global-coordinate rects for every window. Uses stored monitor geometry internally. Tiling is always computed; when `magnified` is set the pinned window is overwritten with a centered 75% overlay.
+- `layout(gap_inner, gap_outer) -> HashMap<WindowId, Rect>` — single method that computes global-coordinate rects for every window. Uses stored monitor geometry internally. Tiling is always computed; when `magnified` is set the pinned window is overwritten with a centered 75% overlay; popup members are emitted into the same map without joining the tree.
 - `apply_split_direction(direction)` — the split intent: re-orients the focused Split container, or — when a Window is focused — pends the direction for the next window added. The "only a Split container re-orients" invariant lives here with the tree.
-- Hiding — no workspace method: `StateManager::hide_workspace` sends `all_windows()` to `OsAdapter::hide_windows` (batch offscreen). The workspace owns *which* windows; the adapter owns *how* to hide.
+- Hiding — no workspace method: `StateManager::hide_workspace` sends `all_owned()` (tree members + popups) to `OsAdapter::hide_windows` (batch offscreen). The workspace owns *which* windows; the adapter owns *how* to hide.
 - Tree internals (`root`, `arena`, `monitor_origin`, `monitor_size`) are private — `focused_node` and `magnified` remain public for daemon integration tests.
 - Implementation is split by responsibility (`workspace/preset.rs`, `add_remove.rs`, `focus_swap.rs`, `split.rs`, `geometry.rs`); the suite mirrors it (`workspace/tests/` + `common` harness). Fields stay on `Workspace`; the files only reorganize `impl` blocks.
 
@@ -33,6 +38,8 @@ pub trait OsAdapter: ObserverRegistry {
     fn primary_display_id(&self) -> u32;
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome;  // &self interior (WindowElementCache); position/size/position x3 with readback; typed outcome, never string-matched
     fn window_rect(&self, window_id: WindowId) -> Option<Rect>;  // readback seam for verify-and-retry + tests
+    fn window_kind(&self, window_id: WindowId) -> Option<WindowClass>;  // typed classification; replaces the binary is_manageable gate
+    fn raise_window(&self, window_id: WindowId);  // AXRaise; popups come back on top on switch-back reveal
     fn close_window(&self, window_id: WindowId);
     fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>); // HidePlacement::BottomEdge vs FarOffscreen; no magic threshold; position-only, never resizes (no Firefox reflow)
     fn window_is_hidden(&self, window_id: WindowId) -> bool;  // kAXMinimized/kAXHidden; drives reconcile

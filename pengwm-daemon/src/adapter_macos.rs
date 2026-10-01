@@ -1,6 +1,8 @@
 use std::ffi::c_void;
 
-use crate::adapter::{DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter};
+use crate::adapter::{
+    DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter, WindowClass,
+};
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
 use crate::macos::ax_observer::{ObserverContext, ObserverRegistry as AxObserverRegistry};
@@ -24,7 +26,10 @@ impl MacOsAdapter {
     }
 
     fn cache_get_element(&self, window_id: WindowId) -> Option<(AXUIElementRef, i32)> {
-        self.ctx.cache_get().get(&window_id).copied()
+        self.ctx
+            .cache_get()
+            .get(&window_id)
+            .map(|&(elem, pid, _)| (elem, pid))
     }
 
     /// Search for a fresh AXUIElementRef for `window_id` by re-querying the app.
@@ -33,7 +38,7 @@ impl MacOsAdapter {
         use core_foundation::base::{CFRelease, CFTypeRef};
         let windows = unsafe { ax_element::windows_for_pid(pid) };
         let mut result = None;
-        for (elem, wid) in windows {
+        for (elem, wid, _) in windows {
             if wid == window_id {
                 result = Some(elem);
             } else {
@@ -58,7 +63,16 @@ impl MacOsAdapter {
     /// Returns the fresh element for one retry.
     fn refresh_after_stale(&self, window_id: WindowId, pid: i32) -> Option<AXUIElementRef> {
         if let Some(new_elem) = self.refresh_element(window_id, pid) {
-            self.ctx.cache_insert(window_id, new_elem, pid);
+            // First-classification-wins (Q10): a refreshed element keeps the
+            // class the window was discovered with; re-classifying here
+            // could silently flip a settled popup's cached kind.
+            let prior = self
+                .ctx
+                .cache_get()
+                .get(&window_id)
+                .map(|(_, _, c)| *c)
+                .unwrap_or_else(|| unsafe { ax_element::classify(new_elem) });
+            self.ctx.cache_insert(window_id, new_elem, pid, prior);
             unsafe {
                 self.observer_registry.register_window_destroyed(
                     pid,
@@ -81,7 +95,7 @@ impl MacOsAdapter {
     /// eviction rule for every path — tile, hide, and close.
     fn evict_element(&self, window_id: WindowId) {
         use core_foundation::base::{CFRelease, CFTypeRef};
-        if let Some((elem, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
+        if let Some((elem, _, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
             unsafe { CFRelease(elem as CFTypeRef) };
         }
     }
@@ -123,7 +137,7 @@ impl MacOsAdapter {
         for pid in ns_workspace::running_app_pids() {
             let windows = unsafe { ax_element::windows_for_pid(pid) };
             let mut found: Option<AXUIElementRef> = None;
-            for (elem, wid) in windows {
+            for (elem, wid, _) in windows {
                 if wid == window_id {
                     found = Some(elem);
                 } else {
@@ -132,7 +146,10 @@ impl MacOsAdapter {
             }
             if let Some(elem) = found {
                 log::debug!("discover_window hit {} pid {}", window_id, pid);
-                self.ctx.cache_insert(window_id, elem, pid);
+                // Discovery saw the window but not its class; classify on
+                // the retained element before handing it back.
+                let class = unsafe { ax_element::classify(elem) };
+                self.ctx.cache_insert(window_id, elem, pid, class);
                 return Some((elem, pid));
             }
         }
@@ -178,8 +195,9 @@ impl MacOsAdapter {
                             // absent is a real close; zero across the board is the
                             // AX blackout, and the window is probably alive.
                             let listed = unsafe { ax_element::windows_for_pid(pid) };
-                            let ids: Vec<WindowId> = listed.iter().map(|&(_, wid)| wid).collect();
-                            for (elem, _) in listed {
+                            let ids: Vec<WindowId> =
+                                listed.iter().map(|&(_, wid, _)| wid).collect();
+                            for (elem, _, _) in listed {
                                 unsafe {
                                     core_foundation::base::CFRelease(
                                         elem as core_foundation::base::CFTypeRef,
@@ -269,9 +287,9 @@ impl OsAdapter for MacOsAdapter {
     fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId> {
         let windows = unsafe { ax_element::windows_for_pid(pid) };
         let mut result = Vec::new();
-        for (element, window_id) in windows {
+        for (element, window_id, class) in windows {
             // element is already CFRetained by windows_for_pid
-            self.ctx.cache_insert(window_id, element, pid);
+            self.ctx.cache_insert(window_id, element, pid, class);
             unsafe {
                 self.observer_registry.register_window_destroyed(
                     pid,
@@ -343,6 +361,16 @@ impl OsAdapter for MacOsAdapter {
     fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
         let (element, _) = self.cache_get_element(window_id)?;
         unsafe { ax_element::get_window_rect(element) }
+    }
+
+    fn window_kind(&self, window_id: WindowId) -> Option<WindowClass> {
+        self.ctx.cache_get().get(&window_id).map(|(_, _, c)| *c)
+    }
+
+    fn raise_window(&self, window_id: WindowId) {
+        if let Some((element, _pid)) = self.cache_get_element(window_id) {
+            unsafe { ax_element::raise_window(element) };
+        }
     }
 
     fn focus_window(&self, window_id: WindowId) {

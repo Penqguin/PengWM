@@ -21,9 +21,20 @@ pub struct Workspace {
     pub focused_node: Option<NodeId>,
     /// tmux-popup style magnified window: drawn as a centered 75% overlay
     /// while the tiling underneath stays computed but obscured. Pinned
-    /// across focus changes; cleared on close/switch.
+    /// across focus and workspace switches; cleared on close, and by a
+    /// preset (an explicit arrangement).
     #[serde(default)]
     pub magnified: Option<WindowId>,
+    /// Workspace-bound popups (dialogs, floating panels, restricted apps):
+    /// tracked but never tiled — `layout()` renders each as a centered
+    /// overlay above the tiling, which stays computed underneath. Cleared
+    /// on close/hide; never persisted (sanitize rebuilds empty).
+    #[serde(default)]
+    pub popups: Vec<WindowId>,
+    /// Share of the usable area a popup overlay takes (`popup_ratio`
+    /// config; clamped at use). Magnify keeps its own fixed 0.75.
+    #[serde(default = "default_popup_ratio")]
+    pub popup_ratio: f64,
     /// Per-workspace position in `LayoutPreset::all()` for `opt+t` cycling.
     /// Defaults to Tiled (last). Updated by `apply_preset` / `cycle_preset`.
     #[serde(default = "default_preset_index")]
@@ -45,6 +56,8 @@ impl Workspace {
             monitor_id,
             focused_node: None,
             magnified: None,
+            popups: Vec::new(),
+            popup_ratio: default_popup_ratio(),
             preset_index: default_preset_index(),
             pending_split: None,
             root: None,
@@ -62,6 +75,17 @@ fn default_preset_index() -> usize {
         .iter()
         .position(|p| *p == LayoutPreset::Tiled)
         .unwrap_or(0)
+}
+
+/// Default share of the usable area a popup overlay takes. One definition:
+/// the config default and `Workspace`'s serde default both reference it.
+pub const POPUP_RATIO_DEFAULT: f64 = 0.75;
+/// Lower bound for the configurable popup ratio — a zero share would make
+/// the overlay disappear while the window stays tracked.
+pub const POPUP_RATIO_MIN: f64 = 0.1;
+
+fn default_popup_ratio() -> f64 {
+    POPUP_RATIO_DEFAULT
 }
 
 /// Equal shares for `n` children. Callers guarantee `n >= 1`.

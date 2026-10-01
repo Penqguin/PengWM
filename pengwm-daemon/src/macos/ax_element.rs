@@ -382,31 +382,10 @@ pub unsafe fn focus_window(element: AXUIElementRef, pid: i32) {
 ///
 /// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
 /// element is valid and that the Accessibility API can be called safely.
-pub unsafe fn is_manageable(element: AXUIElementRef) -> bool {
-    let role_name = CFString::new(kAXRoleAttribute);
-    let mut role_val: CFTypeRef = ptr::null();
-    let err =
-        AXUIElementCopyAttributeValue(element, role_name.as_concrete_TypeRef(), &mut role_val);
-    if err != kAXErrorSuccess || role_val.is_null() {
-        return false;
-    }
-    let role_str = CFString::wrap_under_create_rule(role_val as CFStringRef);
-    if role_str != kAXWindowRole {
-        return false;
-    }
-
-    let subrole_name = CFString::new(kAXSubroleAttribute);
-    let mut subrole_val: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(
-        element,
-        subrole_name.as_concrete_TypeRef(),
-        &mut subrole_val,
-    );
-    if err != kAXErrorSuccess || subrole_val.is_null() {
-        return false;
-    }
-    let subrole_str = CFString::wrap_under_create_rule(subrole_val as CFStringRef);
-    subrole_str == kAXStandardWindowSubrole
+pub unsafe fn classify(element: AXUIElementRef) -> crate::adapter::WindowClass {
+    let role = string_attribute(element, kAXRoleAttribute);
+    let subrole = string_attribute(element, kAXSubroleAttribute);
+    crate::adapter::WindowClass::classify_window(role.as_deref(), subrole.as_deref())
 }
 
 /// # Safety
@@ -448,7 +427,12 @@ pub fn frontmost_pid() -> Option<i32> {
 ///
 /// The caller must ensure that `pid` references a valid running process and that
 /// the Accessibility API is called from a trusted process with the necessary permissions.
-pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
+/// Returns retained elements with their window id and typed `WindowClass`.
+/// Sheets and unknowns are dropped here (same fate as the old binary gate);
+/// popups survive so discovery can route them to the workspace popup set.
+pub unsafe fn windows_for_pid(
+    pid: i32,
+) -> Vec<(AXUIElementRef, WindowId, crate::adapter::WindowClass)> {
     let app = create_app_element(pid);
     if app.is_null() {
         return Vec::new();
@@ -475,7 +459,8 @@ pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
         if elem.is_null() {
             continue;
         }
-        if !is_manageable(elem) {
+        let class = classify(elem);
+        if !class.is_manageable() {
             continue;
         }
         if let Some(window_id) = ax_window_id_from_element(elem) {
@@ -483,7 +468,7 @@ pub unsafe fn windows_for_pid(pid: i32) -> Vec<(AXUIElementRef, WindowId)> {
             // Window elements are separate AXUIElementRefs from the app
             // element, so they need the timeout applied in their own right.
             apply_messaging_timeout(elem);
-            result.push((elem, window_id));
+            result.push((elem, window_id, class));
         }
     }
 
@@ -507,6 +492,16 @@ pub unsafe fn close_window(element: AXUIElementRef) {
     let press = CFString::new("AXPress");
     AXUIElementPerformAction(close_button as AXUIElementRef, press.as_concrete_TypeRef());
     CFRelease(close_button);
+}
+
+/// Bring a window to the front of the stacking order (`AXRaise` action).
+/// Popups re-assert it on switch-back reveal so overlays return on top;
+/// macOS stacking after un-hide is otherwise unspecified.
+/// # Safety
+/// `element` must be a valid, retained `AXUIElementRef` representing a window.
+pub unsafe fn raise_window(element: AXUIElementRef) {
+    let action = CFString::new(kAXRaiseAction);
+    AXUIElementPerformAction(element, action.as_concrete_TypeRef());
 }
 
 #[repr(C)]

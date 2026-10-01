@@ -217,7 +217,10 @@ mod tests {
         );
         assert_eq!(sess.workspaces.len(), 1);
         assert_eq!(sess.workspaces[0].window_count(), 0, "windows stripped");
-        assert!(sess.workspaces[0].magnified.is_none(), "magnify never persists");
+        assert!(
+            sess.workspaces[0].magnified.is_none(),
+            "magnify never persists"
+        );
         assert_eq!(sess.workspaces[0].name, "Dev");
 
         let path = tmp_path("roundtrip.toml");

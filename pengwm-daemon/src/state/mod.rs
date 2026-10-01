@@ -32,6 +32,14 @@ use self::drag::DragState;
 use self::layout_writer::{AfterWrite, LayoutWriteCache};
 use self::store::WindowStore;
 
+/// Propagate the popup overlay ratio from settings to every workspace.
+/// One definition for the two callers: construction and config reload.
+fn set_popup_ratio(workspaces: &mut [Workspace], ratio: f64) {
+    for ws in workspaces.iter_mut() {
+        ws.popup_ratio = ratio;
+    }
+}
+
 pub struct StateManager {
     workspaces: Vec<Workspace>,
     displays: DisplaySet,
@@ -129,6 +137,8 @@ impl StateManager {
         let use_session = assembled.use_session;
         let entries = assembled.entries;
         let (gap_outer, gap_inner) = (assembled.gap_outer, assembled.gap_inner);
+        let mut workspaces = workspaces;
+        set_popup_ratio(&mut workspaces, settings.windows.popup_ratio);
 
         if !use_session && !cfg!(test) {
             crate::state::bootstrap::maybe_autostart(&entries, use_session);
@@ -239,6 +249,7 @@ impl StateManager {
         self.displays.set_max_tiles(updated_settings.max_tiles);
         self.restricted_apps = updated_settings.restricted_apps;
         self.cached_hidden_strategy = Some(updated_settings.windows.hidden_strategy);
+        set_popup_ratio(&mut self.workspaces, updated_settings.windows.popup_ratio);
         self.focus_first_on_switch = updated_settings.focus_first_on_switch;
         self.displays
             .set_entries(if updated_settings.workspaces.is_empty() {
@@ -280,7 +291,7 @@ impl StateManager {
 
     fn hide_workspace(&mut self, workspace_idx: usize) {
         let ws = &self.workspaces[workspace_idx];
-        let window_ids = ws.all_windows();
+        let window_ids = ws.all_owned();
         if window_ids.is_empty() {
             return;
         }
@@ -328,17 +339,25 @@ impl StateManager {
             return;
         }
         let mut retiled = false;
-        for (wid, remembered) in revealed {
+        for (wid, entry) in revealed {
             // Skip if already re-tiled via earlier iteration.
-            if self.find_workspace_for_window(wid).is_some() {
+            if self.find_workspace_of_any(wid).is_some() {
+                continue;
+            }
+            // Popups re-attach to their remembered workspace: no routing,
+            // no capacity.
+            if entry.popup {
+                if entry.idx < self.workspaces.len() && self.workspaces[entry.idx].add_popup(wid) {
+                    retiled = true;
+                }
                 continue;
             }
             let pid = match self.store.pid_for(wid) {
                 Some(p) => p,
                 None => continue,
             };
-            let preferred = if remembered < self.workspaces.len() {
-                remembered
+            let preferred = if entry.idx < self.workspaces.len() {
+                entry.idx
             } else {
                 self.displays
                     .routed_workspace_idx(pid, &self.workspaces, &*self.os)
@@ -366,6 +385,11 @@ impl StateManager {
     }
 
     #[cfg(test)]
+    fn set_restricted_apps_for_test(&mut self, apps: Vec<String>) {
+        self.restricted_apps = apps;
+    }
+
+    #[cfg(test)]
     #[allow(dead_code)]
     fn set_focus_first_for_test(&mut self, v: bool) {
         self.focus_first_on_switch = v;
@@ -377,7 +401,15 @@ impl StateManager {
     /// path (removes from tree + store, re-layouts to fill the gap).
     pub(super) fn apply_layout(&mut self, workspace_idx: usize) {
         let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
-        self.last_layout_rects = rects.clone();
+        // Drag hit-testing must never target a popup: popups are not tree
+        // members, and swapping a tile with an overlay is meaningless. The
+        // write plan below still sees the full map (popups ride it).
+        let popup_ids = self.workspaces[workspace_idx].popup_ids();
+        self.last_layout_rects = rects
+            .iter()
+            .filter(|(wid, _)| !popup_ids.contains(wid))
+            .map(|(&wid, &rect)| (wid, rect))
+            .collect();
 
         log::debug!(
             "apply_layout ws={} gaps_in={} out={}:",

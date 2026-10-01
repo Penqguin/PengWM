@@ -157,6 +157,26 @@ impl Workspace {
         }
     }
 
+    /// Attach `window_id` as a workspace-bound popup: tracked but never
+    /// tiled. Idempotent; refuses when the window is already tiled (a
+    /// window is either in the tree or a popup, never both). Returns
+    /// whether membership changed.
+    pub fn add_popup(&mut self, window_id: WindowId) -> bool {
+        if self.find_window(window_id).is_some() || self.is_popup(window_id) {
+            return false;
+        }
+        self.popups.push(window_id);
+        true
+    }
+
+    /// Remove a popup (close / hide / untrack). Idempotent; returns
+    /// whether it was a member.
+    pub fn remove_popup(&mut self, window_id: WindowId) -> bool {
+        let before = self.popups.len();
+        self.popups.retain(|&wid| wid != window_id);
+        self.popups.len() != before
+    }
+
     pub fn remove_window(&mut self, window_id: WindowId) {
         let node_id = match self.find_window(window_id) {
             Some(id) => id,

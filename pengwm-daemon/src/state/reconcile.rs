@@ -27,8 +27,8 @@ impl StateManager {
         // Safety net for windows whose WindowCreated notification never
         // arrived (Firefox tear-offs / incognito often don't fire it, or
         // fire while transiently non-manageable so the observer drops it).
-        // `poll_windows_for_pid` already filters to manageable windows, so
-        // PiP / dialog windows stay excluded here just as on the event path.
+        // The poll classifies instead of dropping now: popups reach
+        // `on_window_created` and land in their workspace's popup set.
         const WINDOW_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
         if now.duration_since(self.last_window_sweep) >= WINDOW_SWEEP_INTERVAL {
             self.last_window_sweep = now;
@@ -78,9 +78,9 @@ impl StateManager {
             .pending_for_reconcile(&self.workspaces, |wid| self.os.window_is_hidden(wid));
         // Hide first, then show — order doesn't matter but hide frees capacity.
         for wid in to_hide {
-            // Only hide if still tiled (pending set already checked, but window
-            // may have been destroyed between pending calc and now).
-            if self.find_workspace_for_window(wid).is_some() {
+            // Only hide if still a member (pending set already checked, but
+            // window may have been destroyed between pending calc and now).
+            if self.find_workspace_of_any(wid).is_some() {
                 self.on_window_hidden(wid);
             }
         }
@@ -112,11 +112,20 @@ impl StateManager {
     /// One sweep funnel: visible workspaces only (invisible ones aren't
     /// asserted until shown). Displacement judgment lives in
     /// `LayoutWriteCache::sweep_displaced`; this only feeds reads and
-    /// re-applies what came back invalidated.
+    /// re-applies what came back invalidated. Popups are skipped (free-drag
+    /// after placement — nothing re-centers them) via the exclusion
+    /// predicate, and so is anything the user is dragging or the OS
+    /// reports hidden.
     fn reconcile_misplaced_windows(&mut self, now: Instant) {
         let drag_window = self.drag.drag_window();
-        // Snapshot visible indices first to avoid borrow conflicts.
+        // Snapshot visible indices and the popup membership first — both are
+        // read inside the sweep closure while `layout_cache` is borrowed.
         let visible: Vec<usize> = self.displays.active().values().copied().collect();
+        let popups: std::collections::HashSet<WindowId> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.popup_ids())
+            .collect();
         let mut affected: Vec<usize> = Vec::new();
         for idx in visible {
             if idx >= self.workspaces.len() {
@@ -130,7 +139,7 @@ impl StateManager {
             let invalidated = self
                 .layout_cache
                 .sweep_displaced(&targets, &actuals, now, |wid| {
-                    Some(wid) == drag_window || self.store.is_hidden(wid)
+                    Some(wid) == drag_window || self.store.is_hidden(wid) || popups.contains(&wid)
                 });
             if !invalidated.is_empty() {
                 affected.push(idx);

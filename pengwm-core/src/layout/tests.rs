@@ -450,6 +450,22 @@ fn screen_local_to_global_offsets() {
 }
 
 #[test]
+fn centered_overlay_rect_is_ratio_share_centered() {
+    let usable = Rect::new(100.0, 100.0, 1000.0, 500.0);
+    let overlay = centered_overlay_rect(usable, 0.75);
+    assert_eq!(overlay.width, 750.0);
+    assert_eq!(overlay.height, 375.0);
+    assert_eq!(overlay.x, 100.0 + 125.0);
+    assert_eq!(overlay.y, 100.0 + 62.5);
+}
+
+#[test]
+fn centered_overlay_rect_full_ratio_fills() {
+    let usable = Rect::new(10.0, 20.0, 400.0, 200.0);
+    assert_eq!(centered_overlay_rect(usable, 1.0), usable);
+}
+
+#[test]
 fn window_at_point_hits_containing_window() {
     let mut rects = HashMap::new();
     rects.insert(1, Rect::new(0.0, 0.0, 100.0, 100.0));

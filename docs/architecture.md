@@ -60,6 +60,8 @@ pub trait OsAdapter: ObserverRegistry {
     fn primary_display_id(&self) -> u32;
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome;
     fn window_rect(&self, window_id: WindowId) -> Option<Rect>;
+    fn window_kind(&self, window_id: WindowId) -> Option<WindowClass>;
+    fn raise_window(&self, window_id: WindowId);
     fn close_window(&self, window_id: WindowId);
     fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>);
     fn window_is_hidden(&self, window_id: WindowId) -> bool;
@@ -73,6 +75,16 @@ Layout writes return a typed `WriteOutcome` (`Ok`, `Pinned`, `Drift`, `Gone`,
 windows park position-only (never resized, so no app reflow): `HidePlacement`
 is either the bottom-edge strip of the window's own monitor or far offscreen.
 
+Discovery classifies instead of dropping: every window element gets a typed
+`WindowClass` (`Standard`, `Dialog`, `SystemDialog`, `Floating`, `Sheet`,
+`Unknown`). `Standard` tiles; the dialog/floating classes become
+workspace-bound **popups** — tracked on their workspace, never tiled, each
+rendered by `Workspace::layout()` as a centered overlay (the shared
+`centered_overlay_rect`, also behind magnify) and raised back on top on
+switch-back. `Sheet`/`Unknown` are dropped at the gate exactly as the old
+`AXStandardWindow`-only check did. Windows of `restricted_apps` bundles are
+forced into the popup fate by routing.
+
 Two implementations:
 
 - **MacOsAdapter** (prod) — owns a `WindowElementCache` (`HashMap<WindowId,
@@ -83,8 +95,8 @@ Two implementations:
   (taking `Box<dyn Fn(DaemonEvent) + Send>`) is an inherent constructor,
   not part of the trait.
 - **TestAdapter** (tests) — in-memory implementation sharing cells with a
-  `TestHandle` (`inject_window`, `set_fault`, `displace`, `rect`, …), no
-  FFI required.
+  `TestHandle` (`inject_window`, `inject_window_kind`, `set_fault`,
+  `displace`, `rect`, `raised`, …), no FFI required.
 
 ### 3. StateManager
 

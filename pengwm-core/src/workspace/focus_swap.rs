@@ -67,6 +67,15 @@ impl Workspace {
         self.arena.all_windows()
     }
 
+    /// Every window the workspace owns: tree members plus workspace-bound
+    /// popups. The hide funnel parks all of them. `window_count` stays
+    /// tree-only — popups never consume `max_tiles`.
+    pub fn all_owned(&self) -> Vec<WindowId> {
+        let mut ids = self.arena.all_windows();
+        ids.extend(self.popups.iter().copied());
+        ids
+    }
+
     pub fn window_count(&self) -> usize {
         self.all_windows().len()
     }

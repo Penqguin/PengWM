@@ -7,16 +7,19 @@ use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent};
 use core_foundation::string::{CFString, CFStringRef};
 
+use crate::adapter::WindowClass;
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
 
 use pengwm_core::tree::WindowId;
 
 /// Shared mutable state accessible from both the AX observer callback and
-/// MacOsAdapter. The cache maps WindowId to a retained AXUIElementRef + pid.
-/// The event_callback forwards AX events to the event loop.
+/// MacOsAdapter. The cache maps WindowId to a retained AXUIElementRef, its
+/// pid, and a typed `WindowClass` — classified at the discovery gate,
+/// read back by `window_kind`. The event_callback forwards AX events to
+/// the event loop.
 pub struct ObserverContext {
-    cache: std::cell::UnsafeCell<HashMap<WindowId, (AXUIElementRef, i32)>>,
+    cache: std::cell::UnsafeCell<HashMap<WindowId, (AXUIElementRef, i32, WindowClass)>>,
     event_callback: Box<dyn Fn(DaemonEvent) + Send>,
 }
 
@@ -31,11 +34,11 @@ impl ObserverContext {
     /// # Safety
     /// Caller must ensure no other mutable references to the cache are outstanding.
     #[allow(clippy::mut_from_ref)]
-    pub unsafe fn cache_mut(&self) -> &mut HashMap<WindowId, (AXUIElementRef, i32)> {
+    pub unsafe fn cache_mut(&self) -> &mut HashMap<WindowId, (AXUIElementRef, i32, WindowClass)> {
         &mut *self.cache.get()
     }
 
-    pub fn cache_get(&self) -> &HashMap<WindowId, (AXUIElementRef, i32)> {
+    pub fn cache_get(&self) -> &HashMap<WindowId, (AXUIElementRef, i32, WindowClass)> {
         unsafe { &*self.cache.get() }
     }
 
@@ -43,9 +46,18 @@ impl ObserverContext {
         (self.event_callback)(event);
     }
 
-    /// Insert a window into the cache, releasing any previously cached element.
-    pub fn cache_insert(&self, window_id: WindowId, element: AXUIElementRef, pid: i32) {
-        if let Some((old_elem, _)) = unsafe { self.cache_mut() }.insert(window_id, (element, pid)) {
+    /// Insert a window into the cache with its discovery-time class,
+    /// releasing any previously cached element.
+    pub fn cache_insert(
+        &self,
+        window_id: WindowId,
+        element: AXUIElementRef,
+        pid: i32,
+        class: WindowClass,
+    ) {
+        if let Some((old_elem, _, _)) =
+            unsafe { self.cache_mut() }.insert(window_id, (element, pid, class))
+        {
             unsafe { CFRelease(old_elem as CFTypeRef) };
         }
     }
@@ -53,7 +65,7 @@ impl ObserverContext {
     /// Find the window ID for a given element pointer by linear scan.
     /// Uses CFEqual for reliable comparison (handles toll-free bridging).
     pub fn find_window_id_by_element(&self, element: AXUIElementRef) -> Option<WindowId> {
-        for (&wid, &(cached_elem, _)) in self.cache_get().iter() {
+        for (&wid, &(cached_elem, _, _)) in self.cache_get().iter() {
             let equal: bool =
                 unsafe { CFEqual(cached_elem as CFTypeRef, element as CFTypeRef) != 0 };
             if equal {
@@ -68,7 +80,7 @@ impl ObserverContext {
     pub fn window_ids_for_pid(&self, pid: i32) -> Vec<WindowId> {
         self.cache_get()
             .iter()
-            .filter_map(|(&wid, &(_, p))| if p == pid { Some(wid) } else { None })
+            .filter_map(|(&wid, &(_, p, _))| if p == pid { Some(wid) } else { None })
             .collect()
     }
 }
@@ -308,7 +320,7 @@ unsafe extern "C" fn observer_callback(
             },
         };
         log::debug!("WindowDestroyed: {}", window_id);
-        if let Some((elem, _)) = unsafe { ctx.cache_mut() }.remove(&window_id) {
+        if let Some((elem, _, _)) = unsafe { ctx.cache_mut() }.remove(&window_id) {
             CFRelease(elem as CFTypeRef);
         }
         ctx.call_event(DaemonEvent::WindowDestroyed(window_id));
@@ -349,18 +361,23 @@ unsafe extern "C" fn observer_callback(
     #[allow(non_upper_case_globals)]
     match notif_str.as_str() {
         kAXWindowCreatedNotification => {
-            if !ax_element::is_manageable(element) {
+            // Classify, don't drop: Sheets and unknowns return at the gate
+            // exactly as the old binary check did; everything else is
+            // cached + observed + evented, and the class rides the cache.
+            let class = ax_element::classify(element);
+            if !class.is_manageable() {
                 log::debug!(
-                    "WindowCreated SKIPPED (not manageable): {} pid={}",
+                    "WindowCreated SKIPPED (class {:?}): {} pid={}",
+                    class,
                     window_id,
                     pid
                 );
                 return;
             }
-            log::debug!("WindowCreated: {} pid={}", window_id, pid);
+            log::debug!("WindowCreated: {} pid={} class={:?}", window_id, pid, class);
             CFRetain(element as CFTypeRef);
             ax_element::apply_messaging_timeout(element);
-            ctx.cache_insert(window_id, element, pid);
+            ctx.cache_insert(window_id, element, pid, class);
 
             // Register per-window destroyed notification so we detect when
             // this window closes (the app-level registration does NOT fire

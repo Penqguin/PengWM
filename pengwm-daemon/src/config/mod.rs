@@ -17,10 +17,28 @@ pub enum HiddenStrategy {
 }
 
 /// Window lifecycle / visibility settings scoped under `[windows]` in TOML.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowsConfig {
     #[serde(default)]
     pub hidden_strategy: HiddenStrategy,
+    /// Share of the usable area a popup overlay takes (0.1–1.0, clamped at
+    /// use). Workspace-bound popups — dialogs, floating panels, restricted
+    /// apps — render centered at this ratio; magnify keeps its own 0.75.
+    #[serde(default = "default_popup_ratio")]
+    pub popup_ratio: f64,
+}
+
+impl Default for WindowsConfig {
+    fn default() -> Self {
+        Self {
+            hidden_strategy: HiddenStrategy::default(),
+            popup_ratio: default_popup_ratio(),
+        }
+    }
+}
+
+fn default_popup_ratio() -> f64 {
+    pengwm_core::workspace::POPUP_RATIO_DEFAULT
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

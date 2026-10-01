@@ -6,19 +6,30 @@ use pengwm_core::workspace::Workspace;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// What a hidden window remembers: the workspace index it came from and
+/// whether it hides as a popup (dialogs / floating / restricted apps) or
+/// as a tree window. One hidden map, one reveal funnel for both kinds —
+/// the kind bit only changes which membership the caller re-adds to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HiddenEntry {
+    pub idx: usize,
+    pub popup: bool,
+}
+
 /// Single owner of wid↔pid↔hidden state. Hidden windows leave the tiling
 /// tree but stay in `window_pids` so they can be retiled by
 /// `on_window_shown`; the `hidden` map remembers the workspace index they
-/// came from, so `on_window_shown` can route them back. Finding, remembering,
-/// and tree removal split at the seam: the store finds + remembers and
-/// returns the index; the caller (`StateManager`) mutates the tree and
-/// re-layouts. Reconcile stays testable via a `Fn(WindowId)->bool` predicate
-/// (no `as_any_mut` downcast). This is the deep module that concentrates the
-/// "hidden means untiled but still tracked" invariant.
+/// came from (and whether they hide as popups), so `on_window_shown` can
+/// route them back. Finding, remembering, and removal split at the seam:
+/// the store finds + remembers and returns the index; the caller
+/// (`StateManager`) mutates the workspace and re-layouts. Reconcile stays
+/// testable via a `Fn(WindowId)->bool` predicate (no `as_any_mut`
+/// downcast). This is the deep module that concentrates the "hidden means
+/// untiled but still tracked" invariant.
 pub struct WindowStore {
     window_pids: HashMap<WindowId, i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
-    hidden: HashMap<WindowId, usize>,
+    hidden: HashMap<WindowId, HiddenEntry>,
     last_reconcile: Instant,
 }
 
@@ -125,26 +136,50 @@ impl WindowStore {
     /// with the tree owner; the store only owns hidden state.
     pub fn hide(&mut self, window_id: WindowId, workspaces: &[Workspace]) -> Option<usize> {
         let idx = find_workspace_for_window(workspaces, window_id)?;
-        self.hidden.insert(window_id, idx);
+        self.hidden
+            .insert(window_id, HiddenEntry { idx, popup: false });
         Some(idx)
     }
 
-    /// Forget a hidden entry and return its remembered workspace index, if any.
-    /// The caller decides the final `preferred` index (falls back to
-    /// `routed_workspace_idx` / `active_workspace_idx`) and calls
+    /// Remember a hidden popup's workspace. The caller removes it from the
+    /// popup set and re-layouts. Popups need no capacity or routing: they
+    /// re-attach to the same workspace on reveal.
+    pub fn hide_popup(&mut self, window_id: WindowId, idx: usize) {
+        self.hidden
+            .insert(window_id, HiddenEntry { idx, popup: true });
+    }
+
+    /// Forget a hidden entry and return what it remembered (workspace index
+    /// and popup kind), if any. The caller decides the final placement:
+    /// popups re-attach to the remembered workspace; tree windows go through
     /// `add_window_to_workspace`.
-    pub fn reveal(&mut self, window_id: WindowId) -> Option<usize> {
+    pub fn reveal(&mut self, window_id: WindowId) -> Option<HiddenEntry> {
         self.hidden.remove(&window_id)
     }
 
     #[cfg(test)]
     pub fn hidden_insert(&mut self, window_id: WindowId, idx: usize) {
-        self.hidden.insert(window_id, idx);
+        self.hidden
+            .insert(window_id, HiddenEntry { idx, popup: false });
     }
 
-    /// Drain every hidden entry with its remembered workspace index. The
-    /// caller retiles each (remembered, routed, or active workspace).
-    pub fn reveal_all(&mut self) -> Vec<(WindowId, usize)> {
+    /// Test helper: reset the reconcile debounce so the next tick runs the
+    /// hidden-state reconcile immediately.
+    #[cfg(test)]
+    pub fn force_reconcile_for_test(&mut self) {
+        self.last_reconcile = Instant::now() - RECONCILE_INTERVAL;
+    }
+
+    /// Test helper: seed a hidden popup entry.
+    #[cfg(test)]
+    pub fn hidden_insert_popup(&mut self, window_id: WindowId, idx: usize) {
+        self.hidden
+            .insert(window_id, HiddenEntry { idx, popup: true });
+    }
+
+    /// Drain every hidden entry with what it remembered. The caller retiles
+    /// each (remembered, routed, or active workspace; popups re-attach).
+    pub fn reveal_all(&mut self) -> Vec<(WindowId, HiddenEntry)> {
         self.hidden.drain().collect()
     }
 
@@ -161,8 +196,10 @@ impl WindowStore {
 
     /// Compute the two reconcile sets without mutating anything. The caller is
     /// responsible for iterating the returned vectors and calling `hide` /
-    /// `add_window_to_workspace`.
+    /// `add_window_to_workspace` (tree) or `hide_popup` / `add_popup`.
     ///
+    /// Membership counts a window that is tiled *or* a workspace-bound popup,
+    /// so missed app-hide events on popups reconcile like tree windows.
     /// `is_hidden` is the `OsAdapter::window_is_hidden` predicate in prod
     /// (`|wid| os.window_is_hidden(wid)`); tests pass a closure over a hash set.
     pub fn pending_for_reconcile<F>(
@@ -177,7 +214,9 @@ impl WindowStore {
         let mut to_show = Vec::new();
         for &wid in self.window_pids.keys() {
             let hidden = is_hidden(wid);
-            if hidden && find_workspace_for_window(workspaces, wid).is_some() {
+            let member = find_workspace_for_window(workspaces, wid).is_some()
+                || workspaces.iter().any(|ws| ws.is_popup(wid));
+            if hidden && member {
                 to_hide.push(wid);
             } else if !hidden && self.hidden.contains_key(&wid) {
                 to_show.push(wid);
@@ -292,7 +331,8 @@ mod tests {
         wss[0].remove_window(10);
         assert!(wss[0].find_window(10).is_none());
         let remembered = r.reveal(10).unwrap();
-        assert_eq!(remembered, 0);
+        assert_eq!(remembered.idx, 0);
+        assert!(!remembered.popup);
         assert!(!r.is_hidden(10));
     }
 
@@ -331,8 +371,17 @@ mod tests {
     fn take_hidden_returns_remembered_and_clears() {
         let mut t = WindowStore::new();
         t.hidden_insert(10, 2);
-        assert_eq!(t.reveal(10), Some(2));
+        assert_eq!(t.reveal(10).map(|e| e.idx), Some(2));
         assert!(!t.is_hidden(10));
+    }
+
+    #[test]
+    fn popup_hidden_entries_roundtrip_with_kind() {
+        let mut t = WindowStore::new();
+        t.hidden_insert_popup(10, 1);
+        let entry = t.reveal(10).unwrap();
+        assert_eq!(entry.idx, 1);
+        assert!(entry.popup, "popup kind survives the hidden map");
     }
 
     #[test]

@@ -62,18 +62,12 @@ fn default_has_move_to_workspace() {
 #[test]
 fn default_has_layout_cycling_and_magnify() {
     let config = KeybindConfig::default();
-    assert!(config
-        .bindings
-        .iter()
-        .any(|b| b.keycode == 0x11
-            && b.modifiers == MODIFIER_ALT
-            && matches!(&b.action, Command::CycleLayout)));
-    assert!(config
-        .bindings
-        .iter()
-        .any(|b| b.keycode == 0x2E
-            && b.modifiers == MODIFIER_ALT
-            && matches!(&b.action, Command::ToggleMagnify)));
+    assert!(config.bindings.iter().any(|b| b.keycode == 0x11
+        && b.modifiers == MODIFIER_ALT
+        && matches!(&b.action, Command::CycleLayout)));
+    assert!(config.bindings.iter().any(|b| b.keycode == 0x2E
+        && b.modifiers == MODIFIER_ALT
+        && matches!(&b.action, Command::ToggleMagnify)));
 }
 
 #[test]

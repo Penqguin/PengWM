@@ -101,6 +101,31 @@ pub(crate) fn inset_rect(rect: Rect, gap: f64) -> Rect {
     }
 }
 
+impl Rect {
+    /// Whether the point `(x, y)` lies inside this rect, half-open on the
+    /// far edges (right/bottom belong to the neighbor — tiling adjacency).
+    /// Hit-testing (`window_at_point`) deliberately keeps its closed edges.
+    pub fn contains_point(&self, x: f64, y: f64) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+}
+
+/// The centered tmux-popup overlay inside `usable`: `ratio` of each
+/// dimension, centered. One computation for both overlays — the magnified
+/// pin and workspace-bound popups — so bar reservation, gap inset and
+/// centering cannot drift between them. The caller passes the
+/// already-inset usable rect; coordinates stay local to the monitor.
+pub fn centered_overlay_rect(usable: Rect, ratio: f64) -> Rect {
+    let w = usable.width * ratio;
+    let h = usable.height * ratio;
+    Rect::new(
+        usable.x + (usable.width - w) / 2.0,
+        usable.y + (usable.height - h) / 2.0,
+        w,
+        h,
+    )
+}
+
 fn split_n(bounding: Rect, ratios: &[f64], gap_size: f64, direction: SplitDirection) -> Vec<Rect> {
     let n = ratios.len();
     if n == 0 {

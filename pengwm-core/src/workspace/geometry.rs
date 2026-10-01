@@ -3,18 +3,20 @@ use std::collections::HashMap;
 use crate::layout::Rect;
 use crate::tree::WindowId;
 
-use super::Workspace;
+use super::{Workspace, POPUP_RATIO_MIN};
+
+/// Fixed overlay share for the magnified pin. Popups use the configurable
+/// `popup_ratio` instead.
+const MAGNIFY_RATIO: f64 = 0.75;
 
 impl Workspace {
     /// Compute global-coordinate rects for every window using the stored monitor
     /// geometry. Tiling is always computed underneath; when `magnified` is set
     /// the magnified window is overwritten with a centered 75%x75% overlay
-    /// (tmux-popup style) inside the bar reservation + outer gap.
+    /// (tmux-popup style) inside the bar reservation + outer gap. Popup
+    /// members are emitted into the same map — tracked but never tiled, each
+    /// a centered overlay above the tiling.
     pub fn layout(&self, gap_inner: f64, gap_outer: f64) -> HashMap<WindowId, Rect> {
-        let Some(root) = self.root else {
-            return HashMap::new();
-        };
-
         let monitor_rect = Rect::new(
             0.0,
             0.0,
@@ -25,29 +27,40 @@ impl Workspace {
         let inset = crate::layout::inset_rect(usable, gap_outer);
         let mut output = HashMap::new();
 
-        crate::layout::calculate_layout(root, inset, &self.arena, &mut output, gap_inner);
+        if let Some(root) = self.root {
+            crate::layout::calculate_layout(root, inset, &self.arena, &mut output, gap_inner);
+        }
         if let Some(mag) = self.magnified {
             if output.contains_key(&mag) {
-                let w = inset.width * 0.75;
-                let h = inset.height * 0.75;
-                let local = Rect::new(
-                    inset.x + (inset.width - w) / 2.0,
-                    inset.y + (inset.height - h) / 2.0,
-                    w,
-                    h,
+                output.insert(
+                    mag,
+                    crate::layout::centered_overlay_rect(inset, MAGNIFY_RATIO),
                 );
-                let global = crate::layout::screen_local_to_global(local, self.monitor_origin);
-                output.insert(mag, global);
             }
         }
-        for (wid, rect) in output.iter_mut() {
-            if Some(*wid) == self.magnified {
-                continue;
-            }
+        let ratio = self.popup_ratio.clamp(POPUP_RATIO_MIN, 1.0);
+        for &wid in &self.popups {
+            output.insert(wid, crate::layout::centered_overlay_rect(inset, ratio));
+        }
+        for rect in output.values_mut() {
             *rect = crate::layout::screen_local_to_global(*rect, self.monitor_origin);
         }
 
         output
+    }
+
+    /// Whether `window_id` is a workspace-bound popup member. Popups are
+    /// tracked but never tiled; a window is either in the tree or a popup,
+    /// never both (`add_popup` refuses tiled ids).
+    pub fn is_popup(&self, window_id: WindowId) -> bool {
+        self.popups.contains(&window_id)
+    }
+
+    /// The popup member ids. Callers exclude these from tree-only funnels
+    /// (drag hit-testing, capacity, the misplaced sweep) and raise them on
+    /// switch-back reveal.
+    pub fn popup_ids(&self) -> Vec<WindowId> {
+        self.popups.clone()
     }
 
     /// Toggle magnify on the focused window: pin it as the overlay, or

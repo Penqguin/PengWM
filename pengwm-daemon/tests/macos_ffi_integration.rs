@@ -45,7 +45,7 @@ fn macos_ffi_integration() {
     // Don't assert on this - the app might not have windows
 
     // 5. If there are windows, try get_window_rect and set_window_rect
-    if let Some(&(element, _window_id)) = windows.first() {
+    if let Some(&(element, _window_id, _)) = windows.first() {
         let original_rect = unsafe { ax_element::get_window_rect(element) };
         assert!(original_rect.is_some(), "should be able to get window rect");
 
@@ -75,13 +75,13 @@ fn macos_ffi_integration() {
         unsafe { ax_element::focus_window(element, front_pid) };
     }
 
-    // 6. Check is_manageable on application element
+    // 6. Check classification on application element
     let app_elem = unsafe { accessibility_sys::AXUIElementCreateApplication(front_pid) };
     if !app_elem.is_null() {
-        let manageable = unsafe { ax_element::is_manageable(app_elem) };
+        let class = unsafe { ax_element::classify(app_elem) };
         assert!(
-            !manageable,
-            "application elements should not be manageable windows"
+            !class.is_manageable(),
+            "application elements should not classify as manageable windows"
         );
         unsafe {
             core_foundation::base::CFRelease(app_elem as *const c_void);
@@ -154,7 +154,7 @@ fn on_window_created_tracks_pid_and_applies_layout() {
     // Every window should have a readable, positive-size rect —
     // proof that apply_layout successfully sent set_window_rect
     // rather than skipping the window due to a missing PID.
-    for &(element, _) in &windows_after {
+    for &(element, _, _) in &windows_after {
         let rect = unsafe { ax_element::get_window_rect(element) };
         assert!(rect.is_some(), "each window should have a readable rect");
         let r = rect.unwrap();
@@ -166,9 +166,9 @@ fn on_window_created_tracks_pid_and_applies_layout() {
     }
 
     // Clean up: close the window we just opened.
-    for &(element, _) in &windows_after {
+    for &(element, _, _) in &windows_after {
         let wid = unsafe { ax_element::ax_window_id_from_element(element).unwrap_or(0) };
-        if !windows_before.iter().any(|&(_, id)| id == wid) {
+        if !windows_before.iter().any(|&(_, id, _)| id == wid) {
             unsafe { ax_element::close_window(element) };
         }
     }

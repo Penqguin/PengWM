@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Popups:** dialog, system-dialog and floating-panel windows (PiP, launcher
+  panels, Chromium popups) are no longer dropped — they are tracked on their
+  workspace and rendered as centered overlays sized by the new
+  `[windows] popup_ratio` (default 0.75), the same geometry as
+  `toggle-magnify`. Placed once, freely draggable after; they hide with
+  their workspace and are raised back on top on switch-back
+  (`raise_window`/AXRaise on the OsAdapter seam); they never count against
+  `max_tiles` and never persist.
+- **`restricted_apps` now works** (it was loaded but never consulted): every
+  window of a listed bundle pops out as an overlay instead of tiling.
+
 ## v0.5 — i3-style multi-monitor
 
 One global workspace pool shared across all monitors, replacing the old

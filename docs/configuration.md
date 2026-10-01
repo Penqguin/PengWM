@@ -11,7 +11,7 @@ apply on save (or via `pengwm reload-config`).
 | `gap_outer`            | int    | `10`    | Pixels between windows and screen edge    |
 | `gap_inner`            | int    | `5`     | Pixels between adjacent windows           |
 | `max_tiles`            | int    | `4`     | Max windows per workspace; overflow goes to the next workspace with room |
-| `restricted_apps`      | list   | `[]`    | Bundle ids of apps that PengWM must not manage |
+| `restricted_apps`      | list   | `[]`    | Bundle ids of apps whose windows always pop out as centered overlays — never tiled (see [Popups](#popups)) |
 | `restore_last_session` | bool   | `true`  | Restore last session (workspace layout/focus) from `~/.local/share/pengwm/state.toml` on startup |
 | `main_ratio`           | float  | `0.6`   | Share of the split the first window takes in the `main-horizontal` / `main-vertical` presets (clamped to 0.2–0.8) |
 | `prefix`               | string | `"alt-space"` | Chord that arms the tmux-style prefix window, e.g. `"ctrl-b"` |
@@ -151,11 +151,31 @@ Visibility and lifecycle settings scoped under `[windows]`.
 | Key               | Type   | Default        | Description                                                                                   |
 | ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------------- |
 | `hidden_strategy` | string | `"bottom_edge"` | Where inactive-workspace windows are parked: `"bottom_edge"` (1×1 at bottom-right, dark clamped strip visible in Mission Control as daemon-down escape hatch) or `"far_offscreen"` (legacy `-100k`, fully invisible) |
+| `popup_ratio`     | float  | `0.75`         | Share of the usable area a popup overlay takes (clamped to 0.1–1.0). See [Popups](#popups).    |
 
 ```toml
 [windows]
 hidden_strategy = "bottom_edge" # or "far_offscreen"
+popup_ratio = 0.75
 ```
+
+### Popups
+
+PengWM never tiles popup windows — it tracks them on their workspace and
+renders each as a centered overlay (same tmux-popup geometry as
+`toggle-magnify`, sized by `popup_ratio`). A window becomes a popup when:
+
+- its app is listed in `restricted_apps` (every newly discovered window of
+  those apps pops out, never tiled — overlay-app bundles like launchers;
+  a config reload doesn't re-route windows that are already tiled), or
+- its macOS subrole is `AXDialog`, `AXSystemDialog`, or `AXFloatingWindow`
+  (app dialogs, system dialogs, PiP / launcher / Chromium popups).
+
+Sheets and unknown-subrole windows are left alone, as always. Popups are
+placed once when they appear (and re-placed on wake) and can be dragged
+freely afterwards — nothing snaps them back. They hide with their workspace
+and return on top when you switch back. They never count against
+`max_tiles` and never persist across restarts.
 
 ### Corner radius
 

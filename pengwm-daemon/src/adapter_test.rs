@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter};
+use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter, WindowClass};
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
 
@@ -44,6 +44,13 @@ pub struct TestAdapter {
     /// after `NSWorkspaceDidWake`, while the windows are still very much
     /// alive.
     pub ax_blackout: Cell<bool>,
+    /// Injected per-window `WindowClass`. Uninjected windows classify as
+    /// `None`, which routing reads as a standard tiled window — matching
+    /// how the old binary gate treated every evented window.
+    pub window_classes: RefCell<HashMap<WindowId, WindowClass>>,
+    /// `raise_window` calls in order, so tests can assert the switch-back
+    /// "popup comes back on top" invariant.
+    pub raised: RefCell<Vec<WindowId>>,
 }
 
 impl Default for TestAdapter {
@@ -65,6 +72,8 @@ impl Default for TestAdapter {
             faults: RefCell::new(HashMap::new()),
             set_rect_calls: Cell::new(0),
             ax_blackout: Cell::new(false),
+            window_classes: RefCell::new(HashMap::new()),
+            raised: RefCell::new(Vec::new()),
         }
     }
 }
@@ -108,6 +117,18 @@ impl TestAdapter {
         }
     }
 
+    /// Seed a window's OS rect directly (e.g. a popup the app drew at its
+    /// own position before the WM saw it).
+    pub fn inject_rect(&self, window_id: WindowId, rect: Rect) {
+        self.window_rects.borrow_mut().insert(window_id, rect);
+    }
+
+    /// Mark a window minimized/hidden in the fake (missed-notification
+    /// simulation for the hidden reconcile).
+    pub fn inject_hidden_window(&self, window_id: WindowId) {
+        self.hidden_windows.borrow_mut().insert(window_id);
+    }
+
     /// Black out AX: polls return no windows and rects are unreadable,
     /// while the windows stay alive in the fake. Mirrors the seconds after
     /// a wake notification.
@@ -142,6 +163,16 @@ impl TestAdapter {
     pub fn inject_bundle_id(&self, pid: i32, bundle: String) {
         self.bundle_ids.borrow_mut().insert(pid, bundle);
     }
+
+    /// Inject a window's `WindowClass` (the fake's classification cell).
+    pub fn inject_window_kind(&self, window_id: WindowId, class: WindowClass) {
+        self.window_classes.borrow_mut().insert(window_id, class);
+    }
+
+    /// `raise_window` calls in order, so tests can assert on-top behavior.
+    pub fn raised(&self) -> Vec<WindowId> {
+        self.raised.borrow().clone()
+    }
 }
 
 /// Shared handle to a `TestAdapter` boxed into a `StateManager`. Tests hold
@@ -175,6 +206,14 @@ impl TestHandle {
         self.0.displace(window_id, dx, dy)
     }
 
+    pub fn inject_rect(&self, window_id: WindowId, rect: Rect) {
+        self.0.inject_rect(window_id, rect)
+    }
+
+    pub fn inject_hidden_window(&self, window_id: WindowId) {
+        self.0.inject_hidden_window(window_id)
+    }
+
     pub fn writes(&self) -> usize {
         self.0.writes()
     }
@@ -197,6 +236,14 @@ impl TestHandle {
 
     pub fn inject_bundle_id(&self, pid: i32, bundle: String) {
         self.0.inject_bundle_id(pid, bundle)
+    }
+
+    pub fn inject_window_kind(&self, window_id: WindowId, class: WindowClass) {
+        self.0.inject_window_kind(window_id, class)
+    }
+
+    pub fn raised(&self) -> Vec<WindowId> {
+        self.0.raised()
     }
 }
 
@@ -245,6 +292,14 @@ impl OsAdapter for SharedTestAdapter {
 
     fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
         self.0.window_rect(window_id)
+    }
+
+    fn window_kind(&self, window_id: WindowId) -> Option<WindowClass> {
+        self.0.window_kind(window_id)
+    }
+
+    fn raise_window(&self, window_id: WindowId) {
+        self.0.raise_window(window_id)
     }
 
     fn focus_window(&self, window_id: WindowId) {
@@ -347,6 +402,14 @@ impl OsAdapter for TestAdapter {
             return None;
         }
         self.window_rects.borrow().get(&window_id).copied()
+    }
+
+    fn window_kind(&self, window_id: WindowId) -> Option<WindowClass> {
+        self.window_classes.borrow().get(&window_id).copied()
+    }
+
+    fn raise_window(&self, window_id: WindowId) {
+        self.raised.borrow_mut().push(window_id);
     }
 
     fn focus_window(&self, window_id: WindowId) {

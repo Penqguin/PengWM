@@ -66,6 +66,12 @@ impl StateManager {
                                 if let Some(wid) = dec.focus {
                                     self.os.focus_window(wid);
                                 }
+                                // Popups of the shown workspace come back on
+                                // top after the reveal writes — macOS stacking
+                                // after un-hide is otherwise unspecified (Q9).
+                                for wid in self.workspaces[dec.show].popup_ids() {
+                                    self.os.raise_window(wid);
+                                }
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
                             }

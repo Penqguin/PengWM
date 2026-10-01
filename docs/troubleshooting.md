@@ -28,14 +28,16 @@ grant above.
 
 ## An app's windows never tile
 
-**Cause:** the app is in `restricted_apps`, or its windows are transient
-(not yet manageable/resizable at creation — common with dialogs and some
-Chromium popups).
+**Cause:** the app is in `restricted_apps` — those apps are overlay apps:
+every window pops out as a centered overlay instead of tiling. If that's
+not what you want, remove the bundle id and reload.
 
-**Fix:** remove the bundle id from `restricted_apps` and reload. Transient
-windows are picked up by the background sweep within seconds; if one never
-tiles, check `RUST_LOG=debug` for whether a `WindowCreated` notification
-arrived at all.
+**Fix:** remove the bundle id from `restricted_apps` and reload. True
+dialog/panel windows (dialogs, PiP, `AXFloatingWindow` panels) intentionally
+never tile either — they render as centered popups; see
+[Popups](configuration.md#popups). Sheets and unknown-subrole windows stay
+unmanaged. If a window is never seen at all, check `RUST_LOG=debug` for
+whether a `WindowCreated` notification arrived.
 
 ## Firefox (or another busy app) stops responding to layout
 
