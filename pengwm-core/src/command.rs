@@ -27,10 +27,11 @@ pub enum Command {
         direction: Direction,
     },
     Close,
-    ToggleLayout,
-    SetLayout {
-        mode: LayoutMode,
-    },
+    /// Advance the active workspace to the next preset in
+    /// `LayoutPreset::all()` order (wrapping, per-workspace).
+    CycleLayout,
+    /// Toggle tmux-popup style magnify on the focused window.
+    ToggleMagnify,
     /// Rearrange the active workspace into a named tmux-style preset.
     SelectLayout {
         preset: LayoutPreset,
@@ -61,7 +62,7 @@ impl Command {
     /// Parse one action string from the shared command vocabulary (the
     /// keybind-config surface). Every string is the kebab-case of a [`Command`]
     /// variant plus its arguments, so the keybind surface can never drift from
-    /// the wire type it feeds: `move-window-left`, `set-layout-tile`,
+    /// the wire type it feeds: `move-window-left`, `cycle-layout`,
     /// `workspace-3`, …
     pub fn parse_action(s: &str) -> Option<Command> {
         for (name, action) in ACTION_TABLE {
@@ -135,6 +136,7 @@ impl Command {
                 | Command::Split { .. }
                 | Command::ResizePane { .. }
                 | Command::SelectLayout { .. }
+                | Command::CycleLayout
                 | Command::FocusDisplay { .. }
                 | Command::MoveWindowToDisplay { .. }
         )
@@ -209,19 +211,8 @@ const ACTION_TABLE: &[(&str, Command)] = &[
         },
     ),
     ("close", Command::Close),
-    ("toggle-layout", Command::ToggleLayout),
-    (
-        "set-layout-tile",
-        Command::SetLayout {
-            mode: LayoutMode::Tile,
-        },
-    ),
-    (
-        "set-layout-accordion",
-        Command::SetLayout {
-            mode: LayoutMode::Accordion,
-        },
-    ),
+    ("cycle-layout", Command::CycleLayout),
+    ("toggle-magnify", Command::ToggleMagnify),
     (
         "select-layout-even-horizontal",
         Command::SelectLayout {
@@ -331,12 +322,6 @@ const ACTION_TABLE: &[(&str, Command)] = &[
     ),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum LayoutMode {
-    Tile,
-    Accordion,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub enum DaemonResponse {
     Ack,
@@ -422,20 +407,12 @@ mod tests {
         );
         assert_eq!(Command::parse_action("close"), Some(Command::Close));
         assert_eq!(
-            Command::parse_action("toggle-layout"),
-            Some(Command::ToggleLayout)
+            Command::parse_action("cycle-layout"),
+            Some(Command::CycleLayout)
         );
         assert_eq!(
-            Command::parse_action("set-layout-tile"),
-            Some(Command::SetLayout {
-                mode: LayoutMode::Tile
-            })
-        );
-        assert_eq!(
-            Command::parse_action("set-layout-accordion"),
-            Some(Command::SetLayout {
-                mode: LayoutMode::Accordion
-            })
+            Command::parse_action("toggle-magnify"),
+            Some(Command::ToggleMagnify)
         );
         for preset in LayoutPreset::all() {
             let name = format!("select-layout-{}", preset.name());

@@ -53,16 +53,21 @@ fn right_bar_reserves_right_strip() {
 }
 
 #[test]
-fn monocle_respects_reservation() {
+fn magnify_is_centered_popup_respecting_reservation() {
     let mut ws = make_workspace();
     ws.add_window(100, None);
     ws.add_window(200, None);
-    ws.monocle = true;
+    ws.focus_window(100);
+    ws.toggle_magnify();
     ws.set_reserved_rect(Some(Rect::new(0.0, 0.0, 1920.0, 30.0)));
     let rects = ws.layout(5.0, 10.0);
-    let focused = ws.focused_window_id().unwrap();
-    let r = &rects[&focused];
-    assert_eq!(r.y, 30.0 + 10.0, "monocle window also avoids the bar");
+    let r = &rects[&100];
+    // Usable 1920x1050 inset by 10 → 1900x1030; popup 75% centered.
+    assert_eq!(r.width, 1900.0 * 0.75);
+    assert_eq!(r.height, 1030.0 * 0.75);
+    assert_eq!(r.y, 30.0 + 10.0 + (1030.0 - 1030.0 * 0.75) / 2.0);
+    // Sibling still tiled underneath (not offscreen).
+    assert!(rects.contains_key(&200));
 }
 
 #[test]

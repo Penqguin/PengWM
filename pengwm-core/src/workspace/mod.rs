@@ -11,7 +11,7 @@ pub use preset::{
 };
 
 use crate::layout::Rect;
-use crate::tree::{Arena, NodeId, SplitDirection};
+use crate::tree::{Arena, NodeId, SplitDirection, WindowId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +19,15 @@ pub struct Workspace {
     pub name: String,
     pub monitor_id: u32,
     pub focused_node: Option<NodeId>,
-    pub monocle: bool,
+    /// tmux-popup style magnified window: drawn as a centered 75% overlay
+    /// while the tiling underneath stays computed but obscured. Pinned
+    /// across focus changes; cleared on close/switch.
+    #[serde(default)]
+    pub magnified: Option<WindowId>,
+    /// Per-workspace position in `LayoutPreset::all()` for `opt+t` cycling.
+    /// Defaults to Tiled (last). Updated by `apply_preset` / `cycle_preset`.
+    #[serde(default = "default_preset_index")]
+    pub preset_index: usize,
     pending_split: Option<SplitDirection>,
     root: Option<NodeId>,
     arena: Arena,
@@ -36,7 +44,8 @@ impl Workspace {
             name,
             monitor_id,
             focused_node: None,
-            monocle: false,
+            magnified: None,
+            preset_index: default_preset_index(),
             pending_split: None,
             root: None,
             arena: Arena::new(),
@@ -45,6 +54,14 @@ impl Workspace {
             reserved: None,
         }
     }
+}
+
+fn default_preset_index() -> usize {
+    // `LayoutPreset::all()` order ends with Tiled — the default arrangement.
+    LayoutPreset::all()
+        .iter()
+        .position(|p| *p == LayoutPreset::Tiled)
+        .unwrap_or(0)
 }
 
 /// Equal shares for `n` children. Callers guarantee `n >= 1`.

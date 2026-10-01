@@ -79,7 +79,7 @@ pub fn session_file_path() -> PathBuf {
         .join("state.toml")
 }
 
-/// Sanitize a workspace for persistence: keep name/monitor/geometry/monocle
+/// Sanitize a workspace for persistence: keep name/monitor/geometry/preset
 /// and split topology, but strip all window leaves so stale WindowIds don't
 /// survive a reboot. We keep Split nodes with their ratios so the layout
 /// skeleton survives; window children are pruned.
@@ -95,8 +95,8 @@ pub fn sanitize_workspace(ws: &Workspace) -> Workspace {
         ws.monitor_origin(),
         ws.monitor_size(),
     );
-    // Preserve monocle flag; focus and tree are reset.
-    sanitized.monocle = ws.monocle;
+    // Preserve preset position; magnify never persists. Focus/tree reset.
+    sanitized.preset_index = ws.preset_index;
     sanitized
 }
 
@@ -200,7 +200,7 @@ mod tests {
         let mut ws = Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080));
         ws.add_window(100, None);
         ws.add_window(200, None);
-        ws.monocle = true;
+        ws.toggle_magnify();
         assert_eq!(ws.window_count(), 2);
 
         let sess = snapshot_from(
@@ -217,7 +217,7 @@ mod tests {
         );
         assert_eq!(sess.workspaces.len(), 1);
         assert_eq!(sess.workspaces[0].window_count(), 0, "windows stripped");
-        assert!(sess.workspaces[0].monocle, "monocle preserved");
+        assert!(sess.workspaces[0].magnified.is_none(), "magnify never persists");
         assert_eq!(sess.workspaces[0].name, "Dev");
 
         let path = tmp_path("roundtrip.toml");

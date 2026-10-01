@@ -1,6 +1,6 @@
 use super::common::*;
 use crate::bar_server::BarSender;
-use pengwm_core::command::{BarMessage, Command, DaemonResponse, LayoutMode};
+use pengwm_core::command::{BarMessage, Command, DaemonResponse};
 use pengwm_core::tree::{Direction, SplitDirection};
 use pengwm_core::workspace::LayoutPreset;
 use tokio::sync::mpsc;
@@ -51,13 +51,28 @@ fn close_command_invokes_adapter() {
 }
 
 #[test]
-fn toggle_layout_switches_monocle() {
+fn cycle_layout_advances_preset() {
     let mut sm = setup(1);
-    assert!(!sm.workspaces[0].monocle);
-    let cmd = Command::ToggleLayout;
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    let before = sm.workspaces[0].preset_index;
     let (rtx, _) = mpsc::channel(1);
-    sm.on_command(cmd, Some(rtx));
-    assert!(sm.workspaces[0].monocle);
+    sm.on_command(Command::CycleLayout, Some(rtx));
+    assert_eq!(
+        sm.workspaces[0].preset_index,
+        (before + 1) % pengwm_core::workspace::LayoutPreset::all().len()
+    );
+}
+
+#[test]
+fn toggle_magnify_pins_focused() {
+    let mut sm = setup(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    let focused = sm.workspaces[0].focused_window_id().unwrap();
+    let (rtx, _) = mpsc::channel(1);
+    sm.on_command(Command::ToggleMagnify, Some(rtx));
+    assert_eq!(sm.workspaces[0].magnified, Some(focused));
 }
 
 #[test]
@@ -120,10 +135,8 @@ fn on_command_handles_every_variant_without_reply() {
             direction: Direction::Right,
         },
         Command::Close,
-        Command::ToggleLayout,
-        Command::SetLayout {
-            mode: LayoutMode::Accordion,
-        },
+        Command::CycleLayout,
+        Command::ToggleMagnify,
         Command::SetGapOuter { pixels: 4 },
         Command::SetGapInner { pixels: 2 },
         Command::SelectLayout {
@@ -147,7 +160,7 @@ fn on_command_handles_every_variant_without_reply() {
 fn on_command_sends_ack_only_when_reply_slot_is_present() {
     let mut sm = setup(1);
     let (rtx, mut rx) = mpsc::channel(1);
-    sm.on_command(Command::ToggleLayout, Some(rtx));
+    sm.on_command(Command::CycleLayout, Some(rtx));
     assert!(matches!(rx.blocking_recv(), Some(DaemonResponse::Ack)));
 
     let mut sm = setup(1);
@@ -296,4 +309,54 @@ fn workspace_switch_to_hidden_pulls_and_hides_previous() {
         .expect("pulled-away window parks offscreen");
     let expected = pengwm_core::layout::hidden_rect((0, 0), (1920, 1080));
     assert_eq!((rect.x, rect.y), (expected.x, expected.y));
+}
+
+#[test]
+fn workspace_switch_focuses_destination_mru_by_default() {
+    let mut sm = setup_with_handle(1).0;
+    sm.on_window_created(100, 42);
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    sm.on_window_created(200, 42);
+    // Empty switch focuses nothing new; destination MRU is 200.
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    assert_eq!(
+        sm.os.focused_window_for_pid(42),
+        Some(100),
+        "switching back must re-assert ws-1's MRU window via the OsAdapter seam"
+    );
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert_eq!(
+        sm.os.focused_window_for_pid(42),
+        Some(200),
+        "switching forward must re-assert ws-2's MRU window"
+    );
+}
+
+#[test]
+fn workspace_switch_focus_first_overrides_mru_when_enabled() {
+    let mut sm = setup_with_handle(1).0;
+    sm.set_focus_first_for_test(true);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(101, 42);
+    // MRU is 101; spatial-first is 100.
+    sm.workspaces[0].focus_window(101);
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    assert_eq!(
+        sm.os.focused_window_for_pid(42),
+        Some(100),
+        "focus_first_on_switch must land on the leftmost leaf, not MRU"
+    );
+}
+
+#[test]
+fn workspace_switch_to_empty_focuses_nothing() {
+    let mut sm = setup_with_handle(1).0;
+    sm.on_window_created(100, 42);
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert_eq!(
+        sm.os.focused_window_for_pid(42),
+        None,
+        "empty destination must not issue a focus call"
+    );
 }

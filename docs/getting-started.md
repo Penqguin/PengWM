@@ -52,8 +52,9 @@ or pass a subcommand to control a running daemon (see below).
 # Close focused window
 ./target/release/pengwm close
 
-# Toggle monocle mode
-./target/release/pengwm toggle-layout
+# Cycle layouts / magnify
+./target/release/pengwm cycle-layout
+./target/release/pengwm toggle-magnify
 
 # View daemon state
 ./target/release/pengwm state

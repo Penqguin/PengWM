@@ -163,6 +163,7 @@ impl Workspace {
             None => return,
         };
 
+        self.clear_magnify_if(window_id);
         let was_focused = self.focused_node == Some(node_id);
 
         if self.arena.len() == 1 {

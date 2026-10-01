@@ -1,4 +1,4 @@
-use pengwm_core::command::{Command, LayoutMode};
+use pengwm_core::command::Command;
 use pengwm_core::tree::Direction;
 use pengwm_core::workspace::LayoutPreset;
 
@@ -190,32 +190,16 @@ impl Default for KeybindConfig {
                 modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 9 },
             },
-            // Layout: alt-/ tile, alt-, accordion (monocle), alt-. tile (alt-,/alt-. pair), alt-t toggle
-            Keybind {
-                keycode: 0x2C,
-                modifiers: MODIFIER_ALT,
-                action: Command::SetLayout {
-                    mode: LayoutMode::Tile,
-                },
-            },
-            Keybind {
-                keycode: 0x2F,
-                modifiers: MODIFIER_ALT,
-                action: Command::SetLayout {
-                    mode: LayoutMode::Tile,
-                },
-            },
-            Keybind {
-                keycode: 0x2B,
-                modifiers: MODIFIER_ALT,
-                action: Command::SetLayout {
-                    mode: LayoutMode::Accordion,
-                },
-            },
+            // Layout: alt-t cycles presets, alt-m toggles magnify popup
             Keybind {
                 keycode: 0x11,
                 modifiers: MODIFIER_ALT,
-                action: Command::ToggleLayout,
+                action: Command::CycleLayout,
+            },
+            Keybind {
+                keycode: 0x2E,
+                modifiers: MODIFIER_ALT,
+                action: Command::ToggleMagnify,
             },
             // Reload config: cmd-shift-r
             Keybind {

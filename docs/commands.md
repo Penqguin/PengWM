@@ -75,12 +75,24 @@ Throw the focused window onto the monitor in the given direction (default
 binds: `alt-ctrl-shift-arrows`). Always lands on that monitor's visible
 workspace, bypassing `max_tiles`; focus stays on the source monitor.
 
-## Set Layout
+## Cycle Layout
 
-Keybind-only actions (`set-layout-tile`, `set-layout-accordion`) that force
-the focused workspace into tiling or accordion (monocle) mode directly,
-instead of toggling. There is no CLI subcommand — use `toggle-layout` from
-the CLI or bind the actions in config.toml.
+```bash
+pengwm cycle-layout
+```
+
+Advance the focused workspace to the next preset in
+`even-horizontal → even-vertical → main-horizontal → main-vertical → tiled`
+order (wrapping, per-workspace). Default bind: `alt-t`.
+
+## Toggle Magnify
+
+```bash
+pengwm toggle-magnify
+```
+
+Toggle a tmux-popup style magnify overlay (centered 75%x75%) on the focused
+window. Pinned across focus changes; cleared on close. Default bind: `alt-m`.
 
 ## Toggle Bar
 
@@ -99,15 +111,6 @@ pengwm close
 Close the focused window by sending an `AXCancel` action via the
 Accessibility API.
 
-## Toggle Layout
-
-```bash
-pengwm toggle-layout
-```
-
-Toggle the focused workspace between tiling mode and monocle (fullscreen)
-mode.
-
 ## Select Layout
 
 ```bash
@@ -116,7 +119,7 @@ pengwm select-layout <even-horizontal|even-vertical|main-horizontal|main-vertica
 
 Rearrange the focused workspace into a tmux-style preset. The `main-*`
 presets give the first window the `main-ratio` share (default `0.6`, settable
-in the config). A preset clears monocle and re-equalizes shares.
+in the config). A preset clears magnify and re-equalizes shares.
 
 ## Resize Pane
 

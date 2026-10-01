@@ -67,7 +67,7 @@ impl LayoutPreset {
 impl Workspace {
     /// Rewrite the tree into the canonical shape for `preset`, keeping window
     /// order (first window becomes main for the `main-*` presets) and focus.
-    /// A preset is an explicit arrangement: it clears monocle and is the only
+    /// A preset is an explicit arrangement: it clears magnify and is the only
     /// operation that re-equalizes shares.
     pub fn apply_preset(&mut self, preset: LayoutPreset, main_ratio: f64) {
         let mut order = Vec::new();
@@ -83,7 +83,8 @@ impl Workspace {
         self.arena = Arena::new();
         self.root = None;
         self.focused_node = None;
-        self.monocle = false;
+        self.magnified = None;
+        self.preset_index = Self::preset_position(preset);
 
         let nodes: Vec<NodeId> = order.iter().map(|&wid| self.alloc_window(wid)).collect();
         let first = nodes[0];
@@ -113,6 +114,23 @@ impl Workspace {
             Some(wid) => self.focus_window(wid),
             None => self.set_focused_node(first),
         }
+    }
+
+    fn preset_position(preset: LayoutPreset) -> usize {
+        LayoutPreset::all()
+            .iter()
+            .position(|p| *p == preset)
+            .unwrap_or(0)
+    }
+
+    /// Advance to the next preset in `LayoutPreset::all()` order (wrapping)
+    /// and apply it. Per-workspace via `preset_index`.
+    pub fn cycle_preset(&mut self, main_ratio: f64) -> LayoutPreset {
+        let all = LayoutPreset::all();
+        let next = (self.preset_index + 1) % all.len();
+        let preset = all[next];
+        self.apply_preset(preset, main_ratio);
+        preset
     }
 
     /// Push the divider in `direction` one step (5%): the arrow-side edge of

@@ -51,19 +51,17 @@ fn hide_workspace_per_monitor_second_display() {
 }
 
 #[test]
-fn monocle_sibling_stays_far_offscreen() {
+fn magnified_window_is_centered_overlay() {
     let mut ws = Workspace::new("test".into(), 1, (0, 0), (1920, 1080));
     ws.add_window(100, None);
     ws.add_window(200, None);
-    ws.monocle = true;
     ws.focus_window(100);
+    ws.toggle_magnify();
     let rects = ws.layout(5.0, 10.0);
-    let off = pengwm_core::layout::far_offscreen_rect();
-    assert_eq!(
-        rects[&200], off,
-        "monocle sibling must remain far offscreen, not bottom-edge"
-    );
-    assert_ne!(rects[&100], off);
+    let mag = &rects[&100];
+    assert!(mag.width < 1920.0 && mag.height < 1080.0);
+    assert!(mag.x > 0.0 && mag.y > 0.0, "magnify centers, not fullscreen");
+    assert!(rects.contains_key(&200), "sibling stays tiled underneath");
 }
 
 #[test]

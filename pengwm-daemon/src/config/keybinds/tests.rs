@@ -1,5 +1,5 @@
 use super::*;
-use pengwm_core::command::{Command, LayoutMode};
+use pengwm_core::command::Command;
 use pengwm_core::tree::Direction;
 use pengwm_core::workspace::LayoutPreset;
 
@@ -60,41 +60,34 @@ fn default_has_move_to_workspace() {
 }
 
 #[test]
-fn default_has_layout_switching() {
+fn default_has_layout_cycling_and_magnify() {
     let config = KeybindConfig::default();
-    assert!(config.bindings.iter().any(|b| matches!(
-        &b.action,
-        Command::SetLayout {
-            mode: LayoutMode::Tile
-        }
-    )));
-    assert!(config.bindings.iter().any(|b| matches!(
-        &b.action,
-        Command::SetLayout {
-            mode: LayoutMode::Accordion
-        }
-    )));
+    assert!(config
+        .bindings
+        .iter()
+        .any(|b| b.keycode == 0x11
+            && b.modifiers == MODIFIER_ALT
+            && matches!(&b.action, Command::CycleLayout)));
+    assert!(config
+        .bindings
+        .iter()
+        .any(|b| b.keycode == 0x2E
+            && b.modifiers == MODIFIER_ALT
+            && matches!(&b.action, Command::ToggleMagnify)));
 }
 
 #[test]
-fn default_layout_bindings_on_slash_and_comma() {
+fn default_has_no_comma_dot_slash_layout_bindings() {
     let config = KeybindConfig::default();
-    assert!(config.bindings.iter().any(|b| b.keycode == 0x2C
-        && b.modifiers == MODIFIER_ALT
-        && matches!(
-            &b.action,
-            Command::SetLayout {
-                mode: LayoutMode::Tile
-            }
-        )));
-    assert!(config.bindings.iter().any(|b| b.keycode == 0x2B
-        && b.modifiers == MODIFIER_ALT
-        && matches!(
-            &b.action,
-            Command::SetLayout {
-                mode: LayoutMode::Accordion
-            }
-        )));
+    for keycode in [0x2Bu16, 0x2Fu16, 0x2Cu16] {
+        assert!(
+            !config
+                .bindings
+                .iter()
+                .any(|b| b.keycode == keycode && b.modifiers == MODIFIER_ALT),
+            "keycode {keycode:#X} should be unbound"
+        );
+    }
 }
 
 #[test]
@@ -124,22 +117,14 @@ fn find_keybind_wrong_modifiers() {
 }
 
 #[test]
-fn find_keybind_layout_switch() {
+fn find_keybind_layout_cycle_and_magnify() {
     let config = KeybindConfig::default();
-    let tile = find_keybind(0x2C, MODIFIER_ALT, &config);
-    assert!(matches!(
-        tile,
-        Some(Command::SetLayout {
-            mode: LayoutMode::Tile
-        })
-    ));
-    let accordion = find_keybind(0x2B, MODIFIER_ALT, &config);
-    assert!(matches!(
-        accordion,
-        Some(Command::SetLayout {
-            mode: LayoutMode::Accordion
-        })
-    ));
+    let cycle = find_keybind(0x11, MODIFIER_ALT, &config);
+    assert!(matches!(cycle, Some(Command::CycleLayout)));
+    let mag = find_keybind(0x2E, MODIFIER_ALT, &config);
+    assert!(matches!(mag, Some(Command::ToggleMagnify)));
+    assert!(find_keybind(0x2C, MODIFIER_ALT, &config).is_none());
+    assert!(find_keybind(0x2B, MODIFIER_ALT, &config).is_none());
 }
 
 #[test]

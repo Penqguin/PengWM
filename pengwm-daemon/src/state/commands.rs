@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use pengwm_core::command::{BarMessage, Command, DaemonResponse, LayoutMode};
+use pengwm_core::command::{BarMessage, Command, DaemonResponse};
 use pengwm_core::tree::{Direction, WindowId};
 use tokio::sync::mpsc;
 
@@ -44,24 +44,26 @@ impl StateManager {
                             self.displays.set_focused_output(mon);
                         }
                         if let Some(target) = self.displays.resolve_workspace(n, &self.workspaces) {
-                            if let Some(dec) =
-                                self.displays
-                                    .plan_switch(target, &mut self.workspaces, &*self.os)
-                            {
+                            let focus_first = self.focus_first_on_switch;
+                            if let Some(dec) = self.displays.plan_switch(
+                                target,
+                                &mut self.workspaces,
+                                &*self.os,
+                                focus_first,
+                            ) {
                                 for &idx in &dec.hide {
                                     self.hide_workspace(idx);
                                 }
-                                let maybe_focus = if self.focus_first_on_switch
-                                    && self.workspaces[dec.show].window_count() > 0
-                                {
-                                    self.workspaces[dec.show].focus_first()
-                                } else {
-                                    None
-                                };
+                                // Record the answered focus in the tree, then
+                                // re-layout, then raise — DisplaySet answers,
+                                // commands execute.
+                                if let Some(wid) = dec.focus {
+                                    self.workspaces[dec.show].focus_window(wid);
+                                }
                                 for idx in dec.relayout {
                                     self.apply_layout(idx);
                                 }
-                                if let Some(wid) = maybe_focus {
+                                if let Some(wid) = dec.focus {
                                     self.os.focus_window(wid);
                                 }
                                 self.switch_debounce_until =
@@ -97,16 +99,16 @@ impl StateManager {
                     self.os.close_window(wid);
                 }
             }
-            Command::ToggleLayout => {
+            Command::CycleLayout => {
                 let idx = self.active_workspace_idx();
-                let ws = &mut self.workspaces[idx];
-                ws.toggle_monocle();
+                let ratio = self.main_ratio;
+                self.workspaces[idx].cycle_preset(ratio);
                 self.apply_layout(idx);
             }
-            Command::SetLayout { mode } => {
+            Command::ToggleMagnify => {
                 let idx = self.active_workspace_idx();
                 let ws = &mut self.workspaces[idx];
-                ws.monocle = mode == LayoutMode::Accordion;
+                ws.toggle_magnify();
                 self.apply_layout(idx);
             }
             Command::SelectLayout { preset } => {

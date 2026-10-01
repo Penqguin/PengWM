@@ -12,25 +12,6 @@ impl Workspace {
     }
 
     pub fn focus_neighbor(&mut self, direction: Direction) {
-        if self.monocle {
-            let leaves = self.cycle_leaves();
-            if leaves.is_empty() {
-                return;
-            }
-            let pos = leaves
-                .iter()
-                .position(|&id| Some(id) == self.focused_node)
-                .unwrap_or(0);
-            let target_pos = if direction.is_forward() {
-                (pos + 1) % leaves.len()
-            } else if pos == 0 {
-                leaves.len() - 1
-            } else {
-                pos - 1
-            };
-            self.set_focused_node(leaves[target_pos]);
-            return;
-        }
         let from = match self.focused_node {
             Some(id) => id,
             None => return,
@@ -63,50 +44,6 @@ impl Workspace {
     }
 
     pub fn swap_window(&mut self, direction: Direction) {
-        if self.monocle {
-            let leaves = self.cycle_leaves();
-            if leaves.len() < 2 {
-                return;
-            }
-            let pos = match leaves.iter().position(|&id| Some(id) == self.focused_node) {
-                Some(p) => p,
-                None => return,
-            };
-            let target_pos = if direction.is_forward() {
-                (pos + 1) % leaves.len()
-            } else if pos == 0 {
-                leaves.len() - 1
-            } else {
-                pos - 1
-            };
-            let focused = leaves[pos];
-            let target = leaves[target_pos];
-            // In monocle all windows are stacked — swapping tree positions
-            // is invisible if we keep the original WindowId visible. Swap
-            // only the WindowId so the *neighbor* becomes the visible
-            // fullscreen window, and keep is_focused at the original position.
-            let focused_wid = match &self.arena.get(focused).unwrap().data {
-                NodeData::Window { window_id, .. } => *window_id,
-                _ => return,
-            };
-            let target_wid = match &self.arena.get(target).unwrap().data {
-                NodeData::Window { window_id, .. } => *window_id,
-                _ => return,
-            };
-            if let NodeData::Window { window_id, .. } =
-                &mut self.arena.get_mut(focused).unwrap().data
-            {
-                *window_id = target_wid;
-            }
-            if let NodeData::Window { window_id, .. } =
-                &mut self.arena.get_mut(target).unwrap().data
-            {
-                *window_id = focused_wid;
-            }
-            // Flags already correct — focused stays focused but now shows the
-            // swapped-in window, so the swap is visible in monocle.
-            return;
-        }
         let focused = match self.focused_node {
             Some(id) => id,
             None => return,
@@ -151,6 +88,19 @@ impl Workspace {
         self.focused_window_id()
     }
 
+    /// Spatial-first window id without mutating focus. Lets `DisplaySet`
+    /// answer a switch's focus target while tree mutation stays with the
+    /// caller (answers vs executes seam).
+    pub fn first_window_id(&self) -> Option<WindowId> {
+        let root = self.root?;
+        let leaf = self.leftmost_leaf(root);
+        if let NodeData::Window { window_id, .. } = &self.arena.get(leaf)?.data {
+            Some(*window_id)
+        } else {
+            None
+        }
+    }
+
     pub(super) fn set_focused_node(&mut self, node_id: NodeId) {
         if let Some(old_id) = self.focused_node {
             if let Some(old) = self.arena.get_mut(old_id) {
@@ -181,29 +131,6 @@ impl Workspace {
             }
             None => {
                 self.focused_node = None;
-            }
-        }
-    }
-
-    fn cycle_leaves(&self) -> Vec<NodeId> {
-        let Some(root) = self.root else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        self.collect_leaves(root, &mut out);
-        out
-    }
-
-    fn collect_leaves(&self, node_id: NodeId, out: &mut Vec<NodeId>) {
-        let Some(node) = self.arena.get(node_id) else {
-            return;
-        };
-        match &node.data {
-            NodeData::Window { .. } => out.push(node_id),
-            NodeData::Split { .. } => {
-                for &child in &node.children.clone() {
-                    self.collect_leaves(child, out);
-                }
             }
         }
     }

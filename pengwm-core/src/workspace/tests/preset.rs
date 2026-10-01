@@ -105,11 +105,12 @@ fn preset_tiled_is_grid() {
 }
 
 #[test]
-fn preset_clears_monocle_and_clamps_ratio() {
+fn preset_clears_magnify_and_clamps_ratio() {
     let mut ws = preset_workspace(2);
-    ws.toggle_monocle();
+    ws.toggle_magnify();
+    assert!(ws.magnified.is_some());
     ws.apply_preset(LayoutPreset::MainVertical, 99.0);
-    assert!(!ws.monocle);
+    assert!(ws.magnified.is_none());
     let (_, ratios, _) = root_split(&ws);
     assert!(
         (ratios[0] - 0.8).abs() < 1e-9,
@@ -123,6 +124,37 @@ fn preset_empty_workspace_is_noop() {
     let mut ws = make_workspace();
     ws.apply_preset(LayoutPreset::Tiled, 0.6);
     assert!(ws.root.is_none());
+}
+
+#[test]
+fn cycle_preset_wraps_in_all_order() {
+    let mut ws = preset_workspace(2);
+    ws.apply_preset(LayoutPreset::Tiled, 0.6);
+    let next = ws.cycle_preset(0.6);
+    assert_eq!(next, LayoutPreset::EvenHorizontal);
+    // Walk through the rest and wrap back to Tiled.
+    for expected in [
+        LayoutPreset::EvenVertical,
+        LayoutPreset::MainHorizontal,
+        LayoutPreset::MainVertical,
+        LayoutPreset::Tiled,
+    ] {
+        assert_eq!(ws.cycle_preset(0.6), expected);
+    }
+}
+
+#[test]
+fn magnify_pins_and_clears_on_remove() {
+    let mut ws = preset_workspace(2);
+    ws.focus_window(100);
+    ws.toggle_magnify();
+    assert_eq!(ws.magnified, Some(100));
+    ws.focus_window(101);
+    assert_eq!(ws.magnified, Some(100), "pinned across focus change");
+    ws.toggle_magnify();
+    assert_eq!(ws.magnified, Some(101), "toggle pins newly focused");
+    ws.remove_window(101);
+    assert!(ws.magnified.is_none(), "close clears the pin");
 }
 
 #[test]

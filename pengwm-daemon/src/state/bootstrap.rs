@@ -201,9 +201,13 @@ mod tests {
     fn assemble_with_session_restores() {
         let displays = vec![disp(1, (0, 0))];
         let mut ws = pengwm_core::workspace::Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080));
-        ws.monocle = true;
+        ws.add_window(100, None);
+        ws.toggle_magnify();
+        let mut sess_ws = crate::state::session::sanitize_workspace(&ws);
+        // sanitize strips windows + magnify; emulate a session carrying a preset
+        sess_ws.preset_index = 0;
         let sess = Session::new(
-            vec![ws],
+            vec![sess_ws],
             std::collections::BTreeMap::from([(1, 0)]),
             crate::config::default_workspaces(),
             15.0,
@@ -213,7 +217,8 @@ mod tests {
         let a = assemble(&displays, 1, &settings, Some(&sess));
         assert!(a.use_session);
         assert_eq!(a.gap_outer, 15.0);
-        assert!(a.workspaces[0].monocle);
+        assert_eq!(a.workspaces[0].preset_index, 0);
+        assert!(a.workspaces[0].magnified.is_none());
     }
 
     #[test]

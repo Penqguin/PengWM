@@ -173,12 +173,15 @@ impl DisplaySet {
     /// on another output (the other output falls back to the workspace just
     /// left); plain pull when hidden. Mutates `active` + `monitor_id` /
     /// geometry (via `os` display infos) and answers what the caller must
-    /// hide and re-layout — DisplaySet answers, commands execute.
+    /// hide, re-layout and focus — DisplaySet answers, commands execute.
+    /// `focus_first` selects spatial-first over MRU; empty destinations
+    /// answer `focus: None`. The answer never mutates `focused_node`.
     pub fn plan_switch(
         &mut self,
         target: usize,
         workspaces: &mut [Workspace],
         os: &dyn OsAdapter,
+        focus_first: bool,
     ) -> Option<SwitchDecision> {
         if target >= workspaces.len() {
             return None;
@@ -207,10 +210,12 @@ impl DisplaySet {
                 }
                 self.active.insert(here, target);
                 self.active.insert(other, current);
+                let focus = Self::switch_focus(&workspaces[target], focus_first);
                 Some(SwitchDecision {
                     show: target,
                     hide: vec![],
                     relayout: vec![target, current],
+                    focus,
                 })
             }
             _ => {
@@ -221,12 +226,29 @@ impl DisplaySet {
                     workspaces[target].update_monitor_geometry(info.origin, info.size);
                 }
                 self.active.insert(here, target);
+                let focus = Self::switch_focus(&workspaces[target], focus_first);
                 Some(SwitchDecision {
                     show: target,
                     hide: vec![current],
                     relayout: vec![target],
+                    focus,
                 })
             }
+        }
+    }
+
+    /// Answer a switch's focus target without mutating `focused_node`:
+    /// spatial-first when `focus_first` is set, else the workspace's MRU
+    /// with a spatial-first fallback for a stale focused node. `None` when
+    /// the destination holds no windows, so the caller issues no AX call.
+    fn switch_focus(ws: &Workspace, focus_first: bool) -> Option<WindowId> {
+        if ws.window_count() == 0 {
+            return None;
+        }
+        if focus_first {
+            ws.first_window_id()
+        } else {
+            ws.focused_window_id().or_else(|| ws.first_window_id())
         }
     }
 
@@ -557,13 +579,15 @@ pub struct MoveDecision {
 
 /// A decided workspace switch: `show` becomes visible on the focused output,
 /// `hide` are the now-hidden siblings to park offscreen, `relayout` the
-/// workspaces needing `apply_layout`. Answered (plus assignment mutation)
-/// by `DisplaySet`, executed by the caller.
+/// workspaces needing `apply_layout`, `focus` the window the caller must
+/// raise via the `OsAdapter` seam (`None` when the destination is empty).
+/// Answered (plus assignment mutation) by `DisplaySet`, executed by the caller.
 #[derive(Debug)]
 pub struct SwitchDecision {
     pub show: usize,
     pub hide: Vec<usize>,
     pub relayout: Vec<usize>,
+    pub focus: Option<WindowId>,
 }
 
 /// A decided monitor-topology sync: `shown` workspaces need layout on their
@@ -859,11 +883,36 @@ mod tests {
         // One output shows 0; 1 is hidden → pull hides 0, shows 1.
         let mut adapter = TestAdapter::new();
         adapter.displays = test_displays_one();
-        let dec = ds.plan_switch(1, &mut wss, &adapter).unwrap();
+        let dec = ds.plan_switch(1, &mut wss, &adapter, false).unwrap();
         assert_eq!(dec.show, 1);
         assert_eq!(dec.hide, vec![0]);
         assert_eq!(dec.relayout, vec![1]);
+        assert_eq!(dec.focus, None, "empty destination answers no focus");
         assert_eq!(ds.active.get(&1), Some(&1));
+    }
+
+    #[test]
+    fn plan_switch_answers_mru_vs_first() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_one(), 1);
+        wss[1].add_window(100, None);
+        wss[1].add_window(101, None);
+        wss[1].focus_window(101);
+        let mut adapter = TestAdapter::new();
+        adapter.displays = test_displays_one();
+        let dec = ds.plan_switch(1, &mut wss, &adapter, false).unwrap();
+        assert_eq!(dec.focus, Some(101), "default answers MRU");
+        // Answer leaves the tree untouched; the caller records it.
+        assert_eq!(wss[1].focused_window_id(), Some(101));
+        let mut ds2 = DisplaySet::new(entries_two());
+        let mut wss2 = Vec::new();
+        ds2.init_workspaces(&mut wss2, &test_displays_one(), 1);
+        wss2[1].add_window(100, None);
+        wss2[1].add_window(101, None);
+        wss2[1].focus_window(101);
+        let dec = ds2.plan_switch(1, &mut wss2, &adapter, true).unwrap();
+        assert_eq!(dec.focus, Some(100), "flag answers spatial-first");
     }
 
     #[test]
@@ -874,7 +923,7 @@ mod tests {
         // Output 1 shows 0, output 2 shows 1. Focused = 1, switch to 1 → swap.
         let mut adapter = TestAdapter::new();
         adapter.displays = test_displays_two();
-        let dec = ds.plan_switch(1, &mut wss, &adapter).unwrap();
+        let dec = ds.plan_switch(1, &mut wss, &adapter, false).unwrap();
         assert_eq!(dec.show, 1);
         assert!(dec.hide.is_empty());
         assert_eq!(ds.active.get(&1), Some(&1));
@@ -889,8 +938,8 @@ mod tests {
         let mut wss = Vec::new();
         ds.init_workspaces(&mut wss, &test_displays_one(), 1);
         let adapter = TestAdapter::new();
-        assert!(ds.plan_switch(0, &mut wss, &adapter).is_none());
-        assert!(ds.plan_switch(9, &mut wss, &adapter).is_none());
+        assert!(ds.plan_switch(0, &mut wss, &adapter, false).is_none());
+        assert!(ds.plan_switch(9, &mut wss, &adapter, false).is_none());
     }
 
     #[test]

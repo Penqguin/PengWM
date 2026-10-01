@@ -1,21 +1,15 @@
 use std::collections::HashMap;
 
 use crate::layout::Rect;
-use crate::tree::{NodeData, WindowId};
+use crate::tree::WindowId;
 
 use super::Workspace;
 
-fn offscreen_rect(_reference: Rect) -> Rect {
-    // Far off-screen for monocle siblings — must stay fully invisible
-    // even when clamped, unlike hide_workspace which deliberately uses
-    // hidden_rect (bottom-right clamped strip) as a daemon-down escape hatch.
-    crate::layout::far_offscreen_rect()
-}
-
 impl Workspace {
     /// Compute global-coordinate rects for every window using the stored monitor
-    /// geometry. Handles monocle internally: the focused window fills the monitor
-    /// (minus outer gap); all siblings get offscreen rects.
+    /// geometry. Tiling is always computed underneath; when `magnified` is set
+    /// the magnified window is overwritten with a centered 75%x75% overlay
+    /// (tmux-popup style) inside the bar reservation + outer gap.
     pub fn layout(&self, gap_inner: f64, gap_outer: f64) -> HashMap<WindowId, Rect> {
         let Some(root) = self.root else {
             return HashMap::new();
@@ -31,34 +25,47 @@ impl Workspace {
         let inset = crate::layout::inset_rect(usable, gap_outer);
         let mut output = HashMap::new();
 
-        if self.monocle {
-            if let Some(focused) = self.focused_node {
-                if let Some(node) = self.arena.get(focused) {
-                    if let NodeData::Window { window_id, .. } = &node.data {
-                        let global =
-                            crate::layout::screen_local_to_global(inset, self.monitor_origin);
-                        output.insert(*window_id, global);
-                    }
-                }
+        crate::layout::calculate_layout(root, inset, &self.arena, &mut output, gap_inner);
+        if let Some(mag) = self.magnified {
+            if output.contains_key(&mag) {
+                let w = inset.width * 0.75;
+                let h = inset.height * 0.75;
+                let local = Rect::new(
+                    inset.x + (inset.width - w) / 2.0,
+                    inset.y + (inset.height - h) / 2.0,
+                    w,
+                    h,
+                );
+                let global = crate::layout::screen_local_to_global(local, self.monitor_origin);
+                output.insert(mag, global);
             }
-            // Keep the original size (inset) while moving far off-screen
-            // so the window isn't shrunk to 1x1 and can restore without flicker.
-            let offscreen = offscreen_rect(inset);
-            for wid in self.arena.all_windows() {
-                output.entry(wid).or_insert(offscreen);
+        }
+        for (wid, rect) in output.iter_mut() {
+            if Some(*wid) == self.magnified {
+                continue;
             }
-        } else {
-            crate::layout::calculate_layout(root, inset, &self.arena, &mut output, gap_inner);
-            for rect in output.values_mut() {
-                *rect = crate::layout::screen_local_to_global(*rect, self.monitor_origin);
-            }
+            *rect = crate::layout::screen_local_to_global(*rect, self.monitor_origin);
         }
 
         output
     }
 
-    pub fn toggle_monocle(&mut self) {
-        self.monocle = !self.monocle;
+    /// Toggle magnify on the focused window: pin it as the overlay, or
+    /// unpin if it is already magnified. Pinned across focus changes.
+    pub fn toggle_magnify(&mut self) {
+        let focused = self.focused_window_id();
+        match (focused, self.magnified) {
+            (Some(f), Some(m)) if f == m => self.magnified = None,
+            (Some(f), _) => self.magnified = Some(f),
+            (None, _) => self.magnified = None,
+        }
+    }
+
+    /// Clear a stale magnify pin (close / untrack path).
+    pub fn clear_magnify_if(&mut self, window_id: WindowId) {
+        if self.magnified == Some(window_id) {
+            self.magnified = None;
+        }
     }
 
     /// Global-coordinate origin of the monitor this workspace tiles on.

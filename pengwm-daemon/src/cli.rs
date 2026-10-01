@@ -33,7 +33,8 @@ pub enum CliCommand {
         id: u32,
     },
     Close,
-    ToggleLayout,
+    CycleLayout,
+    ToggleMagnify,
     /// Rearrange the active workspace into a named tmux-style preset
     SelectLayout {
         preset: PresetArg,
@@ -137,7 +138,8 @@ impl From<CliCommand> for Command {
             CliCommand::Workspace { id } => Command::Workspace { id },
             CliCommand::MoveWindowToWorkspace { id } => Command::MoveWindowToWorkspace { id },
             CliCommand::Close => Command::Close,
-            CliCommand::ToggleLayout => Command::ToggleLayout,
+            CliCommand::CycleLayout => Command::CycleLayout,
+            CliCommand::ToggleMagnify => Command::ToggleMagnify,
             CliCommand::SelectLayout { preset } => Command::SelectLayout {
                 preset: preset.into(),
             },

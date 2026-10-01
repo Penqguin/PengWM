@@ -77,8 +77,8 @@ alt-1 = "workspace-1"
 alt-shift-1 = "move-window-to-workspace-1"
 alt-ctrl-left  = "focus-display-left"
 alt-ctrl-shift-right = "move-window-to-display-right"
-alt-/ = "set-layout-tile"
-alt-, = "set-layout-accordion"
+alt-t = "cycle-layout"
+alt-m = "toggle-magnify"
 alt-b = "toggle-bar"
 cmd-shift-r = "reload-config"
 ```
@@ -88,9 +88,9 @@ cmd-shift-r = "reload-config"
 **Actions:** `focus-{left,right,up,down}`, `move-window-{left,right,up,down}`,
 `workspace-{id}`, `move-window-to-workspace-{id}`, `focus-display-{left,right,up,down}`,
 `move-window-to-display-{left,right,up,down}`, `split-horizontal`, `split-vertical`,
-`close`, `set-layout-tile`, `set-layout-accordion`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
+`close`, `cycle-layout`, `toggle-magnify`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
 `resize-pane-{left,right,up,down}`, `set-gap-outer-{pixels}`,
-`set-gap-inner-{pixels}`, `toggle-layout`, `toggle-bar`, `reload-config`, `query-state`,
+`set-gap-inner-{pixels}`, `toggle-bar`, `reload-config`, `query-state`,
 `reveal-all`, `quit`.
 
 ## Status Bar
@@ -133,7 +133,8 @@ pengwm move-window-to-workspace <id>
 pengwm focus-display <left|right|up|down>
 pengwm move-window-to-display <left|right|up|down>
 pengwm close
-pengwm toggle-layout
+pengwm cycle-layout
+pengwm toggle-magnify
 pengwm select-layout <even-horizontal|even-vertical|main-horizontal|main-vertical|tiled>
 pengwm resize-pane <left|right|up|down>
 pengwm toggle-bar
@@ -171,7 +172,7 @@ cargo test
 
 This runs the full suite covering:
 
-- **Layout engine:** window placement, gaps, ratios, nested splits, monocle
+- **Layout engine:** window placement, gaps, ratios, nested splits, magnify
 - **Workspace tree:** add/remove/focus/swap windows, split direction alternation
 - **DisplaySet:** global workspace pool, swap-on-switch, output moves, monitor add/remove
 - **StateManager:** command dispatch, event handling, workspace switching
@@ -194,7 +195,7 @@ rearrange in real time:
 ```bash
 ./target/debug/pengwm focus right
 ./target/debug/pengwm split horizontal
-./target/debug/pengwm toggle-layout
+./target/debug/pengwm cycle-layout
 ```
 
 To monitor state without visual side effects:

@@ -218,12 +218,11 @@ Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 | `move-window-to-workspace-1` .. `move-window-to-workspace-9` | Move window to workspace                      |
 | `split-horizontal` / `split-vertical`                        | Split the focused area                        |
 | `close`                                                      | Close the focused window                      |
-| `set-layout-tile`                                            | Switch to tiling layout                       |
-| `set-layout-accordion`                                       | Switch to accordion layout (focused window fills the screen) |
+| `cycle-layout`                                               | Advance to the next layout preset             |
+| `toggle-magnify`                                             | Toggle magnify popup on the focused window    |
 | `select-layout-even-horizontal` / `select-layout-even-vertical` / `select-layout-main-horizontal` / `select-layout-main-vertical` / `select-layout-tiled` | Rearrange into a tmux-style preset |
 | `resize-pane-left` / `resize-pane-right` / `resize-pane-up` / `resize-pane-down` | Push the divider one step in the direction |
 | `set-gap-outer-{pixels}` / `set-gap-inner-{pixels}`          | Set gaps                                     |
-| `toggle-layout`                                              | Toggle between tiling and monocle             |
 | `toggle-bar`                                                 | Show/hide the bar                             |
 | `reload-config`                                              | Reload configuration from disk                |
 | `query-state`                                                | Dump workspace state to stdout                |
@@ -261,8 +260,8 @@ alt-shift-1 = "move-window-to-workspace-1"
 alt-shift-2 = "move-window-to-workspace-2"
 
 # Layout
-alt-/ = "set-layout-tile"
-alt-, = "set-layout-accordion"
+alt-t = "cycle-layout"
+alt-m = "toggle-magnify"
 cmd-shift-r = "reload-config"
 alt-b = "toggle-bar"
 

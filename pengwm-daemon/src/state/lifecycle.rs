@@ -36,7 +36,7 @@ impl StateManager {
     pub(super) fn add_window_to_workspace(
         &mut self,
         window_id: WindowId,
-        pid: i32,
+        _pid: i32,
         preferred: usize,
     ) -> Option<usize> {
         if self.workspaces[preferred].find_window(window_id).is_some() {
@@ -66,14 +66,7 @@ impl StateManager {
         };
 
         let ws = &mut self.workspaces[target];
-        if !self.restricted_apps.is_empty() {
-            if let Some(bundle_id) = self.os.app_bundle_id(pid) {
-                if self.restricted_apps.contains(&bundle_id) {
-                    log::info!("App {} is restricted — enabling monocle", bundle_id);
-                    ws.monocle = true;
-                }
-            }
-        }
+        // Restricted apps tile like everything else (monocle is gone).
 
         ws.add_window(window_id, None);
         if self.displays.is_visible(target, &self.workspaces) {
@@ -209,7 +202,7 @@ impl StateManager {
     }
 
     /// Poll apps for windows the store has never seen and tile them via the
-    /// normal `on_window_created` path (routing, capacity, monocle, layout
+    /// normal `on_window_created` path (routing, capacity, layout
     /// all shared — no duplicate logic). One discovery loop for the tick
     /// sweep, the app-activate fast path, and wake resync — callers pass
     /// one pid or all running pids. Only brand-new window ids are touched:
