@@ -4,11 +4,13 @@ Prebuilt, signed tarballs + Homebrew. No `.app` bundle, no App Store, no
 auto-updater — just: download a stable-signed build so Accessibility grants
 survive updates, without requiring Rust.
 
-> **The headline caveat first:** stable signatures only exist once the
-> maintainer configures Apple Developer-ID secrets (see below). Until then,
-> CI ships ad-hoc signed builds: they install and run fine, but every update
-> looks like a new binary and macOS re-prompts for Accessibility — the exact
-> problem this pipeline exists to fix.
+> **The headline caveat first:** PengWM currently ships **ad-hoc signed**
+> builds (the maintainer has opted to stay certificate-less for now). They
+> install and run fine, but every update looks like a new binary and macOS
+> re-prompts for Accessibility. If that ever becomes a real support burden,
+> the fix is a $99/yr Apple Developer Program account + the secrets below —
+> the pipeline flips to stable Developer-ID signing automatically, with no
+> other changes.
 
 ## What CI produces
 
@@ -37,7 +39,7 @@ No special entitlements are needed for AX/CGEventTap — those are TCC grants
 in System Settings, not entitlements. `packaging/entitlements.plist` is
 intentionally minimal (hardened runtime compatibility).
 
-## Enabling Developer-ID signing + notarization
+## Enabling Developer-ID signing + notarization (optional, not currently used)
 
 1. Apple Developer Program ($99/yr). Create a **Developer ID Application**
    certificate, export the `.p12`.
