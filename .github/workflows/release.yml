@@ -35,6 +35,12 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
       TARGET: ${{ matrix.target }}
+      # secrets context cannot be used in `if:` conditionals (the parser
+      # rejects the expression and the whole workflow fails to start), so
+      # presence flags are computed here in job env and checked via
+      # `if: env.*` / in-run guards instead.
+      HAS_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+      HAS_API_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,7 +65,7 @@ jobs:
       #   APPLE_TEAM_ID. Notarization additionally needs:
       #   APPLE_API_KEY_P8 (base64), APPLE_API_KEY_ID, APPLE_API_ISSUER_ID.
       - name: Import Developer ID certificate (if configured)
-        if: secrets.APPLE_CERTIFICATE_P12 != ''
+        if: env.HAS_CERT == 'true'
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -101,12 +107,18 @@ jobs:
           ls -la pengwm-*
 
       - name: Notarize (if API key configured)
-        if: secrets.APPLE_API_KEY_P8 != ''
+        if: env.HAS_API_KEY == 'true'
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
+          set -euo pipefail
+          # Double guard in case HAS_API_KEY ever drifts from the secret.
+          if [[ -z "${APPLE_API_KEY_P8:-}" ]]; then
+            echo "No notarization API key — skipping."
+            exit 0
+          fi
           set -euo pipefail
           echo "$APPLE_API_KEY_P8" | base64 --decode > /tmp/AuthKey.p8
           # .p8 is a signing credential — scrub it on any exit path.
