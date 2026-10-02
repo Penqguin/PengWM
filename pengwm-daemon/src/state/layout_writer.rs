@@ -69,7 +69,7 @@ impl LayoutWriteCache {
     /// AX blackout and transient refresh races (same WindowId reappearing
     /// seconds later); real closes arrive via the destroyed notification
     /// immediately and don't wait on this.
-    const GONE_GRACE: Duration = Duration::from_secs(10);
+    const GONE_GRACE: Duration = Duration::from_secs(1);
     /// Consecutive Pinned reports before writes back off. Three strikes is
     /// ~3–6s of futility evidence: fast enough to matter, slow enough to
     /// ride out transient contention without throttling a window that is
