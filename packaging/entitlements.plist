@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- No special entitlements needed for AX/CGEventTap: both are granted
+	     via System Settings → Privacy & Security → Accessibility, not via
+	     entitlements. This file exists so Developer-ID signing can apply
+	     the hardened runtime (--options runtime) with an explicit (empty)
+	     entitlements set, keeping ad-hoc and Developer-ID builds consistent. -->
+</dict>
+</plist>

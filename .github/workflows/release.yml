@@ -27,29 +27,104 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    strategy:
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    env:
+      TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          target: ${{ matrix.target }}
 
       - name: Build release binaries
         run: |
-          cargo build --release
-          mkdir -p dist
+          cargo build --release --target "$TARGET"
+          mkdir -p "dist/$TARGET"
+          cp "target/$TARGET/release/pengwm" "dist/$TARGET/"
+          cp "target/$TARGET/release/pengwm-bar" "dist/$TARGET/"
+          cp "target/$TARGET/release/pengwm-menubar" "dist/$TARGET/"
+          ls -la "dist/$TARGET/"
 
-      - name: Ad-hoc codesign (required for macOS AX permissions)
+      # Developer-ID signing when secrets are present; ad-hoc fallback otherwise.
+      # Required secrets for real signing (see docs/distribution.md):
+      #   APPLE_CERTIFICATE_P12 (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+      #   APPLE_DEVELOPER_IDENTITY (e.g. "Developer ID Application: Name (TEAMID)"),
+      #   APPLE_TEAM_ID. Notarization additionally needs:
+      #   APPLE_API_KEY_P8 (base64), APPLE_API_KEY_ID, APPLE_API_ISSUER_ID.
+      - name: Import Developer ID certificate (if configured)
+        if: secrets.APPLE_CERTIFICATE_P12 != ''
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Codesign binaries
+        env:
+          IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
         run: |
-          codesign --force --deep -s - target/release/pengwm
+          set -euo pipefail
+          DIR="dist/$TARGET"
+          sign_all() {
+            for bin in pengwm pengwm-bar pengwm-menubar; do
+              "$@" "$DIR/$bin"
+            done
+          }
+          if [[ -n "${IDENTITY:-}" ]]; then
+            echo "Signing with Developer ID: $IDENTITY"
+            sign_all codesign --force --options runtime --timestamp \
+              --entitlements packaging/entitlements.plist -s "$IDENTITY"
+          else
+            echo "No Developer ID configured — ad-hoc signing (stable identity NOT guaranteed)."
+            sign_all codesign --force -s -
+          fi
+          sign_all codesign --verify --verbose=2
+          codesign -dv --verbose=4 "$DIR/pengwm" 2>&1 | head -20 || true
 
-      - name: Package binaries
+      - name: Package artifacts
         run: |
-          cp target/release/pengwm dist/
-          cd dist && tar czf ../pengwm-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz .
+          set -euo pipefail
+          cp LICENSE "dist/$TARGET/" 2>/dev/null || true
+          # tarball (primary install artifact)
+          tar czf "pengwm-${TAG}-${TARGET}.tar.gz" -C "dist/$TARGET" .
+          # zip (notarytool-compatible artifact for notarization); zip the named
+          # directory from dist/ so the archive has a sane root, not `.`.
+          (cd dist && ditto -c -k --keepParent "$TARGET" "../pengwm-${TAG}-${TARGET}.zip")
+          shasum -a 256 "pengwm-${TAG}-${TARGET}.tar.gz" > "pengwm-${TAG}-${TARGET}.tar.gz.sha256"
+          shasum -a 256 "pengwm-${TAG}-${TARGET}.zip" > "pengwm-${TAG}-${TARGET}.zip.sha256"
+          ls -la pengwm-*
 
-      - name: Upload release artifact
+      - name: Notarize (if API key configured)
+        if: secrets.APPLE_API_KEY_P8 != ''
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          echo "$APPLE_API_KEY_P8" | base64 --decode > /tmp/AuthKey.p8
+          # .p8 is a signing credential — scrub it on any exit path.
+          trap 'rm -f /tmp/AuthKey.p8' EXIT
+          xcrun notarytool submit "pengwm-${TAG}-${TARGET}.zip" \
+            --key /tmp/AuthKey.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          # Staple the notarized zip so offline Gatekeeper checks pass too.
+          xcrun stapler staple "pengwm-${TAG}-${TARGET}.zip"
+
+      - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
         with:
-          files: pengwm-*.tar.gz
+          files: |
+            pengwm-*.tar.gz
+            pengwm-*.tar.gz.sha256
+            pengwm-*.zip
+            pengwm-*.zip.sha256
           generate_release_notes: true

@@ -9,9 +9,10 @@
 ## Build & Run
 
 ```bash
-git clone https://github.com/your-org/pengwm
-cd pengwm
-cargo build --release
+git clone https://github.com/Penqguin/PengWM
+cd PengWM
+./install.sh            # prebuilt signed release (recommended)
+# ./install.sh --from-source   # or build locally (needs Rust, re-prompts for Accessibility)
 ```
 
 ### Start the daemon

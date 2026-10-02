@@ -6,19 +6,25 @@ required — uses only public Apple APIs (Accessibility & Core Graphics).
 ## Quick Start
 
 ```bash
-# Build from source
-git clone https://github.com/your-org/pengwm
-cd pengwm
+# Install the latest signed release (stable Accessibility grant across updates)
+git clone https://github.com/Penqguin/PengWM
+cd PengWM
+./install.sh
+
+# Grant Accessibility permissions when prompted, then control it
+pengwm focus left
+pengwm workspace 3
+pengwm close
+```
+
+From source instead (requires Rust; ad-hoc signed, so macOS re-prompts
+for Accessibility after every rebuild):
+
+```bash
+./install.sh --from-source
+# or manually:
 cargo build --release
-
-# Grant Accessibility permissions first, then start the daemon
 ./target/release/pengwm
-
-# In another terminal, control it
-./target/release/pengwm focus left
-./target/release/pengwm split horizontal
-./target/release/pengwm workspace 3
-./target/release/pengwm close
 ```
 
 ## Prerequisites
