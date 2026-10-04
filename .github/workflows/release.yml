@@ -168,13 +168,17 @@ jobs:
       - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
         with:
+          # Non-overlapping globs: pengwm-*.tar.gz must not also match
+          # pengwm-app-*, or the same asset gets uploaded twice and the
+          # duplicate races the releases API (404 on update). Flat
+          # artifacts are pengwm-v<tag>-..., bundle artifacts pengwm-app-*.
           files: |
             pengwm-app-*.tar.gz
             pengwm-app-*.tar.gz.sha256
             pengwm-app-*.zip
             pengwm-app-*.zip.sha256
-            pengwm-*.tar.gz
-            pengwm-*.tar.gz.sha256
-            pengwm-*.zip
-            pengwm-*.zip.sha256
+            pengwm-v*.tar.gz
+            pengwm-v*.tar.gz.sha256
+            pengwm-v*.zip
+            pengwm-v*.zip.sha256
           generate_release_notes: true
