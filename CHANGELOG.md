@@ -12,6 +12,11 @@
   `max_tiles` and never persist.
 - **`restricted_apps` now works** (it was loaded but never consulted): every
   window of a listed bundle pops out as an overlay instead of tiling.
+- **Fix: `pengwm quit` stays quit.** The generated LaunchAgent used
+  `KeepAlive = true`, so launchd instantly respawned the daemon after every
+  clean exit — quitting looked like a no-op. The agent now uses
+  `KeepAlive { SuccessfulExit = false }`: restart only on crash/non-zero
+  exit, stay down after a clean `pengwm quit`.
 
 ## v0.5 — i3-style multi-monitor
 
