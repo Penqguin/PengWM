@@ -1,7 +1,7 @@
 cask "pengwm" do
   arch arm: "aarch64", intel: "x86_64"
 
-  version "0.5.0"
+  version "0.5.1"
   # FILL ME after tagging a release, from the release sidecar files:
   #   pengwm-app-v<VERSION>-aarch64-apple-darwin.tar.gz.sha256 → arm
   #   pengwm-app-v<VERSION>-x86_64-apple-darwin.tar.gz.sha256  → intel
