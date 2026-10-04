@@ -19,6 +19,7 @@ VERSION="latest"
 USE_AGENT=1
 UNINSTALL=0
 FROM_SOURCE=0
+EXPLICIT_PREFIX=0
 
 usage() {
   cat <<'EOF'
@@ -53,10 +54,12 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       PREFIX="$2"
+      EXPLICIT_PREFIX=1
       shift 2
       ;;
     --prefix=*)
       PREFIX="${1#*=}"
+      EXPLICIT_PREFIX=1
       shift
       ;;
     --version)
@@ -98,7 +101,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Pick a prefix that actually works without root. `curl ... | bash` has no
+# way to elevate (no re-promptable password on a clean pipe), and a plain
+# `./install.sh` run as the user can't write /usr/local either. Fall back to
+# a user-owned prefix instead of dying at `install:` time.
+if [[ "$EXPLICIT_PREFIX" == "1" ]]; then
+  if mkdir -p "$PREFIX" 2>/dev/null && [[ -w "$PREFIX" ]]; then
+    :
+  else
+    echo "error: --prefix '$PREFIX' is not writable. Re-run with sudo, or pick a user-owned directory (e.g. ~/.local/bin)."
+    exit 1
+  fi
+else
+  if ! mkdir -p "$PREFIX" 2>/dev/null || ! [[ -w "$PREFIX" ]]; then
+    PREFIX="$HOME/.local/bin"
+    mkdir -p "$PREFIX"
+    echo "warning: default prefixes are not writable; installing to '$PREFIX' instead."
+    echo "warning: make sure it is on your PATH:  export PATH=\"$PREFIX:\$PATH\""
+  fi
+fi
+
+# Only meaningful when running the script from a checkout. When piped
+# (`curl ... | bash`) there is no script file on disk, so BASH_SOURCE[0] is
+# unset and `set -u` would abort on the plain `${BASH_SOURCE[0]}` reference.
+# (-f is additionally checked by --from-source; a /dev/fd path from
+# `bash <(curl ...)` is not a usable SCRIPT_DIR either way.)
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 uninstall() {
   if [[ -f "$AGENT_PLIST" ]]; then
@@ -145,6 +176,11 @@ install_from_source() {
   if ! command -v cargo >/dev/null 2>&1; then
     echo "error: 'cargo' not found in PATH."
     echo "Install Rust via https://rustup.rs then re-run, or drop --from-source to use a prebuilt tarball."
+    exit 1
+  fi
+  if [[ -z "$SCRIPT_DIR" || ! -f "$SCRIPT_DIR/Cargo.toml" ]]; then
+    echo "error: --from-source needs the PengWM repo checkout (Cargo.toml + workspace), but this script was run outside one."
+    echo "Use: git clone https://github.com/Penqguin/PengWM && cd PengWM && ./install.sh --from-source"
     exit 1
   fi
   echo "Building release binaries from source (this may take a while)..."

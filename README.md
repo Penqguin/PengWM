@@ -7,14 +7,26 @@ required — uses only public Apple APIs (Accessibility & Core Graphics).
 
 ```bash
 # Install the latest signed release (stable Accessibility grant across updates)
-git clone https://github.com/Penqguin/PengWM
-cd PengWM
-./install.sh
+curl -fsSL https://pengwm.penqguin.com/install.sh | bash
 
 # Grant Accessibility permissions when prompted, then control it
 pengwm focus left
 pengwm workspace 3
 pengwm close
+```
+
+Prefer a checkout (or already have the repo cloned):
+
+```bash
+git clone https://github.com/Penqguin/PengWM
+cd PengWM
+./install.sh
+```
+
+Uninstall later with:
+
+```bash
+curl -fsSL https://pengwm.penqguin.com/uninstall.sh | bash -s -- --yes
 ```
 
 From source instead (requires Rust; ad-hoc signed, so macOS re-prompts

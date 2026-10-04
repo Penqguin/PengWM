@@ -1,0 +1,16 @@
+// pengwm-edge — serves https://pengwm.penqguin.com
+// The custom_domain route makes Wrangler create the proxied DNS record and
+// certificate for pengwm.penqguin.com automatically on `wrangler deploy`.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pengwm-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-03",
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": true },
+  },
+  "routes": [
+    { "pattern": "pengwm.penqguin.com", "custom_domain": true },
+  ],
+}

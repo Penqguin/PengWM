@@ -12,6 +12,31 @@ survive updates, without requiring Rust.
 > the pipeline flips to stable Developer-ID signing automatically, with no
 > other changes.
 
+## The penqguin.com front door (`edge/`)
+
+`pengwm.penqguin.com` is a Workers **Custom Domain** (Auto DNS/cert created by
+Wrangler on first deploy) bound to the one-file Worker in `edge/`:
+
+| URL target | Redirect (302) |
+|---|---|
+| `https://pengwm.penqguin.com/install.sh` | `raw.githubusercontent.com/Penqguin/PengWM/main/install.sh` |
+| `https://pengwm.penqguin.com/uninstall.sh` | `raw.githubusercontent.com/Penqguin/PengWM/main/uninstall.sh` |
+| anything else | `https://github.com/Penqguin/PengWM` |
+
+The scripts live in **this repo only** — the Worker is a pure redirect, so
+there is no copy to keep in sync, and the redirect target follows `main`
+(meaning no Cloudflare change is needed per release; the script resolves the
+latest GitHub release at install time). Deploy is manual and rare:
+
+```sh
+cd edge && npm install && npm run deploy   # one-time `wrangler login` required
+```
+
+Do not add an auto-deploy workflow for this: the Worker changes next-to-never,
+and it would add a `CLOUDFLARE_API_TOKEN` secret to rotate. Everything
+Cloudflare-adjacent about penqguin.com's main site (`igloo` repo) is untouched
+by this Worker — they share the zone, not the deployment.
+
 ## What CI produces
 
 On every `v*` tag, `.github/workflows/release.yml` builds all three binaries

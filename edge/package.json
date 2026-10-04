@@ -1,0 +1,15 @@
+{
+  "name": "pengwm-edge",
+  "private": true,
+  "description": "Worker serving the pengwm.penqguin.com install-script front door",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261003.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.147.0"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  }
+}
