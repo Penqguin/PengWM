@@ -1,16 +1,50 @@
-# Distribution (prebuilt tarballs + Homebrew)
+# Distribution (prebuilt binaries + `PengWM.app` + Homebrew)
 
-Prebuilt, signed tarballs + Homebrew. No `.app` bundle, no App Store, no
-auto-updater — just: download a stable-signed build so Accessibility grants
-survive updates, without requiring Rust.
+Prebuilt, signed artifacts: a **`PengWM.app` bundle** (primary — installs to
+`/Applications`, shows in Launchpad, CLI via a shim), plus a legacy
+flat-binary tarball (Homebrew formula + `install.sh --no-app`). No App
+Store, no auto-updater — just: download a stable-signed build so
+Accessibility grants survive updates, without requiring Rust.
 
-> **The headline caveat first:** PengWM currently ships **ad-hoc signed**
-> builds (the maintainer has opted to stay certificate-less for now). They
-> install and run fine, but every update looks like a new binary and macOS
-> re-prompts for Accessibility. If that ever becomes a real support burden,
-> the fix is a $99/yr Apple Developer Program account + the secrets below —
-> the pipeline flips to stable Developer-ID signing automatically, with no
-> other changes.
+An ad-hoc signed build installs and runs fine, but every update looks like a
+new binary and macOS re-prompts for Accessibility — the `.app` bundle keeps
+this a little better than the flat layout (TCC attributes the grant to the
+bundle, `com.pengwm.daemon`), but ad-hoc signatures still can't pin it.
+
+> **The headline caveat:** PengWM currently ships **ad-hoc signed** builds
+> (the maintainer has opted to stay certificate-less for now). If that ever
+> becomes a real support burden, the fix is a $99/yr Apple Developer Program
+> account + the secrets below — the pipeline flips to stable Developer-ID
+> signing automatically, with no other changes.
+
+## The bundle (`packaging/`)
+
+`packaging/PengWM.app/Contents/Info.plist` is the bundle definition:
+`CFBundleIdentifier` `com.pengwm.daemon` (same as the LaunchAgent label),
+`CFBundleExecutable` `pengwm`, **`LSUIElement`** (no Dock icon — the WM's UI
+surfaces are the bar/menubar child processes) and `CFBundleIconFile`
+`PengWM.icns`. The icon is generated from the igloo penguin SVG; regeneration
+recipe (any machine with librsvg + imagemagick + iconutil):
+
+```sh
+rsvg-convert -w 1024 -h 1024 <igloo-logo.svg> -o base.png   # render once at 1024
+for s in 16 32 128 256 512; do                              # iconset sizes
+  magick base.png -resize ${s}x${s}   icon_${s}x${s}.png
+  magick base.png -resize $((s*2))x$((s*2)) icon_${s}x${s}@2x.png
+done
+iconutil -c icns AppIcon.iconset -o PengWM.icns             # copy the ten pngs into AppIcon.iconset first
+```
+
+`packaging/make_app.sh [dist-dir]` assembles `PengWM.app/Contents/MacOS/`
+from release binaries, stamps the bundle version from `pengwm --version`,
+and signs nested executables first, then the bundle (outermost last), with
+`PENGWM_SIGN_IDENTITY` when set (Developer ID in CI) or ad-hoc otherwise.
+It exists so local source builds produce the same bundle as CI.
+
+Note for maintainers: **GitHub release asset URLs match
+case-insensitively**, so the bundle artifacts are named `pengwm-app-*`
+(never `PengWM-*`) to avoid ambiguous collisions with the legacy
+`pengwm-<tag>-<target>` tarballs.
 
 ## The penqguin.com front door (`edge/`)
 
@@ -40,18 +74,20 @@ by this Worker — they share the zone, not the deployment.
 ## What CI produces
 
 On every `v*` tag, `.github/workflows/release.yml` builds all three binaries
-for both architectures and uploads four assets per arch:
+for both architectures and uploads, per arch:
 
 ```
-pengwm-<tag>-aarch64-apple-darwin.tar.gz (+ .sha256)
-pengwm-<tag>-aarch64-apple-darwin.zip     (+ .sha256, notarytool-compatible)
-pengwm-<tag>-x86_64-apple-darwin.tar.gz  (+ .sha256)
-pengwm-<tag>-x86_64-apple-darwin.zip     (+ .sha256, notarytool-compatible)
+pengwm-app-<tag>-<target>.tar.gz (+ .sha256)   # PengWM.app bundle, primary
+pengwm-app-<tag>-<target>.zip     (+ .sha256)  # PengWM.app bundle, cask + notarization
+pengwm-<tag>-<target>.tar.gz      (+ .sha256)  # legacy flat binaries (formula, --no-app)
+pengwm-<tag>-<target>.zip         (+ .sha256)  # legacy flat binaries, notarytool-compatible
 ```
 
-The tarball is the install artifact (`install.sh`, Homebrew). The zip exists
-because `notarytool submit` accepts dmg/pkg/zip, not tar.gz; when notarized
-it is also stapled (`xcrun stapler staple`) so offline Gatekeeper checks pass.
+The bundle tarball is the primary install artifact (`install.sh`, cask). The
+zips exist because `notarytool submit` accepts dmg/pkg/zip, not tar.gz; when
+notarized they are also stapled (`xcrun stapler staple`). The flat layout is
+kept for two consumers: `Formula/pengwm.rb`'s `bin.install` needs loose
+binaries, and `install.sh --no-app` selects it explicitly.
 
 ## Signing modes
 
@@ -89,30 +125,54 @@ intentionally minimal (hardened runtime compatibility).
 ## install.sh behavior
 
 ```
-./install.sh                    # latest prebuilt for current arch
+./install.sh                    # latest PengWM.app → /Applications (+ CLI shim)
 ./install.sh --version v0.5.0   # pinned version
-./install.sh --from-source      # cargo build (ad-hoc signed, re-prompts)
+./install.sh --app-dir DIR      # install the bundle somewhere else
+./install.sh --no-app           # legacy flat layout: loose binaries in --prefix
+./install.sh --from-source      # cargo build → bundle (ad-hoc signed, re-prompts)
 ./install.sh --repo OWNER/REPO  # fork testing
 ```
 
-It verifies `shasum -a 256` against the `.sha256` sidecar when present,
-runs `codesign --verify` (hard fail), and warns (soft) when Gatekeeper
-(`spctl`) doesn't trust the build — i.e. ad-hoc vs notarized.
+The default is the bundle: it extracts the release's `pengwm-app-*` tarball
+into `/Applications` (`~/Applications` when not writable), symlinks
+`pengwm`/`pengwm-bar`/`pengwm-menubar` into the prefix, and the LaunchAgent
+runs the bundle's daemon binary directly (so `current_exe()` sibling lookup
+still finds bar/menubar in `Contents/MacOS`). Releases older than the
+bundle switch-over fall back to the flat layout with a note. It verifies
+`shasum -a 256` against the `.sha256` sidecar when present, runs
+`codesign --verify` (hard fail), and warns (soft) when Gatekeeper (`spctl`)
+doesn't trust the build — i.e. ad-hoc vs notarized.
+
+Support-burden note: switching a Machine between flat and bundle layouts means
+**one Accessibility re-grant** (the TCC entry is bound per layout: old path vs
+bundle id). Same grant count as a layout-independent signing-identity change.
 
 ## Homebrew
 
-`Formula/pengwm.rb` tracks releases with per-arch URLs. After tagging:
+Two artifact styles:
 
-1. Download both tarballs, read their `.sha256` files.
-2. Bump `version` + both `sha256` lines in the formula.
-3. `brew install --build-from-source Formula/pengwm.rb` to test, then commit.
+- **`Casks/pengwm.rb`** — the `.app` cask (`app PengWM.app` + a `binary` for
+  the CLI). This is what most users should get: `brew tap penqguin/tap &&
+  brew install --cask pengwm`.
+- **`Formula/pengwm.rb`** — the legacy flat-binary formula (kept for the
+  `bin.install` workflow and anyone who prefers no `/Applications` install).
 
-For a wider audience, move the formula to a `homebrew-tap` repo
-(`brew tap penqguin/tap && brew install pengwm`); the formula itself is unchanged.
+After tagging:
+
+1. Download the bundle tarballs, read their `.sha256` sidecars.
+2. Bump `version` + both `sha256` lines in `Casks/pengwm.rb` (same drill for
+   the formula if the flat layout is still being updated).
+3. `brew info --cask penqguin/tap/pengwm` to parse-check, then commit both
+   files to the tap repo (`homebrew-tap`: `Formula/` + `Casks/`).
 
 ## Migrating from source builds
 
-Users switching from `cargo build` installs just re-run `./install.sh` — the
-binary path (`/usr/local/bin/pengwm`) is unchanged, but the signing identity
-is, so **one final Accessibility re-grant** is expected. After that, updates
-keep the grant.
+## Migrating from source builds / flat installs
+
+`cargo build` users and existing flat-layout installs just re-run
+`./install.sh`. The `pengwm` CLI path (`$PREFIX/pengwm`) stays the same —
+it becomes a symlink into the bundle — but the daemon now lives in
+`PengWM.app`, and the signing identity changed, so **one Accessibility
+re-grant** is expected (System Settings → Accessibility → add PengWM).
+After that, updates keep the grant. To stay on the flat layout, use
+`--no-app`.

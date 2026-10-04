@@ -6,7 +6,8 @@ required — uses only public Apple APIs (Accessibility & Core Graphics).
 ## Quick Start
 
 ```bash
-# Install the latest signed release (stable Accessibility grant across updates)
+# Install the latest signed release (stable Accessibility grant across updates):
+#   /Applications/PengWM.app (appears in Launchpad) + a `pengwm` CLI on PATH
 curl -fsSL https://pengwm.penqguin.com/install.sh | bash
 
 # Grant Accessibility permissions when prompted, then control it
@@ -43,7 +44,8 @@ cargo build --release
 
 1. **macOS 14+** (Ventura should work, Sequoia tested)
 2. **Accessibility permissions:** System Settings → Privacy & Security → Accessibility → add
-   your terminal (or the `pengwm` binary directly after code-signing)
+   PengWM (the app, when installed via the bundle; or your terminal / the `pengwm`
+   binary directly for source builds)
 3. **Displays have separate Spaces:** System Settings → Desktop & Dock → turn on
    _Displays have separate Spaces_
 

@@ -219,9 +219,15 @@ mod tests {
         });
         let binds = KeybindConfig::default();
         let lookup = lookup_for(&binds);
-        p.on_keydown(0x31, MODIFIER_ALT, now(), &lookup);
+        // Injected times, not now(): with a zero timeout, expiry is
+        // `now <= until` — two successive real `Instant::now()` calls can
+        // land on the same tick and the follow-up would fire instead of
+        // passing through. Offsets make the "arm then expire" sequence
+        // deterministic.
+        let t0 = Instant::now();
+        p.on_keydown(0x31, MODIFIER_ALT, t0, &lookup);
         assert_eq!(
-            p.on_keydown(0x04, MODIFIER_NONE, now(), &lookup),
+            p.on_keydown(0x04, MODIFIER_NONE, t0 + Duration::from_nanos(1), &lookup),
             PrefixOutcome::Passthrough
         );
     }

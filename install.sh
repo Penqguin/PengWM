@@ -11,6 +11,7 @@ set -euo pipefail
 #   ./install.sh --from-source
 
 PREFIX="/usr/local/bin"
+APP_DIR="/Applications"
 AGENT_LABEL="com.pengwm.daemon"
 AGENT_PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
 AGENT_LOG="$HOME/Library/Logs/pengwm.log"
@@ -20,6 +21,7 @@ USE_AGENT=1
 UNINSTALL=0
 FROM_SOURCE=0
 EXPLICIT_PREFIX=0
+NO_APP=0
 
 usage() {
   cat <<'EOF'
@@ -34,13 +36,19 @@ Options:
   --from-source        Build from source with cargo instead of downloading
                        a prebuilt tarball (requires Rust).
   --repo OWNER/REPO    GitHub repo for releases (default: Penqguin/PengWM)
-  --prefix DIR         Install binaries to DIR (default: /usr/local/bin)
+  --app-dir DIR        Where to install PengWM.app (default: /Applications;
+                       falls back to ~/Applications when not writable)
+  --prefix DIR         Where to place the pengwm CLI symlink
+                       (default: /usr/local/bin, falls back to ~/.local/bin)
+  --no-app             Old flat layout: install loose binaries to --prefix
+                       instead of a PengWM.app bundle
   --no-agent           Do not install/load the launchd LaunchAgent
-  --uninstall          Stop the daemon, remove the LaunchAgent and binaries
+  --uninstall          Stop the daemon, remove the LaunchAgent, .app and shims
   --help               Show this help
 
-The daemon is configured to start at login via a launchd LaunchAgent
-($AGENT_LABEL). Re-running this script updates the binaries in place.
+The app installs as /Applications/PengWM.app (appears in Launchpad) and the
+daemon is configured to start at login via a launchd LaunchAgent
+($AGENT_LABEL). Re-running this script updates the app in place.
 Prebuilt tarballs keep a stable code signature, so macOS Accessibility
 grants survive updates — rebuilding from source re-prompts.
 EOF
@@ -73,6 +81,22 @@ while [[ $# -gt 0 ]]; do
     --repo)
       REPO="$2"
       shift 2
+      ;;
+  --app-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --app-dir requires a directory argument"
+        exit 1
+      fi
+      APP_DIR="$2"
+      shift 2
+      ;;
+  --app-dir=*)
+      APP_DIR="${1#*=}"
+      shift
+      ;;
+  --no-app)
+      NO_APP=1
+      shift
       ;;
     --repo=*)
       REPO="${1#*=}"
@@ -138,12 +162,24 @@ uninstall() {
     rm -f "$AGENT_PLIST"
     echo "Removed $AGENT_PLIST"
   fi
-  rm -f "$PREFIX/pengwm"
-  echo "Removed $PREFIX/pengwm"
-  rm -f "$PREFIX/pengwm-bar"
-  echo "Removed $PREFIX/pengwm-bar"
-  rm -f "$PREFIX/pengwm-menubar"
-  echo "Removed $PREFIX/pengwm-menubar"
+  # Match whichever dir the app actually landed in (default /Applications
+  # falls back to ~/Applications at install time).
+  local appdir=""
+  if [[ -d "/Applications/PengWM.app" ]]; then
+    appdir="/Applications"
+  elif [[ -d "$HOME/Applications/PengWM.app" ]]; then
+    appdir="$HOME/Applications"
+  fi
+  if [[ -n "$appdir" ]]; then
+    rm -rf "$appdir/PengWM.app"
+    echo "Removed $appdir/PengWM.app"
+  fi
+  for bin in pengwm pengwm-bar pengwm-menubar; do
+    if [[ -L "$PREFIX/$bin" || -f "$PREFIX/$bin" ]]; then
+      rm -f "$PREFIX/$bin"
+      echo "Removed $PREFIX/$bin"
+    fi
+  done
   echo "PengWM uninstalled."
 }
 
@@ -186,16 +222,63 @@ install_from_source() {
   echo "Building release binaries from source (this may take a while)..."
   echo "Note: source builds are ad-hoc signed — macOS will re-prompt for Accessibility."
   (cd "$SCRIPT_DIR" && cargo build --release)
-  echo "Installing binaries to $PREFIX..."
-  mkdir -p "$PREFIX"
-  install -m 0755 "$SCRIPT_DIR/target/release/pengwm" "$PREFIX/pengwm"
-  install -m 0755 "$SCRIPT_DIR/target/release/pengwm-bar" "$PREFIX/pengwm-bar"
-  install -m 0755 "$SCRIPT_DIR/target/release/pengwm-menubar" "$PREFIX/pengwm-menubar"
-  echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-bar, $PREFIX/pengwm-menubar"
+  local bin_dir="$SCRIPT_DIR/target/release"
+  if [[ "$NO_APP" == "1" ]]; then
+    mkdir -p "$PREFIX"
+    install -m 0755 "$bin_dir/pengwm" "$PREFIX/pengwm"
+    install -m 0755 "$bin_dir/pengwm-bar" "$PREFIX/pengwm-bar"
+    install -m 0755 "$bin_dir/pengwm-menubar" "$PREFIX/pengwm-menubar"
+    echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-bar, $PREFIX/pengwm-menubar"
+  else
+    bash "$SCRIPT_DIR/packaging/make_app.sh" "$bin_dir"
+    install_app "$SCRIPT_DIR/PengWM.app"
+  fi
+}
+
+# Copy a staged PengWM.app into APP_DIR and lay down the CLI symlinks so
+# `pengwm ...` works from a shell without adding the bundle path to PATH.
+install_app() {
+  local staged="$1"
+  if [[ ! -d "$staged" ]]; then
+    echo "error: $staged is missing (corrupt download?)"
+    exit 1
+  fi
+  mkdir -p "$APP_DIR" 2>/dev/null || true
+  if [[ ! -w "$APP_DIR" ]]; then
+    if [[ "$APP_DIR" == "/Applications" ]]; then
+      APP_DIR="$HOME/Applications"
+      mkdir -p "$APP_DIR"
+      echo "warning: /Applications not writable; installing to '$APP_DIR'."
+    else
+      echo "error: --app-dir '$APP_DIR' is not writable. Re-run with sudo, or pick a user-owned directory (e.g. ~/Applications)."
+      exit 1
+    fi
+  fi
+  # ditto preserves code signatures and extended attributes — the other
+  # copy tools silently strip what Gatekeeper checks.
+  rm -rf "$APP_DIR/PengWM.app"
+  ditto "$staged" "$APP_DIR/PengWM.app"
+  echo "Installed $APP_DIR/PengWM.app"
+
+  mkdir -p "$PREFIX" 2>/dev/null || true
+  if [[ ! -w "$PREFIX" ]]; then
+    if [[ "$EXPLICIT_PREFIX" == "1" ]]; then
+      echo "error: --prefix '$PREFIX' is not writable. Re-run with sudo, or pick a user-owned directory (e.g. ~/.local/bin)."
+      exit 1
+    fi
+    PREFIX="$HOME/.local/bin"
+    mkdir -p "$PREFIX"
+    echo "warning: '$PREFIX' not writable; installing CLI shims in '$PREFIX' instead."
+    echo "warning: make sure it is on your PATH:  export PATH=\"$PREFIX:\$PATH\""
+  fi
+  for bin in pengwm pengwm-bar pengwm-menubar; do
+    ln -sf "$APP_DIR/PengWM.app/Contents/MacOS/$bin" "$PREFIX/$bin"
+  done
+  echo "CLI: $PREFIX/pengwm -> $APP_DIR/PengWM.app/Contents/MacOS/pengwm"
 }
 
 install_from_release() {
-  local tag suffix url tmpdir tarball
+  local tag suffix url tmpdir tarball app_url app_tarball
   tag="$(resolve_version "$VERSION")"
   if [[ -z "$tag" ]]; then
     echo "error: could not resolve release version (is there a release at https://github.com/${REPO}/releases?)."
@@ -203,14 +286,30 @@ install_from_release() {
     exit 1
   fi
   suffix="$(arch_suffix)"
+  # Primary: the PengWM.app bundle tarball. Older releases predate it —
+  # fall back to the flat-binary tarball (the layout handled by --no-app).
+  # Asset name is pengwm-app-* (not PengWM-*): GitHub matches release asset
+  # URLs case-insensitively, so capital letters don't disambiguate.
+  app_tarball="pengwm-app-${tag}-${suffix}.tar.gz"
+  app_url="https://github.com/${REPO}/releases/download/${tag}/${app_tarball}"
   tarball="pengwm-${tag}-${suffix}.tar.gz"
   url="https://github.com/${REPO}/releases/download/${tag}/${tarball}"
-  echo "Downloading PengWM ${tag} (${suffix})..."
-  echo "  ${url}"
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "$tmpdir"' EXIT
+
   # Download under the asset's original name so the .sha256 sidecar's
   # recorded filename matches for `shasum -a 256 -c`.
+  local using_app=0
+  if [[ "$NO_APP" != "1" ]] && curl -fsSL -o "$tmpdir/$app_tarball" "$app_url" 2>/dev/null; then
+    using_app=1
+    tarball="$app_tarball"
+    url="$app_url"
+    echo "Downloading PengWM ${tag} (${suffix}) — app bundle..."
+  elif [[ "$NO_APP" != "1" ]]; then
+    echo "Note: ${app_tarball} not published for ${tag} — falling back to the flat-binary layout."
+    echo "      (Pin --version to a newer release, or keep the old layout with --no-app.)"
+  fi
+  echo "  ${url}"
   curl -fsSL -o "$tmpdir/$tarball" "$url"
   # Verify checksum when the .sha256 sidecar exists (older releases may lack it).
   if curl -fsSL -o "$tmpdir/$tarball.sha256" "${url}.sha256" 2>/dev/null; then
@@ -220,37 +319,72 @@ install_from_release() {
     echo "Warning: no checksum file found — skipping verification."
   fi
   tar xzf "$tmpdir/$tarball" -C "$tmpdir"
-  for bin in pengwm pengwm-bar pengwm-menubar; do
-    if [[ ! -f "$tmpdir/$bin" ]]; then
-      echo "error: tarball is missing '$bin' (corrupt download?)"
+
+  if [[ "$using_app" == "1" ]]; then
+    if [[ ! -d "$tmpdir/PengWM.app" ]]; then
+      echo "error: bundle tarball does not contain PengWM.app (corrupt download?)"
       exit 1
     fi
-  done
-  # Verify the signature before installing: hard fail on tampering.
+    if ! codesign --verify --verbose=1 "$tmpdir/PengWM.app" 2>/dev/null; then
+      echo "error: signature verification failed for PengWM.app — refusing to install."
+      exit 1
+    fi
+    echo "Signature OK (see: codesign -dv --verbose=4 $APP_DIR/PengWM.app after install)."
+    if spctl -a -t exec -vv "$tmpdir/PengWM.app" 2>&1 | grep -q "rejected"; then
+      echo "Warning: Gatekeeper does not trust this build (likely ad-hoc signed, not notarized)."
+      echo "It will still run, but macOS may re-prompt for Accessibility after updates."
+    fi
+    install_app "$tmpdir/PengWM.app"
+  elif [[ "$NO_APP" != "1" ]]; then
+    NO_APP=1
+  fi
+
+  if [[ "$using_app" != "1" ]]; then
+    # Flat layout: loose binaries from the legacy tarball.
+    for bin in pengwm pengwm-bar pengwm-menubar; do
+      if [[ ! -f "$tmpdir/$bin" ]]; then
+        echo "error: tarball is missing '$bin' (corrupt download?)"
+        exit 1
+      fi
+    done
+    verify_signatures_loose "$tmpdir"
+    echo "Installing binaries to $PREFIX..."
+    mkdir -p "$PREFIX"
+    install -m 0755 "$tmpdir/pengwm" "$PREFIX/pengwm"
+    install -m 0755 "$tmpdir/pengwm-bar" "$PREFIX/pengwm-bar"
+    install -m 0755 "$tmpdir/pengwm-menubar" "$PREFIX/pengwm-menubar"
+    echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-bar, $PREFIX/pengwm-menubar (${tag})"
+  fi
+
+  rm -rf "$tmpdir"
+  trap - EXIT
+}
+
+verify_signatures_loose() {
+  local dir="$1"
   if command -v codesign >/dev/null 2>&1; then
     for bin in pengwm pengwm-bar pengwm-menubar; do
-      codesign --verify --verbose=1 "$tmpdir/$bin" || {
+      codesign --verify --verbose=1 "$dir/$bin" || {
         echo "error: signature verification failed for $bin — refusing to install."
         exit 1
       }
     done
     echo "Signature OK (see: codesign -dv --verbose=4 $PREFIX/pengwm after install)."
-    if spctl -a -t exec -vv "$tmpdir/pengwm" 2>&1 | grep -q "rejected"; then
+    if spctl -a -t exec -vv "$dir/pengwm" 2>&1 | grep -q "rejected"; then
       echo "Warning: Gatekeeper does not trust this build (likely ad-hoc signed, not notarized)."
       echo "It will still run, but macOS may re-prompt for Accessibility after updates."
     fi
   fi
-  echo "Installing binaries to $PREFIX..."
-  mkdir -p "$PREFIX"
-  install -m 0755 "$tmpdir/pengwm" "$PREFIX/pengwm"
-  install -m 0755 "$tmpdir/pengwm-bar" "$PREFIX/pengwm-bar"
-  install -m 0755 "$tmpdir/pengwm-menubar" "$PREFIX/pengwm-menubar"
-  echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-bar, $PREFIX/pengwm-menubar (${tag})"
-  rm -rf "$tmpdir"
-  trap - EXIT
 }
 
 install_agent() {
+  # In .app mode, launch the bundle executable directly (not the $PREFIX
+  # symlink): keeps `current_exe()` sibling lookup honest so the daemon
+  # finds pengwm-bar/pengwm-menubar next to itself in Contents/MacOS.
+  local program="$PREFIX/pengwm"
+  if [[ "$NO_APP" != "1" && -x "$APP_DIR/PengWM.app/Contents/MacOS/pengwm" ]]; then
+    program="$APP_DIR/PengWM.app/Contents/MacOS/pengwm"
+  fi
   mkdir -p "$HOME/Library/LaunchAgents"
   mkdir -p "$HOME/Library/Logs"
   cat > "$AGENT_PLIST" <<EOF
@@ -262,7 +396,7 @@ install_agent() {
 	<string>$AGENT_LABEL</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$PREFIX/pengwm</string>
+		<string>$program</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -280,7 +414,7 @@ install_agent() {
 </dict>
 </plist>
 EOF
-  echo "Wrote $AGENT_PLIST"
+  echo "Wrote $AGENT_PLIST (program: $program)"
 
   launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || launchctl unload "$AGENT_PLIST" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null || launchctl load "$AGENT_PLIST"
@@ -292,8 +426,12 @@ print_next_steps() {
   echo "Next steps:"
   echo "  1. Grant Accessibility to PengWM:"
   echo "     System Settings -> Privacy & Security -> Accessibility"
-  echo "     Add $PREFIX/pengwm"
-  echo "     (Stable signed releases keep this grant across updates.)"
+  if [[ "$NO_APP" == "1" ]]; then
+    echo "     Add $PREFIX/pengwm"
+  else
+    echo "     Add $APP_DIR/PengWM.app"
+    echo "     (The app also appears in Launchpad; app updates keep the grant.)"
+  fi
   echo "  2. Logs: $AGENT_LOG"
   echo "  3. Control it: pengwm focus left"
 }

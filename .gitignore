@@ -28,3 +28,6 @@ Thumbs.db
 
 # Build artifacts (Homebrew template expansion)
 {{HOMEBREW_PREFIX}}
+
+# Built locally by packaging/make_app.sh (CI builds it too, never committed)
+/PengWM.app

@@ -6,7 +6,8 @@ use pengwm_core::workspace::LayoutPreset;
 #[derive(Parser, Debug)]
 #[command(
     name = "pengwm",
-    about = "PengWM — a tiling window manager for macOS.\n\nRun with no arguments to start the daemon."
+    about = "PengWM — a tiling window manager for macOS.\n\nRun with no arguments to start the daemon.",
+    version
 )]
 pub struct Cli {
     #[command(subcommand)]

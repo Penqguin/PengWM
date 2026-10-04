@@ -93,18 +93,46 @@ jobs:
           sign_all codesign --verify --verbose=2
           codesign -dv --verbose=4 "$DIR/pengwm" 2>&1 | head -20 || true
 
+      # Assemble PengWM.app from the signed dist binaries. make_app.sh signs
+      # the bundle copies itself (same identity via PENGWM_SIGN_IDENTITY —
+      # re-signing identical binaries is idempotent), and signs the bundle
+      # last, which is the correct nesting order.
+      - name: Assemble PengWM.app bundle
+        env:
+          IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${IDENTITY:-}" ]]; then
+            PENGWM_SIGN_IDENTITY="$IDENTITY" ./packaging/make_app.sh "dist/$TARGET"
+          else
+            ./packaging/make_app.sh "dist/$TARGET"
+          fi
+          ls -la PengWM.app/Contents/MacOS
+          codesign -dv --verbose=4 PengWM.app 2>&1 | head -20 || true
+
       - name: Package artifacts
         run: |
           set -euo pipefail
           cp LICENSE "dist/$TARGET/" 2>/dev/null || true
-          # tarball (primary install artifact)
+          # Flat tarball (legacy install artifact: Formula/pengwm.rb +
+          # `install.sh --no-app`)
           tar czf "pengwm-${TAG}-${TARGET}.tar.gz" -C "dist/$TARGET" .
-          # zip (notarytool-compatible artifact for notarization); zip the named
+          # Flat zip (notarytool-compatible for the flat layout); zip the named
           # directory from dist/ so the archive has a sane root, not `.`.
           (cd dist && ditto -c -k --keepParent "$TARGET" "../pengwm-${TAG}-${TARGET}.zip")
           shasum -a 256 "pengwm-${TAG}-${TARGET}.tar.gz" > "pengwm-${TAG}-${TARGET}.tar.gz.sha256"
           shasum -a 256 "pengwm-${TAG}-${TARGET}.zip" > "pengwm-${TAG}-${TARGET}.zip.sha256"
-          ls -la pengwm-*
+          if [[ -d PengWM.app ]]; then
+            # Bundle tarball (primary install artifact for install.sh) —
+            # named pengwm-app-* to avoid any ambiguity with the legacy
+            # flat pengwm-* assets (GitHub asset URLs match case-insensitively).
+            tar czf "pengwm-app-${TAG}-${TARGET}.tar.gz" PengWM.app
+            # Bundle zip (cask + notarytool artifact for the bundle).
+            ditto -c -k --keepParent PengWM.app "pengwm-app-${TAG}-${TARGET}.zip"
+            shasum -a 256 "pengwm-app-${TAG}-${TARGET}.tar.gz" > "pengwm-app-${TAG}-${TARGET}.tar.gz.sha256"
+            shasum -a 256 "pengwm-app-${TAG}-${TARGET}.zip" > "pengwm-app-${TAG}-${TARGET}.zip.sha256"
+          fi
+          ls -la pengwm-* PengWM-* 2>/dev/null || ls -la pengwm-*
 
       - name: Notarize (if API key configured)
         if: env.HAS_API_KEY == 'true'
@@ -123,18 +151,28 @@ jobs:
           echo "$APPLE_API_KEY_P8" | base64 --decode > /tmp/AuthKey.p8
           # .p8 is a signing credential — scrub it on any exit path.
           trap 'rm -f /tmp/AuthKey.p8' EXIT
-          xcrun notarytool submit "pengwm-${TAG}-${TARGET}.zip" \
-            --key /tmp/AuthKey.p8 \
-            --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER_ID" \
-            --wait
-          # Staple the notarized zip so offline Gatekeeper checks pass too.
-          xcrun stapler staple "pengwm-${TAG}-${TARGET}.zip"
+          # Submit both layouts: the bundle zip (primary) and the flat zip
+          # (legacy installs). notarytool accepts .zip; staple what it gives
+          # back so offline Gatekeeper checks pass too.
+          for zipname in "pengwm-app-${TAG}-${TARGET}.zip" "pengwm-${TAG}-${TARGET}.zip"; do
+            if [[ -f "$zipname" ]]; then
+              xcrun notarytool submit "$zipname" \
+                --key /tmp/AuthKey.p8 \
+                --key-id "$APPLE_API_KEY_ID" \
+                --issuer "$APPLE_API_ISSUER_ID" \
+                --wait
+              xcrun stapler staple "$zipname" || true
+            fi
+          done
 
       - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            pengwm-app-*.tar.gz
+            pengwm-app-*.tar.gz.sha256
+            pengwm-app-*.zip
+            pengwm-app-*.zip.sha256
             pengwm-*.tar.gz
             pengwm-*.tar.gz.sha256
             pengwm-*.zip

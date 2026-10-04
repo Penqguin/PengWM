@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PREFIX="/usr/local/bin"
+APP_DIRS=("/Applications" "$HOME/Applications")
 AGENT_LABEL="com.pengwm.daemon"
 AGENT_PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pengwm"
@@ -14,7 +15,9 @@ Usage:
   ./uninstall.sh [options]
 
 Options:
-  --prefix DIR       Remove binaries from DIR (default: /usr/local/bin)
+  --app-dir DIR      Remove PengWM.app from DIR specifically
+                     (default: try /Applications, then ~/Applications)
+  --prefix DIR       Remove CLI shims from DIR (default: /usr/local/bin)
   --keep-config      Do not remove ~/.config/pengwm
   --yes              Skip all confirmation prompts
   --help             Show this help
@@ -26,6 +29,18 @@ ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --app-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --app-dir requires a directory argument"
+        exit 1
+      fi
+      APP_DIRS=("$2")
+      shift 2
+      ;;
+    --app-dir=*)
+      APP_DIRS=("${1#*=}")
+      shift
+      ;;
     --prefix)
       if [[ $# -lt 2 ]]; then
         echo "error: --prefix requires a directory argument"
@@ -73,10 +88,29 @@ if [[ -f "$AGENT_PLIST" ]]; then
   echo "Removed $AGENT_PLIST"
 fi
 
+REMOVED_SOMETHING=0
+
+for appdir in "${APP_DIRS[@]}"; do
+  if [[ -d "$appdir/PengWM.app" ]]; then
+    if confirm "Remove $appdir/PengWM.app?"; then
+      rm -rf "$appdir/PengWM.app"
+      echo "Removed $appdir/PengWM.app"
+      REMOVED_SOMETHING=1
+    else
+      echo "Keeping $appdir/PengWM.app"
+    fi
+  fi
+done
+
 for bin in pengwm pengwm-bar pengwm-menubar; do
-  if [[ -f "$PREFIX/$bin" ]]; then
+  if [[ -L "$PREFIX/$bin" ]]; then
     rm -f "$PREFIX/$bin"
-    echo "Removed $PREFIX/$bin"
+    echo "Removed shim $PREFIX/$bin"
+    REMOVED_SOMETHING=1
+  elif [[ -f "$PREFIX/$bin" ]]; then
+    rm -f "$PREFIX/$bin"
+    echo "Removed binary $PREFIX/$bin"
+    REMOVED_SOMETHING=1
   fi
 done
 
@@ -84,12 +118,13 @@ if [[ -d "$CONFIG_DIR" ]] && [[ "$KEEP_CONFIG" == "0" ]]; then
   if confirm "Remove configuration in $CONFIG_DIR?"; then
     rm -rf "$CONFIG_DIR"
     echo "Removed $CONFIG_DIR"
+    REMOVED_SOMETHING=1
   else
     echo "Keeping $CONFIG_DIR"
   fi
 fi
 
-if [[ "$STOPPED_AGENT" == "1" ]] || [[ -f "$PREFIX/pengwm" ]] || [[ -f "$PREFIX/pengwm-bar" ]] || [[ -f "$PREFIX/pengwm-menubar" ]]; then
+if [[ "$REMOVED_SOMETHING" == "1" ]]; then
   echo "PengWM uninstalled."
 else
   echo "PengWM does not appear to be installed."
