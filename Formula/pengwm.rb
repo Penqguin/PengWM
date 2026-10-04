@@ -13,11 +13,11 @@ class Pengwm < Formula
   on_macos do
     on_arm do
       url "https://github.com/Penqguin/PengWM/releases/download/v0.5.1/pengwm-v0.5.1-aarch64-apple-darwin.tar.gz"
-      sha256 "07dcd41b4df25b06bd071ccc3bdf0a9aa1bbbe5e9a56c37500039c424a8d7a53"
+      sha256 "f8cf46df2f63bb4f3ddf79edb6b9f9a6d6fac75eeaa44d58c77cf61caa8d46bd"
     end
     on_intel do
       url "https://github.com/Penqguin/PengWM/releases/download/v0.5.1/pengwm-v0.5.1-x86_64-apple-darwin.tar.gz"
-      sha256 "4af267d0a45e8b17be8d55c58a6bbc6dc3d0e6a92cd95b2831dc3dbb174bc66c"
+      sha256 "2b3c730dcca5ce063509234a12e44ea86738aef3217335c7dad4eab82d2a9e39"
     end
   end
 
