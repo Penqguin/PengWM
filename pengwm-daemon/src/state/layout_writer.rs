@@ -68,8 +68,11 @@ impl LayoutWriteCache {
     /// the caller treats it as genuinely closed. Covers the post-wake
     /// AX blackout and transient refresh races (same WindowId reappearing
     /// seconds later); real closes arrive via the destroyed notification
-    /// immediately and don't wait on this.
-    const GONE_GRACE: Duration = Duration::from_secs(1);
+    /// immediately and don't wait on this. Do NOT shrink this to cover
+    /// "faster untracking": post-wake polling returns *empty listings for
+    /// live apps* (see `monitors_wake::on_system_woke`), so a short grace
+    /// untracks live windows and they stop being tiled entirely.
+    const GONE_GRACE: Duration = Duration::from_secs(10);
     /// Consecutive Pinned reports before writes back off. Three strikes is
     /// ~3–6s of futility evidence: fast enough to matter, slow enough to
     /// ride out transient contention without throttling a window that is
