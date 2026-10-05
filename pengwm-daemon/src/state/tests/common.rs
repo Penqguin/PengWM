@@ -64,15 +64,7 @@ pub(super) fn setup_with_handle(display_count: u32) -> (StateManager, TestHandle
     let boxed: Box<dyn crate::adapter::OsAdapter> = Box::new(handle.shared());
     let (bar_tx, _) = mpsc::channel(64);
     (
-        StateManager::new(
-            tx,
-            keybinds,
-            prefix,
-            boxed,
-            BarSender::from_channel(bar_tx),
-            None,
-            vec![],
-        ),
+        StateManager::new(tx, keybinds, prefix, boxed, BarSender::from_channel(bar_tx), vec![]),
         handle,
     )
 }

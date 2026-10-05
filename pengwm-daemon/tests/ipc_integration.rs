@@ -12,6 +12,7 @@ use pengwm_daemon::ipc_server;
 
 const TEST_SOCKET: &str = "/tmp/pengwm_test.sock";
 const TEST_SOCKET_2: &str = "/tmp/pengwm_test2.sock";
+const TEST_SOCKET_PROBE: &str = "/tmp/pengwm_test_probe.sock";
 const TEST_BAR_SOCKET: &str = "/tmp/pengwm_test_bar.sock";
 
 #[test]
@@ -119,6 +120,23 @@ fn cli_roundtrip_receives_ack() {
 }
 
 #[test]
+fn daemon_probe_answers_liveness() {
+    let _ = std::fs::remove_file(TEST_SOCKET_PROBE);
+    // No daemon → not running (stale/missing socket file).
+    assert!(!pengwm_daemon::ipc_server::daemon_already_running_at(TEST_SOCKET_PROBE));
+
+    let (tx, _) = mpsc::channel(64);
+    thread::spawn(move || {
+        pengwm_daemon::ipc_server::start_ipc_server_with_path(tx, TEST_SOCKET_PROBE);
+    });
+    thread::sleep(Duration::from_millis(100));
+
+    // Live listener → running.
+    assert!(pengwm_daemon::ipc_server::daemon_already_running_at(TEST_SOCKET_PROBE));
+    let _ = std::fs::remove_file(TEST_SOCKET_PROBE);
+}
+
+#[test]
 fn bar_socket_receives_cached_state_on_connect() {
     let _ = std::fs::remove_file(TEST_BAR_SOCKET);
 
@@ -135,7 +153,6 @@ fn bar_socket_receives_cached_state_on_connect() {
         }],
         active_workspace: 0,
         split_direction: Some(SplitDirection::Vertical),
-        rect: None,
     };
     sender.send(BarMessage::State(state));
     thread::sleep(Duration::from_millis(100));
@@ -155,14 +172,14 @@ fn bar_socket_receives_cached_state_on_connect() {
     );
 
     // Broadcast a follow-up and read it on the live connection.
-    sender.send(BarMessage::Hide);
+    sender.send(BarMessage::Exit);
     let mut buf = [0u8; 4096];
     let n = stream.read(&mut buf).expect("read follow-up message");
     let line = String::from_utf8_lossy(&buf[..n]);
     let msg: BarMessage = serde_json::from_str(line.trim()).expect("valid JSON message");
     assert!(
-        matches!(msg, BarMessage::Hide),
-        "bar should receive live broadcasts, got {:?}",
+        matches!(msg, BarMessage::Exit),
+        "menubar should receive live broadcasts, got {:?}",
         msg
     );
 

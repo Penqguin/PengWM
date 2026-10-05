@@ -18,7 +18,6 @@ impl StateManager {
         for idx in sync.relayout {
             self.apply_layout(idx);
         }
-        self.apply_bar_reservation();
         self.publish_bar_state();
     }
 
@@ -34,7 +33,6 @@ impl StateManager {
                 self.apply_layout(idx);
             }
         }
-        self.apply_bar_reservation();
         self.publish_bar_state();
     }
 
@@ -45,7 +43,6 @@ impl StateManager {
         for idx in affected {
             self.apply_layout(idx);
         }
-        self.apply_bar_reservation();
         self.publish_bar_state();
     }
 
@@ -214,14 +211,13 @@ impl StateManager {
                 }
             }
         }
-        // Re-tile every visible workspace + bar.
+        // Re-tile every visible workspace.
         let visible: Vec<usize> = self.displays.active().values().copied().collect();
         for idx in visible {
             if idx < self.workspaces.len() {
                 self.apply_layout(idx);
             }
         }
-        self.apply_bar_reservation();
         self.publish_bar_state();
         true
     }

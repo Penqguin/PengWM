@@ -12,6 +12,24 @@ pub fn start_ipc_server(event_tx: mpsc::Sender<DaemonEvent>) {
     start_ipc_server_with_path(event_tx, DEFAULT_SOCKET_PATH);
 }
 
+/// True when a live daemon answers on `path`.
+///
+/// Both servers used to `remove_file` + `bind` unconditionally, so a second
+/// daemon silently stole the socket from the first — two daemons tiled at
+/// once and CLI commands landed on whichever process last rebound (the exact
+/// "it has access but never works" pathology). Probe-then-bind: connect
+/// first; a live daemon answers immediately, a stale socket file left by a
+/// crashed daemon refuses the connection and is safe to rebind.
+pub fn daemon_already_running_at(path: &str) -> bool {
+    use std::os::unix::net::UnixStream;
+    UnixStream::connect(path).is_ok()
+}
+
+/// Check the default command socket for a live daemon.
+pub fn daemon_already_running() -> bool {
+    daemon_already_running_at(DEFAULT_SOCKET_PATH)
+}
+
 pub fn start_ipc_server_with_path(event_tx: mpsc::Sender<DaemonEvent>, socket_path: &str) {
     let _ = std::fs::remove_file(socket_path);
 

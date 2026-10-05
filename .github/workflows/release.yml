@@ -54,7 +54,6 @@ jobs:
           cargo build --release --target "$TARGET"
           mkdir -p "dist/$TARGET"
           cp "target/$TARGET/release/pengwm" "dist/$TARGET/"
-          cp "target/$TARGET/release/pengwm-bar" "dist/$TARGET/"
           cp "target/$TARGET/release/pengwm-menubar" "dist/$TARGET/"
           ls -la "dist/$TARGET/"
 
@@ -78,7 +77,7 @@ jobs:
           set -euo pipefail
           DIR="dist/$TARGET"
           sign_all() {
-            for bin in pengwm pengwm-bar pengwm-menubar; do
+            for bin in pengwm pengwm-menubar; do
               "$@" "$DIR/$bin"
             done
           }

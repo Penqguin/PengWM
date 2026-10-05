@@ -174,7 +174,7 @@ uninstall() {
     rm -rf "$appdir/PengWM.app"
     echo "Removed $appdir/PengWM.app"
   fi
-  for bin in pengwm pengwm-bar pengwm-menubar; do
+  for bin in pengwm pengwm-menubar pengwm-bar; do
     if [[ -L "$PREFIX/$bin" || -f "$PREFIX/$bin" ]]; then
       rm -f "$PREFIX/$bin"
       echo "Removed $PREFIX/$bin"
@@ -226,9 +226,8 @@ install_from_source() {
   if [[ "$NO_APP" == "1" ]]; then
     mkdir -p "$PREFIX"
     install -m 0755 "$bin_dir/pengwm" "$PREFIX/pengwm"
-    install -m 0755 "$bin_dir/pengwm-bar" "$PREFIX/pengwm-bar"
     install -m 0755 "$bin_dir/pengwm-menubar" "$PREFIX/pengwm-menubar"
-    echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-bar, $PREFIX/pengwm-menubar"
+    echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-menubar"
   else
     bash "$SCRIPT_DIR/packaging/make_app.sh" "$bin_dir"
     install_app "$SCRIPT_DIR/PengWM.app"
@@ -258,6 +257,16 @@ install_app() {
   # copy tools silently strip what Gatekeeper checks.
   rm -rf "$APP_DIR/PengWM.app"
   ditto "$staged" "$APP_DIR/PengWM.app"
+  # Re-register the bundle with LaunchServices. Replacing the bundle on disk
+  # orphans the old registration; an unregistered bundle cannot be attributed
+  # by TCC, so a launchd-spawned daemon fails AXIsProcessTrusted() even with
+  # a fresh Accessibility grant in System Settings ("has access but never
+  # works"). Manual `open` fixes it incidentally; lsregister makes it
+  # deterministic.
+  if [[ -x "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" ]]; then
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" -f "$APP_DIR/PengWM.app" 2>/dev/null \
+      || echo "warning: lsregister failed — if Accessibility checks keep failing under launchd, run: open $APP_DIR/PengWM.app"
+  fi
   echo "Installed $APP_DIR/PengWM.app"
 
   mkdir -p "$PREFIX" 2>/dev/null || true
@@ -271,7 +280,7 @@ install_app() {
     echo "warning: '$PREFIX' not writable; installing CLI shims in '$PREFIX' instead."
     echo "warning: make sure it is on your PATH:  export PATH=\"$PREFIX:\$PATH\""
   fi
-  for bin in pengwm pengwm-bar pengwm-menubar; do
+  for bin in pengwm pengwm-menubar; do
     ln -sf "$APP_DIR/PengWM.app/Contents/MacOS/$bin" "$PREFIX/$bin"
   done
   echo "CLI: $PREFIX/pengwm -> $APP_DIR/PengWM.app/Contents/MacOS/pengwm"
@@ -340,8 +349,10 @@ install_from_release() {
   fi
 
   if [[ "$using_app" != "1" ]]; then
-    # Flat layout: loose binaries from the legacy tarball.
-    for bin in pengwm pengwm-bar pengwm-menubar; do
+    # Flat layout: loose binaries from the legacy tarball. Releases older
+    # than the bundle also shipped a `pengwm-bar` binary — it is tolerated
+    # but no longer installed (the menubar is the only UI surface).
+    for bin in pengwm pengwm-menubar; do
       if [[ ! -f "$tmpdir/$bin" ]]; then
         echo "error: tarball is missing '$bin' (corrupt download?)"
         exit 1
@@ -351,9 +362,8 @@ install_from_release() {
     echo "Installing binaries to $PREFIX..."
     mkdir -p "$PREFIX"
     install -m 0755 "$tmpdir/pengwm" "$PREFIX/pengwm"
-    install -m 0755 "$tmpdir/pengwm-bar" "$PREFIX/pengwm-bar"
     install -m 0755 "$tmpdir/pengwm-menubar" "$PREFIX/pengwm-menubar"
-    echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-bar, $PREFIX/pengwm-menubar (${tag})"
+    echo "Installed $PREFIX/pengwm, $PREFIX/pengwm-menubar (${tag})"
   fi
 
   rm -rf "$tmpdir"
@@ -363,7 +373,7 @@ install_from_release() {
 verify_signatures_loose() {
   local dir="$1"
   if command -v codesign >/dev/null 2>&1; then
-    for bin in pengwm pengwm-bar pengwm-menubar; do
+    for bin in pengwm pengwm-menubar; do
       codesign --verify --verbose=1 "$dir/$bin" || {
         echo "error: signature verification failed for $bin — refusing to install."
         exit 1
@@ -380,7 +390,7 @@ verify_signatures_loose() {
 install_agent() {
   # In .app mode, launch the bundle executable directly (not the $PREFIX
   # symlink): keeps `current_exe()` sibling lookup honest so the daemon
-  # finds pengwm-bar/pengwm-menubar next to itself in Contents/MacOS.
+  # finds pengwm-menubar next to itself in Contents/MacOS.
   local program="$PREFIX/pengwm"
   if [[ "$NO_APP" != "1" && -x "$APP_DIR/PengWM.app/Contents/MacOS/pengwm" ]]; then
     program="$APP_DIR/PengWM.app/Contents/MacOS/pengwm"

@@ -4,7 +4,6 @@ use pengwm_core::command::{BarMessage, Command, DaemonResponse};
 use pengwm_core::tree::{Direction, WindowId};
 use tokio::sync::mpsc;
 
-use super::bar::ToggleAction;
 use super::session;
 use super::StateManager;
 
@@ -136,21 +135,6 @@ impl StateManager {
                 self.gap_inner = pixels.max(0) as f64;
                 self.apply_layout(self.active_workspace_idx());
             }
-            Command::ToggleBar => match self.bar.toggle() {
-                ToggleAction::Show(_) => {
-                    log::info!("Bar toggled: visible");
-                    self.bar_sender.send(BarMessage::Show);
-                    self.apply_bar_reservation();
-                }
-                ToggleAction::Hide => {
-                    log::info!("Bar toggled: hidden");
-                    self.bar_sender.send(BarMessage::Hide);
-                    self.apply_bar_reservation();
-                }
-                ToggleAction::Noop => {
-                    log::info!("Bar not running; toggle ignored");
-                }
-            },
             Command::ReloadConfig => {
                 self.reload_config();
             }
@@ -171,14 +155,15 @@ impl StateManager {
                 return;
             }
             Command::Quit => {
-                // Ack the caller (menubar / `pengwm quit`), then shut the bar
-                // down too so quitting the menubar stops everything. A short
-                // sleep lets the bar-server and IPC threads flush their writes
-                // before the event loop returns and the process exits.
+                // Ack the caller (menubar / `pengwm quit`), then tell the
+                // menubar to exit so quitting stops everything together. A
+                // short sleep lets the push-server and IPC threads flush
+                // their writes before the event loop returns and the
+                // process exits.
                 if let Some(tx) = tx {
                     let _ = tx.try_send(DaemonResponse::Ack);
                 }
-                log::info!("Quit requested — shutting down daemon and bar");
+                log::info!("Quit requested — shutting down daemon and menubar");
                 // Persist session (topology + active + gaps) atomically before exit.
                 // Skipped in tests to avoid polluting the user's real session file.
                 if !cfg!(test) {
@@ -196,8 +181,7 @@ impl StateManager {
                 self.bar_sender.send(BarMessage::Exit);
                 std::thread::sleep(Duration::from_millis(150));
                 self.shutdown_requested = true;
-                return;
-            }
+                return;            }
             Command::RevealAll => {
                 log::info!("RevealAll requested — retiling hidden windows");
                 self.reveal_all();

@@ -196,14 +196,6 @@ fn parse_modifiers_full_names() {
 }
 
 #[test]
-fn default_has_toggle_bar() {
-    let config = KeybindConfig::default();
-    assert!(config.bindings.iter().any(|b| {
-        b.keycode == 0x0B && b.modifiers == MODIFIER_ALT && matches!(b.action, Command::ToggleBar)
-    }));
-}
-
-#[test]
 fn default_has_resize_pane_on_alt_shift_arrows() {
     let config = KeybindConfig::default();
     let mods = MODIFIER_ALT | MODIFIER_SHIFT;

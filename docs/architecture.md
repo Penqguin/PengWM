@@ -202,30 +202,30 @@ windows, or at a 20s deadline regardless.
 |-------|------|---------|
 | `pengwm-core` | serde, serde_json | Types, layout math, workspace logic |
 | `pengwm-daemon` | core, tokio, clap, accessibility-sys, objc2 | Single `pengwm` binary: daemon, CLI parser, UDS sender/server |
-| `pengwm-bar` | core, eframe/egui, serde, toml, objc2 (macOS) | Status bar: split icon + workspace pills |
+| `pengwm-menubar` | core, objc2 (macOS) | Menu-bar icon: workspace/app list |
 
-## Bar
+## Menubar
 
-`pengwm-bar` is a lightweight eframe (egui) process that subscribes to a
-second UDS at `/tmp/pengwm-bar.sock`. The daemon spawns it at startup (gated on
-`[bar].enabled`, excluded from tiling by pid) and pushes newline-delimited JSON
-`BarMessage`s over that socket.
+`pengwm-menubar` is an NSStatusItem process that subscribes to a second UDS at
+`/tmp/pengwm-bar.sock` (legacy wire-format name). The daemon spawns it at
+startup (gated on `[menubar].enabled`, excluded from tiling by pid) and pushes
+newline-delimited JSON `BarMessage`s over that socket.
 
 ```
-pengwm-daemon                    pengwm-bar
-  bar_server ── BarMessage ──▶ ─── subscribe() ──▶ egui repaint
-  (caches last Show/Hide         (reconnect w/ backoff,
-   + last State, replays         250ms → 2s)
-   both on connect)              ── send_command(Command) ──▶ pengwm.sock
-                                                                 └─▶ daemon
+pengwm-daemon                    pengwm-menubar
+  bar_server ── BarMessage ──▶ ─── subscribe() ──▶ NSMenu rebuild
+  (caches last State,             (reconnect w/ backoff,
+   replays on connect)             250ms → 2s, exits after
+                                   10s of daemon silence)
+   ── send_command(Command) ──▶ pengwm.sock
+                                  └─▶ daemon
 ```
 
-- `BarMessage::Show` / `Hide` drive `ViewportCommand::Visible`; `Reload`
-  re-reads config + theme; `Exit` closes the window.
-- `BarMessage::State` carries `workspaces`, `active_workspace`,
-  `split_direction`, and the daemon-reserved `rect`; the bar positions itself
-  with `OuterPosition`/`InnerSize` and switches workspaces on click by sending
-  `Command::Workspace` back over the command socket.
-- Themes are built-in TOML presets (tokyo-night default) with `[bar.colors]`
-  overrides; corner radius auto-matches the macOS version.
+- `BarMessage::Exit` makes the menubar exit immediately on a clean
+  `pengwm quit`; on a daemon crash it hangs around up to its 10s grace
+  (no icon lingers without a daemon), then exits.
+- `BarMessage::State` carries `workspaces`, `active_workspace`, and
+  `split_direction`; the menu, rebuilt on every open, lists each workspace and
+  its app names, and switches workspaces via `Command::Workspace` sent back
+  over the command socket.
 

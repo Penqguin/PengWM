@@ -44,8 +44,6 @@ pub enum CliCommand {
     ResizePane {
         direction: DirectionArg,
     },
-    /// Toggle the status bar visibility
-    ToggleBar,
     SetGapOuter {
         pixels: i32,
     },
@@ -147,7 +145,6 @@ impl From<CliCommand> for Command {
             CliCommand::ResizePane { direction } => Command::ResizePane {
                 direction: direction.into(),
             },
-            CliCommand::ToggleBar => Command::ToggleBar,
             CliCommand::SetGapOuter { pixels } => Command::SetGapOuter { pixels },
             CliCommand::SetGapInner { pixels } => Command::SetGapInner { pixels },
             CliCommand::FocusDisplay { direction } => Command::FocusDisplay {

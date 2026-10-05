@@ -59,16 +59,6 @@ references.
 **Fix:** wait a few seconds. If windows are still stranded after that,
 `pengwm reveal-all` re-tiles everything tracked as hidden.
 
-## The bar never appears
-
-**Cause:** `[bar] enabled = false` (the default), or it was flipped on via
-a runtime reload — spawning requires a daemon restart. `toggle-bar` is a
-no-op while no bar process runs, and no strip is reserved until it spawns
-(so there is never a phantom gap).
-
-**Fix:** set `[bar] enabled = true` and restart the daemon. Check the logs
-for the spawn line.
-
 ## Workspaces look wrong after docking/undocking
 
 **Cause:** monitor topology changed. Removed outputs' workspaces move to

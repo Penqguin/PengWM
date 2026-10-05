@@ -77,7 +77,13 @@ fn read_messages(stream: UnixStream, state: &Arc<Mutex<Option<BarState>>>) -> Re
             Ok(BarMessage::State(s)) => {
                 *state.lock().unwrap() = Some(s);
             }
-            Ok(_) => {}
+            // Clean shutdown (`pengwm quit`): the daemon is going away on
+            // purpose — exit immediately instead of waiting out the
+            // disconnect grace, so no orphaned icon lingers.
+            Ok(BarMessage::Exit) => {
+                log::info!("daemon sent Exit; exiting menubar");
+                std::process::exit(0);
+            }
             Err(e) => log::warn!("menubar skipping malformed bar message: {e}"),
         }
     }

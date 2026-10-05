@@ -48,15 +48,38 @@ define_class!(
             }
         }
 
-        // SAFETY: matches `quitMenubar:` — the action selector attached to the
-        // Quit row. Asks the daemon to shut itself down (and the bar with it),
-        // then terminates this menubar app so everything stops together.
-        #[unsafe(method(quitMenubar:))]
-        fn quit_menubar(&self, sender: &NSMenuItem) {
+        // SAFETY: matches `quitPengwm:` — the action selector attached to the
+        // Quit row. Asks the daemon to shut itself down (which deregisters
+        // the launchd job — quit stays quit), then terminates this menubar
+        // so the whole app stops together.
+        #[unsafe(method(quitPengwm:))]
+        fn quit_pengwm(&self, sender: &NSMenuItem) {
             let mtm = self.mtm();
-            log::info!("menubar quitting — shutting down daemon");
-            if let Err(e) = send_command(&Command::Quit) {
-                log::warn!("menubar quit command failed: {e}");
+            log::info!("menubar quit — shutting down daemon");
+            match send_command(&Command::Quit) {
+                Ok(_) => {}
+                // Daemon unreachable or wedged (a hung event loop never
+                // replies and the IPC socket has no client-side timeout):
+                // the whole app should still die. Deregister the launchd
+                // job first (nothing respawns us), then SIGTERM and — if
+                // the daemon survived even that — SIGKILL, so the icon
+                // cannot quit while the daemon limps on.
+                Err(e) => {
+                    log::warn!("menubar quit command failed, killing daemon: {e}");
+                    let _ = std::process::Command::new("sh")
+                        .args([
+                            "-c",
+                            "launchctl bootout gui/$(id -u)/com.pengwm.daemon 2>/dev/null || true",
+                        ])
+                        .status();
+                    let _ = std::process::Command::new("killall")
+                        .args(["-TERM", "pengwm"])
+                        .status();
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let _ = std::process::Command::new("killall")
+                        .args(["-KILL", "pengwm"])
+                        .status();
+                }
             }
             NSApplication::sharedApplication(mtm).terminate(Some(sender));
         }
@@ -167,8 +190,10 @@ fn add_quit_item(menu: &NSMenu, mtm: MainThreadMarker, target: &MenuTarget) {
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
     let quit = NSMenuItem::new(mtm);
-    quit.setTitle(&NSString::from_str("Quit PengWM Menubar"));
-    let quit_sel = Sel::register(c"quitMenubar:");
+    // The menubar's Quit is the app-level quit: it stops the daemon (and
+    // deregisters the launchd job), then exits itself.
+    quit.setTitle(&NSString::from_str("Quit PengWM"));
+    let quit_sel = Sel::register(c"quitPengwm:");
     unsafe {
         quit.setTarget(Some(target));
         quit.setAction(Some(quit_sel));

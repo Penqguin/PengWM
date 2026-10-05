@@ -13,15 +13,15 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 bin_dir="${1:-$repo_root/target/release}"
 app="$repo_root/PengWM.app"
 
-for bin in pengwm pengwm-bar pengwm-menubar; do
+for bin in pengwm pengwm-menubar; do
   [[ -f "$bin_dir/$bin" ]] || { echo "error: missing $bin_dir/$bin — build first (cargo build --release)" >&2; exit 1; }
 done
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$repo_root/packaging/PengWM.app/Contents/Info.plist" "$app/Contents/Info.plist"
+cp "$repo_root/packaging/app-template/Contents/Info.plist" "$app/Contents/Info.plist"
 cp "$repo_root/packaging/PengWM.icns" "$app/Contents/Resources/PengWM.icns"
-for bin in pengwm pengwm-bar pengwm-menubar; do
+for bin in pengwm pengwm-menubar; do
   cp "$bin_dir/$bin" "$app/Contents/MacOS/$bin"
   chmod 0755 "$app/Contents/MacOS/$bin"
 done
@@ -44,7 +44,7 @@ sign() {
     codesign --force -s - "$@"
   fi
 }
-for bin in pengwm pengwm-bar pengwm-menubar; do
+for bin in pengwm pengwm-menubar; do
   sign "$app/Contents/MacOS/$bin"
 done
 sign "$app"

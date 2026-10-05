@@ -19,7 +19,10 @@ bundle, `com.pengwm.daemon`), but ad-hoc signatures still can't pin it.
 
 ## The bundle (`packaging/`)
 
-`packaging/PengWM.app/Contents/Info.plist` is the bundle definition:
+`packaging/app-template/Contents/Info.plist` is the bundle definition
+(the `Info.plist` lives in a non-`.app` directory on purpose: Spotlight
+indexes any `.app`-shaped folder it finds, and a template with no
+executables surfaced as a fake third PengWM in Spotlight):
 `CFBundleIdentifier` `com.pengwm.daemon` (same as the LaunchAgent label),
 `CFBundleExecutable` `pengwm`, **`LSUIElement`** (no Dock icon — the WM's UI
 surfaces are the bar/menubar child processes) and `CFBundleIconFile`
@@ -134,10 +137,9 @@ intentionally minimal (hardened runtime compatibility).
 ```
 
 The default is the bundle: it extracts the release's `pengwm-app-*` tarball
-into `/Applications` (`~/Applications` when not writable), symlinks
-`pengwm`/`pengwm-bar`/`pengwm-menubar` into the prefix, and the LaunchAgent
+into `/Applications` (`~/Applications` when not writable), symlinks `pengwm`/`pengwm-menubar` into the prefix, and the LaunchAgent
 runs the bundle's daemon binary directly (so `current_exe()` sibling lookup
-still finds bar/menubar in `Contents/MacOS`). Releases older than the
+still finds the menubar in `Contents/MacOS`). Releases older than the
 bundle switch-over fall back to the flat layout with a note. It verifies
 `shasum -a 256` against the `.sha256` sidecar when present, runs
 `codesign --verify` (hard fail), and warns (soft) when Gatekeeper (`spctl`)
@@ -146,6 +148,16 @@ doesn't trust the build — i.e. ad-hoc vs notarized.
 Support-burden note: switching a Machine between flat and bundle layouts means
 **one Accessibility re-grant** (the TCC entry is bound per layout: old path vs
 bundle id). Same grant count as a layout-independent signing-identity change.
+
+**LaunchServices + TCC attribution gotcha (fixed in install.sh):** replacing
+`PengWM.app` on disk (an update via `ditto`) orphans the bundle's
+LaunchServices registration. A bundle LaunchServices cannot attribute will
+fail `AXIsProcessTrusted()` under launchd **even with a fresh grant** —
+System Settings shows PengWM in Accessibility, the daemon still says
+"needs Accessibility", while running the binary by hand works. `install.sh`
+now runs `lsregister -f` on the installed bundle (the same fix `open
+PengWM.app` used to apply as a side effect); if a manual install ever shows
+this pattern, register the bundle or `open` it once.
 
 ## Homebrew
 

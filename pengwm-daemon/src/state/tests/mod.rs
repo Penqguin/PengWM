@@ -1,4 +1,3 @@
-mod bar;
 mod bootstrap_routing;
 mod commands;
 mod common;

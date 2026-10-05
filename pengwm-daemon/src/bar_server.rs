@@ -13,7 +13,7 @@ pub struct BarSender {
 }
 
 impl BarSender {
-    /// Non-blocking broadcast to every connected `pengwm-bar` client.
+    /// Non-blocking broadcast to every connected `pengwm-menubar` client.
     pub fn send(&self, msg: BarMessage) {
         let _ = self.tx.try_send(msg);
     }
@@ -25,16 +25,18 @@ impl BarSender {
     }
 }
 
-/// Spawn the daemon→bar push server on its own thread using the default socket.
+/// Spawn the daemon→UI push server on its own thread using the default
+/// socket. One consumer: the spawned `pengwm-menubar` child (the legacy
+/// `pengwm` bar name — and the socket path — are kept for the wire format).
 pub fn spawn_bar_server() -> BarSender {
     spawn_bar_server_with_path(BAR_SOCKET_PATH)
 }
 
-/// Spawn the daemon→bar push server on its own thread.
+/// Spawn the daemon→UI push server on its own thread.
 ///
-/// The last visibility (`Show`/`Hide`) and the last `State` snapshot are cached
-/// and replayed to a freshly connected bar so it always renders the current
-/// visibility and state even if it connects after a broadcast.
+/// The last `State` snapshot and the last `Exit` marker are cached and
+/// replayed to a freshly connected menubar, so it renders current state even
+/// if it connects after a broadcast.
 pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
     let socket_path = socket_path.to_owned();
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
@@ -54,14 +56,13 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
         // lock during blocking I/O, so a slow bar never stalls others.
         let clients: Arc<Mutex<Vec<tokio::sync::mpsc::Sender<Vec<u8>>>>> =
             Arc::new(Mutex::new(Vec::new()));
-        // Cache the last Show/Hide and the last State separately so a freshly
-        // connecting bar can reconstruct the full current picture.
-        let last_visibility: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+        // Cache the last `State` separately so a freshly connecting
+        // menubar can reconstruct the current picture. `Exit` is not
+        // cached: the daemon would exit before the next menubar connects.
         let last_state: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
 
         {
             let clients = Arc::clone(&clients);
-            let last_visibility = Arc::clone(&last_visibility);
             let last_state = Arc::clone(&last_state);
             thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -79,10 +80,9 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
                                 }
                             });
 
-                            // Replay cached payloads via the new client's channel
-                            let visibility = last_visibility.lock().unwrap().clone();
+                            // Replay the cached state to the new client
                             let state = last_state.lock().unwrap().clone();
-                            for payload in visibility.into_iter().chain(state) {
+                            if let Some(payload) = state {
                                 let _ = client_tx.try_send(payload);
                             }
 
@@ -102,13 +102,10 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
             let mut payload = serde_json::to_vec(&msg).unwrap_or_default();
             payload.push(b'\n');
             match &msg {
-                BarMessage::Show | BarMessage::Hide => {
-                    *last_visibility.lock().unwrap() = Some(payload.clone());
-                }
                 BarMessage::State(_) => {
                     *last_state.lock().unwrap() = Some(payload.clone());
                 }
-                _ => {}
+                BarMessage::Exit => {}
             }
 
             // Broadcast without holding the lock during I/O — clone the senders,
@@ -118,8 +115,9 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
             let mut any_closed = false;
             for tx in &senders {
                 if tx.try_send(payload.clone()).is_err() {
-                    // Channel full or closed — drop this payload for this client
-                    // (bar will catch up on next State push). If closed, prune.
+                    // Channel full or closed — drop this payload for this
+                    // client (menubar catches up on next State push). If
+                    // closed, prune.
                     if tx.is_closed() {
                         any_closed = true;
                     }

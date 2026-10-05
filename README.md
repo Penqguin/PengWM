@@ -62,12 +62,8 @@ restricted_apps = []
 prefix = "alt-space"
 prefix_timeout_ms = 1000
 
-[bar]
+[menubar]
 enabled = true
-position = "top"
-thickness = 32
-visible = true
-theme = "tokyo-night"
 ```
 
 ### Keybindings
@@ -99,7 +95,6 @@ alt-ctrl-left  = "focus-display-left"
 alt-ctrl-shift-right = "move-window-to-display-right"
 alt-t = "cycle-layout"
 alt-m = "toggle-magnify"
-alt-b = "toggle-bar"
 cmd-shift-r = "reload-config"
 ```
 
@@ -110,16 +105,8 @@ cmd-shift-r = "reload-config"
 `move-window-to-display-{left,right,up,down}`, `split-horizontal`, `split-vertical`,
 `close`, `cycle-layout`, `toggle-magnify`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
 `resize-pane-{left,right,up,down}`, `set-gap-outer-{pixels}`,
-`set-gap-inner-{pixels}`, `toggle-bar`, `reload-config`, `query-state`,
+`set-gap-inner-{pixels}`, `reload-config`, `query-state`,
 `reveal-all`, `quit`.
-
-## Status Bar
-
-PengWM ships a minimal status bar (`pengwm-bar`, built on egui/eframe) that the
-daemon spawns automatically. It shows a split-direction icon and clickable
-workspace pills on the primary display, themed tokyo-night by default. See
-[docs/configuration.md](docs/configuration.md) for the `[bar]` table, themes,
-and corner-radius options.
 
 ## Workspaces
 
@@ -138,9 +125,10 @@ replace them with `[[workspaces]]` tables in config.toml; see
 `pengwm-menubar` is a menu-bar icon (spawned automatically by the daemon) that
 lists every workspace and the apps with windows in it. Clicking a workspace
 switches to it. Enable/disable with `[menubar] enabled = true|false` in
-config.toml. It subscribes to the same push socket as the status bar and
-rebuilds its menu from the latest state each time it opens. Choosing **Quit
-PengWM Menubar** shuts everything down — daemon, status bar, and menubar.
+config.toml. It rebuilds its menu from the latest pushed state each time it
+opens. Choosing **Quit PengWM** shuts the whole app down — the daemon exits
+and deregisters its LaunchAgent (`quit` stays `quit`), and the menubar
+terminates; if the daemon is unreachable the menubar kills it directly.
 
 ## CLI Usage
 
@@ -157,7 +145,6 @@ pengwm cycle-layout
 pengwm toggle-magnify
 pengwm select-layout <even-horizontal|even-vertical|main-horizontal|main-vertical|tiled>
 pengwm resize-pane <left|right|up|down>
-pengwm toggle-bar
 pengwm set-gap-outer <pixels>
 pengwm set-gap-inner <pixels>
 pengwm reload-config
@@ -172,7 +159,6 @@ pengwm quit
 ```
 pengwm-core/       Pure data types, layout engine, workspace logic (no macOS deps)
 pengwm-daemon/     The `pengwm` binary — daemon, CLI client, macOS FFI
-pengwm-bar/        The `pengwm-bar` status bar — egui/eframe frontend
 pengwm-menubar/    The `pengwm-menubar` menu-bar icon — workspace/app list
 ```
 

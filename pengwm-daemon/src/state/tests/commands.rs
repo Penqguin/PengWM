@@ -145,7 +145,6 @@ fn on_command_handles_every_variant_without_reply() {
         Command::ResizePane {
             direction: Direction::Right,
         },
-        Command::ToggleBar,
         Command::ReloadConfig,
         Command::QueryState,
         Command::Quit,
@@ -210,7 +209,7 @@ fn on_command_select_layout_rearranges_and_resize_shifts() {
 }
 
 #[test]
-fn quit_command_requests_shutdown_and_exits_bar() {
+fn quit_command_requests_shutdown_and_exits_menubar() {
     let mut sm = setup(1);
     let (bar_tx, mut bar_rx) = mpsc::channel(64);
     sm.bar_sender = BarSender::from_channel(bar_tx);
@@ -223,7 +222,7 @@ fn quit_command_requests_shutdown_and_exits_bar() {
     let msgs: Vec<_> = std::iter::from_fn(|| bar_rx.try_recv().ok()).collect();
     assert!(
         msgs.iter().any(|m| matches!(m, BarMessage::Exit)),
-        "quitting should tell the bar to exit too"
+        "quitting should tell the menubar to exit too"
     );
 }
 

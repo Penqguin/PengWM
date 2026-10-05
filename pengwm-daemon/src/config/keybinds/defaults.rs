@@ -207,12 +207,6 @@ impl Default for KeybindConfig {
                 modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
                 action: Command::ReloadConfig,
             },
-            // Toggle bar: alt-b
-            Keybind {
-                keycode: 0x0B,
-                modifiers: MODIFIER_ALT,
-                action: Command::ToggleBar,
-            },
             // Display focus: alt-ctrl arrows (move focus between monitors)
             Keybind {
                 keycode: 0x7B,

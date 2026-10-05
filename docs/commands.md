@@ -94,14 +94,6 @@ pengwm toggle-magnify
 Toggle a tmux-popup style magnify overlay (centered 75%x75%) on the focused
 window. Pinned across focus changes; cleared on close. Default bind: `alt-m`.
 
-## Toggle Bar
-
-```bash
-pengwm toggle-bar
-```
-
-Show or hide the status bar. A no-op when the bar process isn't running.
-
 ## Close
 
 ```bash

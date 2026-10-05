@@ -1,4 +1,3 @@
-use crate::layout::Rect;
 use crate::tree::{Direction, SplitDirection, WindowId};
 use crate::workspace::LayoutPreset;
 use serde::{Deserialize, Serialize};
@@ -47,11 +46,11 @@ pub enum Command {
     SetGapInner {
         pixels: i32,
     },
-    ToggleBar,
     ReloadConfig,
     QueryState,
-    /// Shut the daemon down (and the bar with it). Used by the menubar's Quit
-    /// item and `pengwm quit`.
+    /// Shut the daemon down (and the menubar with it, plus the LaunchAgent
+    /// job itself so the daemon stays quit). Used by the menubar's Quit item
+    /// and `pengwm quit`.
     Quit,
     /// Re-tile all hidden windows back into their remembered workspaces.
     /// Daemon-down safety net counterpart to the bottom-edge clamped hide.
@@ -212,8 +211,7 @@ const ACTION_TABLE: &[(&str, Command)] = &[
     ),
     ("close", Command::Close),
     ("cycle-layout", Command::CycleLayout),
-    ("toggle-magnify", Command::ToggleMagnify),
-    (
+    ("toggle-magnify", Command::ToggleMagnify),    (
         "select-layout-even-horizontal",
         Command::SelectLayout {
             preset: LayoutPreset::EvenHorizontal,
@@ -267,7 +265,6 @@ const ACTION_TABLE: &[(&str, Command)] = &[
             direction: Direction::Down,
         },
     ),
-    ("toggle-bar", Command::ToggleBar),
     ("reload-config", Command::ReloadConfig),
     ("query-state", Command::QueryState),
     ("quit", Command::Quit),
@@ -337,13 +334,13 @@ pub struct WorkspaceInfo {
     pub focused_window: Option<WindowId>,
 }
 
-/// Messages the daemon pushes to a connected `pengwm-bar` over the bar socket.
+/// Messages the daemon pushes to a connected `pengwm-menubar` over the UI
+/// socket (/tmp/pengwm-bar.sock — the legacy name of the daemon→UI channel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BarMessage {
-    Show,
-    Hide,
+    /// The daemon is exiting cleanly (`pengwm quit`): the menubar exits
+    /// immediately instead of waiting out its disconnect grace.
     Exit,
-    Reload,
     State(BarState),
 }
 
@@ -365,14 +362,9 @@ pub struct BarState {
     pub workspaces: Vec<BarWorkspace>,
     /// Index into `workspaces` of the currently focused workspace.
     pub active_workspace: usize,
-    /// Split direction of the active workspace's focused split container
-    /// (drives the split-direction icon). `None` when there is no split.
+    /// Split direction of the active workspace's focused split container.
+    /// `None` when there is no split.
     pub split_direction: Option<SplitDirection>,
-    /// Global-coordinate rect of the bar strip on the primary display, as
-    /// reserved by the window manager. The bar positions itself exactly here.
-    /// `None` while the bar is hidden.
-    #[serde(default)]
-    pub rect: Option<Rect>,
 }
 
 #[cfg(test)]
@@ -443,7 +435,7 @@ mod tests {
         );
         assert_eq!(
             Command::parse_action("toggle-bar"),
-            Some(Command::ToggleBar)
+            None
         );
         assert_eq!(
             Command::parse_action("reload-config"),
@@ -498,14 +490,6 @@ mod tests {
     }
 
     #[test]
-    fn command_toggle_bar_roundtrips() {
-        let cmd = Command::ToggleBar;
-        let json = serde_json::to_string(&cmd).unwrap();
-        let back: Command = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, Command::ToggleBar));
-    }
-
-    #[test]
     fn bar_state_roundtrips() {
         use crate::command::{BarMessage, BarState, BarWorkspace};
         let state = BarState {
@@ -518,10 +502,16 @@ mod tests {
             }],
             active_workspace: 0,
             split_direction: Some(SplitDirection::Vertical),
-            rect: None,
         };
         let json = serde_json::to_string(&BarMessage::State(state)).unwrap();
         let back: BarMessage = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, BarMessage::State(_)));
+    }
+
+    #[test]
+    fn bar_message_exit_roundtrips() {
+        let json = serde_json::to_string(&BarMessage::Exit).unwrap();
+        let back: BarMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, BarMessage::Exit));
     }
 }

@@ -44,6 +44,17 @@ fn main() {
 fn daemon_main() {
     env_logger::init();
 
+    // Single-instance guard, before everything (including the Accessibility
+    // prompt): a second daemon — opened from Spotlight, relaunched by hand,
+    // or raced by launchd — used to silently steal the IPC socket from the
+    // first and both tiled at once. Exit 0 so KeepAlive doesn't resurrect
+    // the loser (SuccessfulExit=false restarts only on nonzero).
+    if ipc_server::daemon_already_running() {
+        eprintln!("error: another pengwm daemon is already running (it answers on {}).", pengwm_core::ipc::COMMAND_SOCKET_PATH);
+        eprintln!("Stop it first: pengwm quit");
+        std::process::exit(0);
+    }
+
     #[cfg(target_os = "macos")]
     {
         if !macos::ax_element::is_process_trusted() {
@@ -143,12 +154,17 @@ fn daemon_main() {
         ipc_server::start_ipc_server(ipc_tx);
     });
 
-    // The `pengwm-bar` process is spawned inside EventLoop::new (gated on
-    // `bar.enabled`), and its pid is excluded from window management.
+    // The `pengwm-menubar` process is spawned inside EventLoop::new (gated on
+    // `menubar.enabled`), and its pid is excluded from window management.
 
     eprintln!("PengWM daemon ready (pid {})", std::process::id());
 
     // Run the event loop synchronously on this thread.
     // Drains macOS events (AXObserver, CGEventTap, NSWorkspace) and mpsc messages.
     event_loop.run_sync();
+
+    // Quit stays quit: deregister the LaunchAgent job so launchd cannot
+    // respawn us after this clean exit. See `launchd::` for why the plist's
+    // KeepAlive alone cannot express this (respawns even after exit 0).
+    pengwm_daemon::launchd::remove_agent_job();
 }

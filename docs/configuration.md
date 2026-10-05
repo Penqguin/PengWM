@@ -95,45 +95,15 @@ skeleton (windows themselves are ephemeral and re-routed on next launch).
 - `pengwm clear-session` deletes the saved state so the next launch is fresh.
 - `autostart` does **not** run when restoring a session.
 
-## Bar
-
-PengWM ships a minimal status bar, `pengwm-bar` (an egui/eframe process spawned
-by the daemon). It shows a split-direction icon plus clickable workspace pills
-on the primary display. It is excluded from tiling by pid. The strip on the
-screen edge is only reserved while the bar process is actually running, so a
-disabled or failed bar never leaves a phantom gap.
-
-| Key             | Type    | Default         | Description                                        |
-| --------------- | ------- | --------------- | -------------------------------------------------- |
-| `position`      | string  | `"top"`         | `"top"`, `"bottom"`, `"left"`, or `"right"`        |
-| `thickness`     | int     | `32`            | Bar width (left/right) or height (top/bottom) in px |
-| `visible`       | bool    | `true`          | Initial visibility (only effective when `enabled`; toggle at runtime with `alt-b`) |
-| `enabled`       | bool    | `false`         | Whether the daemon spawns the bar at startup       |
-| `theme`         | string  | `"tokyo-night"` | Built-in theme name or path to a theme TOML        |
-| `corner_radius` | float   | *(auto)*        | Explicit corner radius override, in points         |
-| `colors`        | table   | *(none)*        | Per-color overrides on top of the resolved theme   |
-
-```toml
-[bar]
-enabled = true
-position = "top"
-thickness = 32
-visible = true
-theme = "tokyo-night"
-
-[bar.colors]
-background = "#1a1b26"
-accent = "#7aa2f7"
-```
-
 ## Menubar
 
 `pengwm-menubar` is a menu-bar icon spawned by the daemon. It lists every
 workspace and the apps owning windows in it, with the active workspace marked;
-clicking a workspace switches to it. Like the bar, it subscribes to the daemon's
-push socket (state is refreshed each time the menu opens). The **Quit PengWM
-Menubar** menu item stops everything: the daemon shuts down, the status bar
-closes, and the menubar exits. (`pengwm quit` does the same.)
+clicking a workspace switches to it. It subscribes to the daemon's push socket
+(state is refreshed each time the menu opens). The **Quit PengWM** menu item
+stops everything: the daemon shuts down — and deregisters its LaunchAgent job,
+so nothing respawns it — and the menubar exits. (`pengwm quit` does the same;
+restart with `open /Applications/PengWM.app` or a new login.)
 
 | Key       | Type | Default | Description                              |
 | --------- | ---- | ------- | ---------------------------------------- |
@@ -243,10 +213,9 @@ Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 | `select-layout-even-horizontal` / `select-layout-even-vertical` / `select-layout-main-horizontal` / `select-layout-main-vertical` / `select-layout-tiled` | Rearrange into a tmux-style preset |
 | `resize-pane-left` / `resize-pane-right` / `resize-pane-up` / `resize-pane-down` | Push the divider one step in the direction |
 | `set-gap-outer-{pixels}` / `set-gap-inner-{pixels}`          | Set gaps                                     |
-| `toggle-bar`                                                 | Show/hide the bar                             |
 | `reload-config`                                              | Reload configuration from disk                |
 | `query-state`                                                | Dump workspace state to stdout                |
-| `quit`                                                       | Shut down the daemon (and the bar)            |
+| `quit`                                                       | Shut down the daemon and the menubar          |
 | `reveal-all`                                                 | Re-tile all hidden windows into their workspaces (daemon-down recovery) |
 
 ### Example
@@ -283,7 +252,6 @@ alt-shift-2 = "move-window-to-workspace-2"
 alt-t = "cycle-layout"
 alt-m = "toggle-magnify"
 cmd-shift-r = "reload-config"
-alt-b = "toggle-bar"
 
 # tmux-style presets and resizing
 alt-shift-left  = "resize-pane-left"
@@ -309,7 +277,7 @@ additive, so every direct bind keeps working.
   (workspace switching, tmux-style). Exact chords work too.
 - Repeatable actions (resize, focus, presets, splits, display moves) extend
   the window, so `prefix, h, h, h` keeps resizing without re-arming.
-  One-shot actions (`close`, `quit`, `toggle-bar`, …) fire once and disarm.
+  One-shot actions (`close`, `quit`, …) fire once and disarm.
 - An unmatched key disarms and passes through, so normal typing is never
   swallowed beyond the armed window.
 

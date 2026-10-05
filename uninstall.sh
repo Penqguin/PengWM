@@ -102,7 +102,7 @@ for appdir in "${APP_DIRS[@]}"; do
   fi
 done
 
-for bin in pengwm pengwm-bar pengwm-menubar; do
+for bin in pengwm pengwm-menubar pengwm-bar; do
   if [[ -L "$PREFIX/$bin" ]]; then
     rm -f "$PREFIX/$bin"
     echo "Removed shim $PREFIX/$bin"

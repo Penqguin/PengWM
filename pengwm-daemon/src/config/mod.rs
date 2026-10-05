@@ -2,7 +2,7 @@ pub mod keybinds;
 pub mod loader;
 pub mod watcher;
 
-pub use pengwm_core::config::{config_file_path, BarConfig, BarPosition};
+pub use pengwm_core::config::config_file_path;
 use serde::{Deserialize, Serialize};
 
 /// Where hidden windows are parked when a workspace is not visible.
@@ -51,8 +51,6 @@ pub struct Settings {
     pub max_tiles: usize,
     #[serde(default)]
     pub restricted_apps: Vec<String>,
-    #[serde(default)]
-    pub bar: BarConfig,
     #[serde(default)]
     pub menubar: MenubarConfig,
     #[serde(default)]
@@ -249,7 +247,6 @@ impl Default for Settings {
             gap_inner: default_gap_inner(),
             max_tiles: default_max_tiles(),
             restricted_apps: Vec::new(),
-            bar: BarConfig::default(),
             menubar: MenubarConfig::default(),
             windows: WindowsConfig::default(),
             workspaces: default_workspaces(),

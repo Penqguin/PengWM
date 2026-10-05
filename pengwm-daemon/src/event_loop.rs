@@ -69,12 +69,6 @@ impl EventLoop {
     ) -> (Self, mpsc::Sender<DaemonEvent>) {
         let bar_sender: BarSender = spawn_bar_server();
         let settings = crate::config::Settings::load();
-        let bar_pid = if settings.bar.enabled {
-            spawn_bar_process()
-        } else {
-            log::info!("bar.enabled=false — not spawning pengwm-bar");
-            None
-        };
         let menubar_pid = if settings.menubar.enabled {
             spawn_menubar_process()
         } else {
@@ -83,14 +77,14 @@ impl EventLoop {
         };
         // The shared prefix state: the event tap mutates it per keystroke and
         // `StateManager::reload_config` refreshes it, so both hold this Arc.
+        let excluded_pids = menubar_pid.into_iter().collect::<Vec<_>>();
         let state = StateManager::new(
             tx.clone(),
             keybinds,
             prefix,
             os,
             bar_sender,
-            bar_pid,
-            menubar_pid.into_iter().collect::<Vec<_>>(),
+            excluded_pids,
         );
         (Self { rx, state }, tx)
     }
@@ -165,20 +159,8 @@ fn candidate_paths(binary: &str, env_var: &str) -> Vec<std::path::PathBuf> {
     v
 }
 
-/// Launch the `pengwm-bar` binary as a child process and return its pid so the
-/// WM can exclude its window. Prefers a sibling of the current executable,
-/// then `$PATH`, then `PENGWM_BAR_PATH`. Returns `None` when no candidate runs.
-fn spawn_bar_process() -> Option<i32> {
-    spawn_child_process(
-        "pengwm-bar",
-        &candidate_paths("pengwm-bar", "PENGWM_BAR_PATH"),
-    )
-}
-
-/// Launch the `pengwm-menubar` binary as a child process and return its pid so
-/// the WM can exclude its window. Prefers a sibling of the current executable,
-/// then `$PATH`, then `PENGWM_MENUBAR_PATH`. Returns `None` when no candidate
-/// runs.
+/// The menubar is the daemon's only UI child process (the old egui bar was
+/// removed). Excluded so its status item is never tiled.
 fn spawn_menubar_process() -> Option<i32> {
     spawn_child_process(
         "pengwm-menubar",

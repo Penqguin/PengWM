@@ -130,7 +130,7 @@ impl PrefixKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::keybinds::KeybindConfig;
+    use crate::config::keybinds::{Keybind, KeybindConfig};
     use pengwm_core::tree::Direction;
 
     fn lookup_for(config: &KeybindConfig) -> impl Fn(u16, ModifierFlags) -> Option<Command> + '_ {
@@ -186,14 +186,23 @@ mod tests {
 
     #[test]
     fn oneshot_followup_disarms() {
+        // A one-shot bind that is NOT in the defaults, so this stays honest
+        // even if default keycaps change: `alt-d` (close) fires once, then
+        // disarms.
         let mut p = PrefixKey::new(PrefixConfig::default());
-        let binds = KeybindConfig::default();
+        let binds = KeybindConfig {
+            bindings: vec![Keybind {
+                keycode: 0x02,
+                modifiers: MODIFIER_ALT,
+                action: Command::Close,
+            }],
+        };
         let lookup = lookup_for(&binds);
         p.on_keydown(0x31, MODIFIER_ALT, now(), &lookup);
-        // `alt-b` (toggle bar) is a one-shot: fires once, then disarms.
+        // `alt-d` (close) is a one-shot: fires once, then disarms.
         assert_eq!(
-            p.on_keydown(0x0B, MODIFIER_ALT, now(), &lookup),
-            PrefixOutcome::Fire(Command::ToggleBar)
+            p.on_keydown(0x02, MODIFIER_ALT, now(), &lookup),
+            PrefixOutcome::Fire(Command::Close)
         );
         assert!(!p.is_armed(now()));
     }

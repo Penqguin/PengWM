@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-pub mod bar;
 pub mod bootstrap;
 pub mod commands;
 pub mod display;
@@ -26,7 +25,6 @@ pub mod session;
 pub mod store;
 #[cfg(test)]
 mod tests;
-use self::bar::{BarReserve, ReloadAction};
 use self::display::DisplaySet;
 use self::drag::DragState;
 use self::layout_writer::{AfterWrite, LayoutWriteCache};
@@ -55,9 +53,8 @@ pub struct StateManager {
     main_ratio: f64,
     restricted_apps: Vec<String>,
     bar_sender: BarSender,
-    bar: BarReserve,
-    /// Pids whose windows are never managed by the WM — currently the spawned
-    /// `pengwm-bar` process, whose window must not be tiled.
+    /// Pids whose windows are never managed by the WM — the spawned
+    /// `pengwm-menubar` child process, whose status item must not be tiled.
     excluded_pids: Vec<i32>,
     last_layout_rects: HashMap<WindowId, Rect>,
     /// Layout-write policy and the maps it reasons about (skip-if-unchanged,
@@ -109,7 +106,6 @@ impl StateManager {
         prefix: Arc<Mutex<PrefixKey>>,
         mut os: Box<dyn OsAdapter>,
         bar_sender: BarSender,
-        bar_pid: Option<i32>,
         excluded_pids: Vec<i32>,
     ) -> Self {
         let display_infos = os.active_displays();
@@ -154,9 +150,6 @@ impl StateManager {
             }
         }
 
-        let bar_spawned = bar_pid.is_some();
-        let bar = BarReserve::new(settings.bar.clone(), bar_spawned);
-        let excluded_pids = bar_pid.into_iter().chain(excluded_pids).collect::<Vec<_>>();
         let mut state = Self {
             workspaces,
             displays,
@@ -171,7 +164,6 @@ impl StateManager {
             main_ratio: pengwm_core::workspace::clamp_main_ratio(settings.main_ratio),
             restricted_apps: settings.restricted_apps,
             bar_sender,
-            bar,
             excluded_pids,
             last_layout_rects: HashMap::new(),
             layout_cache: LayoutWriteCache::new(),
@@ -199,12 +191,6 @@ impl StateManager {
             }
         }
 
-        state.apply_bar_reservation();
-        state.bar_sender.send(if state.bar.is_visible() {
-            BarMessage::Show
-        } else {
-            BarMessage::Hide
-        });
         state.publish_bar_state();
         state
     }
@@ -257,30 +243,7 @@ impl StateManager {
             } else {
                 updated_settings.workspaces.clone()
             });
-        let reload_action = self.bar.on_reload(updated_settings.bar.clone());
         self.apply_layout(self.active_workspace_idx());
-        self.bar_sender.send(BarMessage::Reload);
-        match reload_action {
-            ReloadAction::NeedsRestart => {
-                log::info!(
-                    "bar.enabled flipped to true at runtime; restart the daemon to spawn pengwm-bar"
-                );
-            }
-            ReloadAction::ShouldExit => {
-                log::info!("bar.enabled flipped to false; exiting pengwm-bar");
-                self.bar_sender.send(BarMessage::Exit);
-                self.apply_bar_reservation();
-                self.publish_bar_state();
-                return;
-            }
-            ReloadAction::Reapply => {}
-        }
-        self.bar_sender.send(if self.bar.is_visible() {
-            BarMessage::Show
-        } else {
-            BarMessage::Hide
-        });
-        self.apply_bar_reservation();
         self.publish_bar_state();
         log::info!(
             "Config reloaded (gaps: {}/{})",
@@ -446,24 +409,7 @@ impl StateManager {
         }
     }
 
-    /// Global-coordinate rect of the bar strip on the primary display, or
-    /// `None` when the bar is hidden, not spawned, or no display geometry is
-    /// available. Delegates to `BarReserve` — the one place that knows the
-    /// spawn gate (CONTEXT.md).
-    fn bar_reserved_rect(&self) -> Option<Rect> {
-        self.bar.reserved_rect(&*self.os)
-    }
-
-    /// Push the current bar strip geometry into every workspace (only
-    /// workspaces on the primary display are reserved) and re-lay-out.
-    fn apply_bar_reservation(&mut self) {
-        let affected = self.bar.apply_reservation(&mut self.workspaces, &*self.os);
-        for i in affected {
-            self.apply_layout(i);
-        }
-    }
-
-    /// Build a fresh `BarState` snapshot and broadcast it to the bar.
+    /// Push the current UI state snapshot to the menubar.
     /// Primary-only bar over the global pool (#4/Q14): every workspace is
     /// listed, each output's visible workspace carries the active marker
     /// (`is_visible`, so two outputs → two markers); `active_workspace`
@@ -503,7 +449,6 @@ impl StateManager {
             workspaces,
             active_workspace: active_idx,
             split_direction,
-            rect: self.bar_reserved_rect(),
         }));
     }
 }

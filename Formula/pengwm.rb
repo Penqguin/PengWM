@@ -22,7 +22,7 @@ class Pengwm < Formula
   end
 
   def install
-    bin.install "pengwm", "pengwm-bar", "pengwm-menubar"
+    bin.install "pengwm", "pengwm-menubar"
   end
 
   def caveats
