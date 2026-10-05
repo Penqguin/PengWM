@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 use std::time::Duration;
 
@@ -134,6 +134,44 @@ fn daemon_probe_answers_liveness() {
     // Live listener → running.
     assert!(pengwm_daemon::ipc_server::daemon_already_running_at(TEST_SOCKET_PROBE));
     let _ = std::fs::remove_file(TEST_SOCKET_PROBE);
+}
+
+#[test]
+fn ipc_server_never_steals_a_live_socket() {
+    let path = "/tmp/pengwm_test_steal.sock";
+    let _ = std::fs::remove_file(path);
+
+    // First daemon binds and stays alive.
+    let (tx, _) = mpsc::channel(64);
+    thread::spawn(move || {
+        pengwm_daemon::ipc_server::start_ipc_server_with_path(tx, path);
+    });
+    thread::sleep(Duration::from_millis(100));
+    assert!(pengwm_daemon::ipc_server::daemon_already_running_at(path));
+
+    // A second server on the same path must refuse to start (probe says
+    // "live daemon") and must NOT have unlinked the winner's socket file.
+    let (tx2, _) = mpsc::channel(64);
+    pengwm_daemon::ipc_server::start_ipc_server_with_path(tx2, path);
+    assert!(
+        pengwm_daemon::ipc_server::daemon_already_running_at(path),
+        "the original listener must survive a second start attempt"
+    );
+
+    // A stale socket file (no listener behind it) is rebound fine.
+    let _ = std::fs::remove_file(path);
+    // Re-create an unlinked-behind file: bind then drop the listener.
+    drop(UnixListener::bind(path).unwrap());
+    let (tx3, _) = mpsc::channel(64);
+    thread::spawn(move || {
+        pengwm_daemon::ipc_server::start_ipc_server_with_path(tx3, path);
+    });
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        pengwm_daemon::ipc_server::daemon_already_running_at(path),
+        "a stale file must be removed and rebound"
+    );
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

@@ -14,6 +14,14 @@
   read timeout) so a stalled daemon cannot freeze the Quit flow on the main
   thread. Restart afterwards with `open /Applications/PengWM.app` (or any
   login); crashes still auto-respawn via the agent.
+- **Socket servers bind first, probe only on `Address already in use`.**
+  `remove_file` + `bind` could never be race-safe: anything that unlinked a
+  live daemon's socket file (a rival start racing the guard, an external
+  cleanup) left the WM running on an unlinked vnode — healthy window
+  management, every CLI call refused. Now `bind` on a live socket fails with
+  `EADDRINUSE`, the probe distinguishes a live daemon (exit cleanly) from a
+  stale file of a crashed one (safe to remove and rebind), and the single-
+  instance guard remains as the early friendly exit.
 - **Fix: a second daemon can no longer silently steal the IPC socket.**
   Both UDS servers used to `remove_file` + `bind` unconditionally, so a
   daemon opened twice (Spotlight double-click on a stray copy, manual run

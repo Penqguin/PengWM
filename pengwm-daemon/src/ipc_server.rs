@@ -31,10 +31,34 @@ pub fn daemon_already_running() -> bool {
 }
 
 pub fn start_ipc_server_with_path(event_tx: mpsc::Sender<DaemonEvent>, socket_path: &str) {
-    let _ = std::fs::remove_file(socket_path);
-
+    // Bind FIRST, probe only on `Address already in use`. The old
+    // remove_file+bind stole the socket from a live daemon whenever two
+    // started near-simultaneously (or anything else removed the file mid-run
+    // — the listener survived on an unlinked vnode and every CLI call hit
+    // ECONNREFUSED while the WM looked perfectly healthy). Now a live socket
+    // file cannot be unlinked by a rival: bind on it fails with EADDRINUSE,
+    // the probe distinguishes a live daemon (exit cleanly) from a stale file
+    // left by a crashed one (safe to unlink and rebind).
     let listener = match UnixListener::bind(socket_path) {
         Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            if daemon_already_running_at(socket_path) {
+                log::error!(
+                    "Another daemon owns {} — not starting the IPC server.",
+                    socket_path
+                );
+                return;
+            }
+            log::info!("Stale socket file at {} — removing and rebinding", socket_path);
+            let _ = std::fs::remove_file(socket_path);
+            match UnixListener::bind(socket_path) {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("Failed to bind UDS at {}: {}", socket_path, e);
+                    return;
+                }
+            }
+        }
         Err(e) => {
             log::error!("Failed to bind UDS at {}: {}", socket_path, e);
             return;

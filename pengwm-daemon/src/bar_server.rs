@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -41,9 +41,33 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
     let socket_path = socket_path.to_owned();
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     thread::spawn(move || {
-        let _ = std::fs::remove_file(&socket_path);
+        // Bind FIRST, probe on `Address already in use` — same contract as
+        // the command socket (see `ipc_server::start_ipc_server_with_path`):
+        // a live listener can never be unlinked by a rival, only a stale
+        // file from a crashed daemon is removed.
         let listener = match UnixListener::bind(&socket_path) {
             Ok(l) => l,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                if UnixStream::connect(&socket_path).is_ok() {
+                    log::error!(
+                        "Another daemon owns {} — not starting the UI push server.",
+                        socket_path
+                    );
+                    return;
+                }
+                log::info!(
+                    "Stale socket file at {} — removing and rebinding",
+                    socket_path
+                );
+                let _ = std::fs::remove_file(&socket_path);
+                match UnixListener::bind(&socket_path) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        log::error!("Failed to bind bar socket {}: {}", socket_path, e);
+                        return;
+                    }
+                }
+            }
             Err(e) => {
                 log::error!("Failed to bind bar socket {}: {}", socket_path, e);
                 return;
