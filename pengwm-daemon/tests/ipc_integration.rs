@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -14,6 +14,25 @@ const TEST_SOCKET: &str = "/tmp/pengwm_test.sock";
 const TEST_SOCKET_2: &str = "/tmp/pengwm_test2.sock";
 const TEST_SOCKET_PROBE: &str = "/tmp/pengwm_test_probe.sock";
 const TEST_BAR_SOCKET: &str = "/tmp/pengwm_test_bar.sock";
+
+fn connect_with_retry(path: &str, timeout: Duration) -> std::io::Result<UnixStream> {
+    let start = Instant::now();
+    loop {
+        match UnixStream::connect(path) {
+            Ok(stream) => return Ok(stream),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    || e.kind() == std::io::ErrorKind::ConnectionRefused =>
+            {
+                if start.elapsed() >= timeout {
+                    return Err(e);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
 
 #[test]
 fn ipc_send_command_receives_event() {
@@ -103,7 +122,8 @@ fn cli_roundtrip_receives_ack() {
         direction: pengwm_core::tree::Direction::Right,
     })
     .unwrap();
-    let mut stream = UnixStream::connect(TEST_SOCKET_2).expect("connect to test socket");
+    let mut stream = connect_with_retry(TEST_SOCKET_2, Duration::from_secs(2))
+        .expect("connect to test socket");
     stream.write_all(body.as_bytes()).unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
 
