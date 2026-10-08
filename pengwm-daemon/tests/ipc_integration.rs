@@ -68,8 +68,10 @@ fn wait_until_alive(path: &str, timeout: Duration) {
 
 #[test]
 fn ipc_send_command_receives_event() {
+    // Per-test socket path ownership: tests run in parallel threads, so a
+    // cleanup of the *other* test's path can unlink a live bound socket
+    // mid-startup and make it invisible forever (observed flaky on CI).
     let _ = std::fs::remove_file(TEST_SOCKET);
-    let _ = std::fs::remove_file(TEST_SOCKET_2);
 
     let (event_tx, mut event_rx) = mpsc::channel(256);
 
