@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,37 @@ fn connect_with_retry(path: &str, timeout: Duration) -> std::io::Result<UnixStre
     }
 }
 
+/// Wait for a spawned server thread to actually have bound its socket —
+/// `sleep(100ms)` gambles against loaded CI runners (observed flaky on
+/// macos-latest); the socket file existing is the readiness signal.
+fn wait_for_socket(path: &str, timeout: Duration) {
+    let start = Instant::now();
+    while !Path::new(path).exists() {
+        assert!(
+            start.elapsed() < timeout,
+            "server did not bind {path} within {timeout:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Wait until the liveness probe answers — needed when a socket *file*
+/// already exists but is dead (stale/unlinked-behind): existence alone
+/// proves nothing until the server actually rebinds it.
+fn wait_until_alive(path: &str, timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        if pengwm_daemon::ipc_server::daemon_already_running_at(path) {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "server did not become live on {path} within {timeout:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn ipc_send_command_receives_event() {
     let _ = std::fs::remove_file(TEST_SOCKET);
@@ -48,7 +80,7 @@ fn ipc_send_command_receives_event() {
     });
 
     // Give the server a moment to bind.
-    thread::sleep(Duration::from_millis(100));
+    wait_for_socket(TEST_SOCKET, Duration::from_secs(5));
 
     // Connect as a CLI client and send a Split command.
     let cmd = Command::Split {
@@ -56,7 +88,8 @@ fn ipc_send_command_receives_event() {
     };
     let body = serde_json::to_string(&cmd).unwrap();
 
-    let mut stream = UnixStream::connect(TEST_SOCKET).expect("connect to test socket");
+    let mut stream = connect_with_retry(TEST_SOCKET, Duration::from_secs(2))
+        .expect("connect to test socket");
     stream.write_all(body.as_bytes()).unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
 
@@ -105,7 +138,7 @@ fn cli_roundtrip_receives_ack() {
     thread::spawn(move || {
         ipc_server::start_ipc_server_with_path(server_tx, TEST_SOCKET_2);
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_for_socket(TEST_SOCKET_2, Duration::from_secs(5));
 
     // Spawn a consumer that mirrors StateManager::on_command: handle the
     // command and send an Ack back through the response channel.
@@ -149,7 +182,7 @@ fn daemon_probe_answers_liveness() {
     thread::spawn(move || {
         pengwm_daemon::ipc_server::start_ipc_server_with_path(tx, TEST_SOCKET_PROBE);
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_for_socket(TEST_SOCKET_PROBE, Duration::from_secs(5));
 
     // Live listener → running.
     assert!(pengwm_daemon::ipc_server::daemon_already_running_at(TEST_SOCKET_PROBE));
@@ -166,7 +199,7 @@ fn ipc_server_never_steals_a_live_socket() {
     thread::spawn(move || {
         pengwm_daemon::ipc_server::start_ipc_server_with_path(tx, path);
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_until_alive(path, Duration::from_secs(5));
     assert!(pengwm_daemon::ipc_server::daemon_already_running_at(path));
 
     // A second server on the same path must refuse to start (probe says
@@ -186,7 +219,7 @@ fn ipc_server_never_steals_a_live_socket() {
     thread::spawn(move || {
         pengwm_daemon::ipc_server::start_ipc_server_with_path(tx3, path);
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_until_alive(path, Duration::from_secs(5));
     assert!(
         pengwm_daemon::ipc_server::daemon_already_running_at(path),
         "a stale file must be removed and rebound"
@@ -199,7 +232,7 @@ fn bar_socket_receives_cached_state_on_connect() {
     let _ = std::fs::remove_file(TEST_BAR_SOCKET);
 
     let sender = pengwm_daemon::bar_server::spawn_bar_server_with_path(TEST_BAR_SOCKET);
-    thread::sleep(Duration::from_millis(100));
+    wait_for_socket(TEST_BAR_SOCKET, Duration::from_secs(5));
 
     let state = BarState {
         workspaces: vec![BarWorkspace {
@@ -213,9 +246,9 @@ fn bar_socket_receives_cached_state_on_connect() {
         split_direction: Some(SplitDirection::Vertical),
     };
     sender.send(BarMessage::State(state));
-    thread::sleep(Duration::from_millis(100));
 
-    let mut stream = UnixStream::connect(TEST_BAR_SOCKET).expect("connect to bar socket");
+    let mut stream = connect_with_retry(TEST_BAR_SOCKET, Duration::from_secs(2))
+        .expect("connect to bar socket");
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();
