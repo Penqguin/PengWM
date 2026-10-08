@@ -167,28 +167,10 @@ jobs:
             echo "Cask already tombstoned — leaving it alone."
             exit 0
           fi
-          cat > "$cask" <<'EOF'
-cask "pengwm" do
-  # DEPRECATED — PengWM ships bare binaries now (ADR-0001 in the PengWM
-  # repo); this cask's bundle artifacts no longer exist. Install the
-  # formula instead:
-  #
-  #   brew uninstall --cask pengwm
-  #   brew install penqguin/tap/pengwm
-  #
-  # Then re-run PengWM's install.sh once to lay down the LaunchAgent for
-  # the new layout.
-  version "9999"
-  sha256 :no_check
-
-  url "https://github.com/Penqguin/PengWM"
-  name "PengWM (deprecated)"
-  homepage "https://github.com/Penqguin/PengWM"
-
-  disable! date: "2026-10-07", because: "moved to the penqguin/tap/pengwm formula (bare-binary layout)"
-end
-EOF
-          git -C homebrew-tap add Casks/pengwm.rb
+          # The tombstone content, base64-encoded (a heredoc's column-0
+          # body would break the YAML block scalar).
+          CASK_TOMBSTONE_B64='Y2FzayAicGVuZ3dtIiBkbwogICMgREVQUkVDQVRFRCDigJQgUGVuZ1dNIHNoaXBzIGJhcmUgYmluYXJpZXMgbm93IChBRFItMDAwMSBpbiB0aGUgUGVuZ1dNCiAgIyByZXBvKTsgdGhpcyBjYXNrJ3MgYnVuZGxlIGFydGlmYWN0cyBubyBsb25nZXIgZXhpc3QuIEluc3RhbGwgdGhlCiAgIyBmb3JtdWxhIGluc3RlYWQ6CiAgIwogICMgICBicmV3IHVuaW5zdGFsbCAtLWNhc2sgcGVuZ3dtCiAgIyAgIGJyZXcgaW5zdGFsbCBwZW5xZ3Vpbi90YXAvcGVuZ3dtCiAgIwogICMgVGhlbiByZS1ydW4gUGVuZ1dNJ3MgaW5zdGFsbC5zaCBvbmNlIHRvIGxheSBkb3duIHRoZSBMYXVuY2hBZ2VudCBmb3IKICAjIHRoZSBuZXcgbGF5b3V0LgogIHZlcnNpb24gIjk5OTkiCiAgc2hhMjU2IDpub19jaGVjawoKICB1cmwgImh0dHBzOi8vZ2l0aHViLmNvbS9QZW5xZ3Vpbi9QZW5nV00iCiAgbmFtZSAiUGVuZ1dNIChkZXByZWNhdGVkKSIKICBob21lcGFnZSAiaHR0cHM6Ly9naXRodWIuY29tL1BlbnFndWluL1BlbmdXTSIKCiAgZGlzYWJsZSEgZGF0ZTogIjIwMjYtMTAtMDciLCBiZWNhdXNlOiAibW92ZWQgdG8gdGhlIHBlbnFndWluL3RhcC9wZW5nd20gZm9ybXVsYSAoYmFyZS1iaW5hcnkgbGF5b3V0KSIKZW5kCg=='
+          printf '%s' "$CASK_TOMBSTONE_B64" | base64 -d > "$cask"
           echo "Cask tombstoned."
 
       - name: Commit, push, open PR
