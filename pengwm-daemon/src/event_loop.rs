@@ -12,6 +12,12 @@ use tokio::sync::mpsc;
 pub enum DaemonEvent {
     WindowCreated(pengwm_core::tree::WindowId, i32),
     WindowDestroyed(pengwm_core::tree::WindowId),
+    /// A destroyed notification arrived for an element that could not be
+    /// mapped to a window id (stale ref / CFEqual mismatch) — but the AX
+    /// callback still knows the owning pid. `StateManager` probes that
+    /// pid's listing and untracks any tracked window of it no longer
+    /// listed; see `lifecycle::on_unknown_window_destroyed`.
+    UnknownWindowDestroyed(i32),
     WindowFocused(pengwm_core::tree::WindowId),
     WindowMoved(pengwm_core::tree::WindowId, f64, f64),
     WindowHidden(pengwm_core::tree::WindowId),
@@ -129,6 +135,9 @@ impl EventLoop {
         match event {
             DaemonEvent::WindowCreated(id, pid) => self.state.on_window_created(id, pid),
             DaemonEvent::WindowDestroyed(id) => self.state.on_window_destroyed(id),
+            DaemonEvent::UnknownWindowDestroyed(pid) => {
+                self.state.on_unknown_window_destroyed(pid)
+            }
             DaemonEvent::WindowFocused(id) => self.state.on_window_focused(id),
             DaemonEvent::WindowMoved(id, x, y) => self.state.on_window_moved(id, x, y),
             DaemonEvent::WindowHidden(id) => self.state.on_window_hidden(id),

@@ -7,6 +7,7 @@ pub mod config;
 pub mod event_loop;
 pub mod ipc_server;
 pub mod launchd;
+pub mod location;
 pub mod macos;
 pub mod prefix;
 pub mod state;

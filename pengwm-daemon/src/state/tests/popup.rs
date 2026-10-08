@@ -103,6 +103,9 @@ fn displaced_popup_is_not_snapped_back() {
     let (mut sm, handle) = setup_with_handle(1);
     sm.workspaces[0].popup_ratio = 0.75;
     handle.inject_window_kind(300, WindowClass::Floating);
+    // A live popup is in its app's kAXWindows listing like any other
+    // window — the sweep's unlisted-untrack would otherwise judge it dead.
+    handle.inject_window(42, 300);
     handle.inject_rect(300, popup_rect_on_display1());
     sm.on_window_created(300, 42);
     let centered = handle.rect(300).expect("popup placed");
@@ -168,6 +171,8 @@ fn missed_app_hidden_popup_reconciles_off_the_set() {
     let (mut sm, handle) = setup_with_handle(1);
     sm.workspaces[0].popup_ratio = 0.75;
     handle.inject_window_kind(300, WindowClass::Floating);
+    // Live popup: listed by its app (see the sweep's unlisted-untrack).
+    handle.inject_window(42, 300);
     handle.inject_rect(300, popup_rect_on_display1());
     sm.on_window_created(300, 42);
     // Missed WindowHidden notification: the OS reports the window hidden.

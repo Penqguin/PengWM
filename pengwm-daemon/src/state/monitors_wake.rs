@@ -76,6 +76,9 @@ impl StateManager {
             return;
         }
         log::info!("System woke — deferring resync until AX responds");
+        // Patient gone grace while the blackout lasts: every layout write
+        // this window of time attempts reports live windows as Gone.
+        self.layout_cache.note_wake_pending(true);
         self.wake_resync = Some(WakeResync {
             since: now,
             // Probe on the very next tick rather than after one interval.
@@ -104,13 +107,10 @@ impl StateManager {
                 "Wake resync committed {:?} after wake",
                 now.duration_since(pending.since)
             );
-            self.wake_resync = None;
-        } else if expired {
-            log::warn!(
-                "AX still unresponsive {:?} after wake — giving up on the resync probe",
-                now.duration_since(pending.since)
-            );
-            self.wake_resync = None;
+            // `try_wake_resync` cleared the resync state and the
+            // wake-pending grace bit at the commit point, including the
+            // deadline force — a resync that never probed successfully
+            // still ends, so the protection never outlives the resync.
         } else {
             log::debug!("Wake resync: AX not answering yet, retrying");
         }
@@ -155,6 +155,12 @@ impl StateManager {
     /// what keeps a blacked-out wake from clearing good state and writing
     /// through dead elements. `force` commits regardless, for the deadline.
     ///
+    /// The commit point clears the resync state and the wake-pending grace
+    /// bit, so the committed polls can be diffed against the tracked set:
+    /// windows that closed during sleep are untracked right there (AX is
+    /// answering, so "not listed by its app" is real evidence), before the
+    /// re-tile computes capacity against them.
+    ///
     /// Returns whether the resync committed.
     fn try_wake_resync(&mut self, force: bool) -> bool {
         let pids: Vec<i32> = self
@@ -180,6 +186,13 @@ impl StateManager {
             return false;
         }
 
+        // Commit point. Drop the pending resync first: the unlisted-untrack
+        // below must not be suppressed by its own pending-guard, and the
+        // fast grace resumes — on the deadline-force path too, per the
+        // "nothing outlives the resync" boundary.
+        self.wake_resync = None;
+        self.layout_cache.note_wake_pending(false);
+
         log::info!("System woke — resyncing windows and displays");
         // Refresh workspace geometry from current displays.
         let displays = self.os.active_displays();
@@ -197,6 +210,11 @@ impl StateManager {
         // Force the background sweep on next tick for windows created mid-sleep.
         self.last_window_sweep = Instant::now() - Duration::from_secs(5);
         self.frontmost_pid = self.os.frontmost_pid();
+        // Untrack windows that closed during sleep first: AX is answering
+        // now, so a tracked window missing from its app's listing is
+        // genuinely dead — and the re-tile below must compute capacity
+        // against a tree that no longer holds them.
+        self.untrack_unlisted_windows(&polled);
         // Tile anything that appeared during sleep, reusing the poll above
         // instead of querying every app a second time.
         for (pid, windows) in polled {

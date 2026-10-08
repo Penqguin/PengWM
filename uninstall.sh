@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PENGWM_HOME="${PENGWM_HOME:-$HOME/.pengwm}"
+BIN_DIR="$PENGWM_HOME/bin"
 PREFIX="/usr/local/bin"
-APP_DIRS=("/Applications" "$HOME/Applications")
 AGENT_LABEL="com.pengwm.daemon"
 AGENT_PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pengwm"
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 PengWM uninstall script
 
 Usage:
   ./uninstall.sh [options]
 
 Options:
-  --app-dir DIR      Remove PengWM.app from DIR specifically
-                     (default: try /Applications, then ~/Applications)
-  --prefix DIR       Remove CLI shims from DIR (default: /usr/local/bin)
-  --keep-config      Do not remove ~/.config/pengwm
-  --yes              Skip all confirmation prompts
-  --help             Show this help
+  --home DIR        Remove binaries from DIR/bin (default: \$PENGWM_HOME,
+                    i.e. ~/.pengwm/bin)
+  --prefix DIR      Remove CLI symlinks from DIR (default: /usr/local/bin)
+  --keep-config     Do not remove ~/.config/pengwm
+  --yes             Skip all confirmation prompts
+  --help            Show this help
 EOF
 }
 
@@ -29,16 +30,18 @@ ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --app-dir)
+    --home)
       if [[ $# -lt 2 ]]; then
-        echo "error: --app-dir requires a directory argument"
+        echo "error: --home requires a directory argument"
         exit 1
       fi
-      APP_DIRS=("$2")
+      PENGWM_HOME="$2"
+      BIN_DIR="$PENGWM_HOME/bin"
       shift 2
       ;;
-    --app-dir=*)
-      APP_DIRS=("${1#*=}")
+    --home=*)
+      PENGWM_HOME="${1#*=}"
+      BIN_DIR="$PENGWM_HOME/bin"
       shift
       ;;
     --prefix)
@@ -90,7 +93,35 @@ fi
 
 REMOVED_SOMETHING=0
 
-for appdir in "${APP_DIRS[@]}"; do
+if [[ -d "$BIN_DIR" ]]; then
+  for bin in pengwm pengwm-menubar; do
+    if [[ -f "$BIN_DIR/$bin" ]] && confirm "Remove $BIN_DIR/$bin?"; then
+      rm -f "$BIN_DIR/$bin"
+      echo "Removed $BIN_DIR/$bin"
+      REMOVED_SOMETHING=1
+    fi
+  done
+  # Remove the bin dir (and the install root) when we emptied it.
+  if [[ -d "$BIN_DIR" && -z "$(ls -A "$BIN_DIR" 2>/dev/null)" ]]; then
+    rmdir "$BIN_DIR" 2>/dev/null || true
+  fi
+  if [[ -d "$PENGWM_HOME" && -z "$(ls -A "$PENGWM_HOME" 2>/dev/null)" ]]; then
+    rmdir "$PENGWM_HOME" 2>/dev/null || true
+  fi
+fi
+
+for bin in pengwm pengwm-menubar pengwm-bar; do
+  # Only symlinks we made (pointing into the install root or a Cellar) are
+  # ours to remove; a plain file could be someone's own copy.
+  if [[ -L "$PREFIX/$bin" ]]; then
+    rm -f "$PREFIX/$bin"
+    echo "Removed symlink $PREFIX/$bin"
+    REMOVED_SOMETHING=1
+  fi
+done
+
+# Legacy .app layout (retired by ADR-0001) leftovers.
+for appdir in "/Applications" "$HOME/Applications"; do
   if [[ -d "$appdir/PengWM.app" ]]; then
     if confirm "Remove $appdir/PengWM.app?"; then
       rm -rf "$appdir/PengWM.app"
@@ -99,18 +130,6 @@ for appdir in "${APP_DIRS[@]}"; do
     else
       echo "Keeping $appdir/PengWM.app"
     fi
-  fi
-done
-
-for bin in pengwm pengwm-menubar pengwm-bar; do
-  if [[ -L "$PREFIX/$bin" ]]; then
-    rm -f "$PREFIX/$bin"
-    echo "Removed shim $PREFIX/$bin"
-    REMOVED_SOMETHING=1
-  elif [[ -f "$PREFIX/$bin" ]]; then
-    rm -f "$PREFIX/$bin"
-    echo "Removed binary $PREFIX/$bin"
-    REMOVED_SOMETHING=1
   fi
 done
 
@@ -124,7 +143,7 @@ if [[ -d "$CONFIG_DIR" ]] && [[ "$KEEP_CONFIG" == "0" ]]; then
   fi
 fi
 
-if [[ "$REMOVED_SOMETHING" == "1" ]]; then
+if [[ "$REMOVED_SOMETHING" == "1" || "$STOPPED_AGENT" == "1" ]]; then
   echo "PengWM uninstalled."
 else
   echo "PengWM does not appear to be installed."

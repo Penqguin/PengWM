@@ -305,6 +305,47 @@ fn wake_resync_waits_for_ax_instead_of_writing_through_stale_elements() {
 }
 
 #[test]
+fn sweep_untrack_is_suppressed_while_wake_resync_pending() {
+    // Same reason the resync itself waits on AX: during the blackout a
+    // live app lists nothing, so the listing diff has no usable evidence
+    // — acting on it would untrack the whole desktop. The pending untrack
+    // resumes the moment AX answers: the committed resync untracks
+    // windows that closed during sleep in the same pass it re-tiles.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    handle.unlist_window(42, 100);
+    handle.set_ax_blackout(true);
+    sm.on_system_woke();
+
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(sm.wake_resync_pending(), "blackout keeps the resync waiting");
+    assert!(
+        sm.store.contains(100),
+        "the sweep must not untrack while the resync is pending"
+    );
+
+    // AX answers: commit untracks the closed window and retiles around it.
+    handle.set_ax_blackout(false);
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.wake_resync_pending(),
+        "resync commits once AX answers"
+    );
+    assert!(
+        !sm.store.contains(100),
+        "the committed resync untracks the window that closed during sleep"
+    );
+    assert!(sm.workspaces[0].find_window(100).is_none());
+    assert!(
+        sm.workspaces[0].find_window(200).is_some(),
+        "the surviving sibling keeps its tile"
+    );
+}
+
+#[test]
 fn wake_resync_commits_at_the_deadline_even_if_ax_never_answers() {
     // A probe that can never succeed (genuinely windowless desktop, or an
     // AX subsystem that stays wedged) must not leave the resync armed

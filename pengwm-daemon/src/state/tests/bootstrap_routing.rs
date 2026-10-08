@@ -199,10 +199,39 @@ fn on_window_created_routes_configured_app_to_its_workspace() {
 }
 
 #[test]
+fn on_window_created_routes_firefox_developer_edition_to_browsing() {
+    // Firefox Developer Edition is a separate app (separate bundle id and
+    // display name) — it must route to Browsing by default, not fall
+    // through to the active workspace.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
+    handle.inject_app_name(78, "Firefox Developer Edition".into());
+
+    sm.on_window_created(778, 78);
+
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(778).is_some())
+        .expect("routed window should be tracked");
+    assert_eq!(sm.workspaces[idx].name, "Browsing");
+    // Either identifier alone is enough (bundle id match or name match).
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(78, "org.mozilla.other".into());
+    handle.inject_app_name(78, "firefox developer edition".into());
+    sm.on_window_created(779, 78);
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(779).is_some())
+        .expect("routed window should be tracked");
+    assert_eq!(sm.workspaces[idx].name, "Browsing");
+}
+
+#[test]
 fn on_window_created_routing_matches_app_name_case_insensitively() {
     let (mut sm, handle) = setup_with_handle(1);
     handle.inject_app_name(88, "spotify".into());
-
     sm.on_window_created(888, 88);
 
     let idx = sm

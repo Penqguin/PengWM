@@ -1,7 +1,47 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — Bare binaries
 
+- **Distribution: bare binaries, no `.app` bundle (ADR-0001).** PengWM
+  installs to `$PENGWM_HOME/bin` (default `~/.pengwm/bin`) with `pengwm` /
+  `pengwm-menubar` symlinks on PATH and the same launchd LaunchAgent; the
+  v0.5.x `PengWM.app` layout is retired (install.sh migrates in place,
+  removing old bundles). One artifact per arch (flat `.tar.gz` + `.sha256`);
+  Homebrew moves to a real formula (cask tombstoned by the bump workflow);
+  the one-copy policy (`location.rs`) is restated against `$PENGWM_HOME`
+  plus Homebrew Cellar paths. Accepted, documented cost: releases stay
+  ad-hoc signed, so **every update costs one Accessibility re-grant** —
+  the same cost the ad-hoc bundle already paid per update. The bundle's
+  LaunchServices/`lsregister` attribution gotcha and the Spotlight
+  fake-app issue are gone with it. The menubar is unchanged and now
+  locates `pengwm update` next to itself instead of a hardcoded bundle
+  path.
+- **Firefox Developer Edition now routes to Browsing by default.** It is a
+  separate app (bundle id `org.mozilla.firefoxdeveloperedition`, display name
+  "Firefox Developer Edition") and neither identifier was in the default
+  Browsing assignment, so its windows fell through to the active workspace —
+  typically Development after a daemon restart. Both identifiers joined the
+  default list; a regression test pins either-match routes to Browsing.
+- **Fix: closing a window no longer takes ~10s (or forever) to re-tile when its
+  destroyed notification is missed.** Under a Wake-resync fix, the write-path
+  gone grace was 10s everywhere — and since there was no active liveness
+  probe, a closed window whose `kAXUIElementDestroyed` never arrived (1Password
+  exiting, a Preview window opened from Finder, a stale ref failing CFEqual)
+  stranded a dead tile member until some unrelated event triggered a layout,
+  then paid the 10s on top. Untracking the dead window is now event-driven and
+  fast: the 2s sweep already polls every running app, so each pid's listing is
+  diffed against its tracked windows and any tracked window its own app no
+  longer lists is untracked through the normal destroyed path (re-tile in the
+  same pass). Two judgment rules keep the fast path safe: a pid whose poll
+  returns **zero** windows is never judged (that is the post-wake blackout
+  signature, not a mass close), and the whole untrack is suppressed while a
+  wake resync is pending. The write-path grace itself became wake-scoped —
+  250ms in normal operation, 10s only while the resync is pending — and a
+  destroyed notification for an element we cannot map to a window id now
+  probes the pid it reports instead of dropping a warning, so the
+  CFEqual-mismatch failure mode untracks immediately too. Close-to-retile
+  latency in every missed-notification case drops from "unbounded + 10s" to
+  one sweep cycle (~2s).
 - **Quitting the menubar now quits the whole app — and stays quit.** The
   Quit item (renamed **Quit PengWM**) sends `Command::Quit` and terminates;
   the daemon deregisters its LaunchAgent job (`launchctl bootout`) during

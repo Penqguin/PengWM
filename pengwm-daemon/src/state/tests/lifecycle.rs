@@ -164,6 +164,87 @@ fn reveal_all_via_hidden_drain_is_idempotent() {
 }
 
 #[test]
+fn sweep_untracks_window_whose_destroyed_notification_was_missed() {
+    // 1Password exit / Preview-close from Finder: the window closes but no
+    // destroyed notification arrives. The app's listing still answers
+    // (other windows present), so the sweep untracks the dead window and
+    // its siblings re-tile in the same pass — no 10s grace, no stranded
+    // tree entry waiting for an unrelated layout event.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    handle.unlist_window(42, 100);
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.store.contains(100),
+        "a tracked window its app no longer lists is dead"
+    );
+    assert!(sm.workspaces[0].find_window(100).is_none());
+    assert!(
+        sm.workspaces[0].find_window(200).is_some(),
+        "the surviving sibling keeps its tile"
+    );
+    assert_eq!(sm.workspaces[0].window_count(), 1);
+}
+
+#[test]
+fn zero_listing_is_no_judgment_in_the_sweep() {
+    // An app whose poll returns nothing is the AX blackout signature, not
+    // a mass close — the sweep must not untrack on it.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    handle.set_ax_blackout(true);
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
+        sm.store.contains(100),
+        "a zero listing must not count as evidence of death"
+    );
+}
+
+#[test]
+fn unknown_destroyed_probe_untracks_the_dead_window() {
+    // A destroyed notification fired for an element we could not map to a
+    // window id (stale ref / CFEqual mismatch). The pid still says who
+    // reported the death: the probe polls that pid and the unlisted
+    // window dies immediately rather than waiting for the next sweep.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    handle.unlist_window(42, 100);
+    sm.on_unknown_window_destroyed(42);
+    assert!(!sm.store.contains(100));
+    assert!(sm.workspaces[0].find_window(100).is_none());
+    assert!(
+        sm.workspaces[0].find_window(200).is_some(),
+        "probe untracks only what the listing actually lost"
+    );
+}
+
+#[test]
+fn unknown_destroyed_probe_with_zero_listing_makes_no_judgment() {
+    // Event during a blackout (theoretically impossible — a dead AX can't
+    // deliver notifications — but the probe must still be safe): the
+    // zero-listing pid is not judged.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    handle.set_ax_blackout(true);
+    sm.on_unknown_window_destroyed(42);
+    assert!(sm.store.contains(100));
+}
+
+#[test]
+fn unknown_destroyed_probe_ignores_excluded_and_unknown_pids() {
+    // An excluded app owes us no windows; an app with no tracked windows
+    // has nothing to lose. Both are cheap no-ops, not errors.
+    let (mut sm, _handle) = setup_with_handle(1);
+    sm.on_unknown_window_destroyed(0);
+    sm.on_unknown_window_destroyed(9999);
+    assert!(sm.store.contains(100) && sm.store.contains(200));
+}
+
+#[test]
 fn missed_window_created_sweep_tiles_new_window() {
     // Firefox tear-off / incognito: OS has the window but no
     // WindowCreated event was ever delivered (missing AX notification

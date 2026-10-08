@@ -1,0 +1,218 @@
+# Automates the manual tap-update drill in docs/distribution.md ("Homebrew"):
+# on release publish (or a manual re-run after fixes), download BOTH
+# pengwm-<tag>-<target>.tar.gz assets at the released tag, verify their
+# .sha256 sidecars, and open a PR on Penqguin/homebrew-tap updating
+# Formula/pengwm.rb (version + per-arch sha256).
+#
+# ADR-0001: PengWM ships bare binaries, so the tap's Formula/ is the blessed
+# brew path and the old cask is deprecated. On each bump this workflow also
+# replaces Casks/pengwm.rb with a tombstone (once) pointing at the formula,
+# so cask users are migrated instead of silently broken by missing assets.
+#
+# Secret (repo-level Actions secret): HOMEBREW_TAP_TOKEN — a PAT with
+# contents:write (push) access to Penqguin/homebrew-tap. When the secret is
+# absent the job skips cleanly at the guard step (warning + step summary)
+# instead of half-failing at the git push. A `tag` input on
+# workflow_dispatch allows re-running the bump after manual fixes.
+#
+# This workflow runs on ubuntu-latest: it only downloads artifacts, hashes
+# them, and edits/pushes text files — no macOS tooling needed. sha256 values
+# are computed with GNU coreutils `sha256sum`, which accepts the macOS
+# `shasum -a 256` sidecar format ("hash  filename").
+
+name: Homebrew tap bump
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to bump the tap to (e.g. v0.6.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bump-tap:
+    runs-on: ubuntu-latest
+    env:
+      # release event → published tag_name; manual dispatch → `tag` input.
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # secrets context cannot be used in `if:` conditionals (the parser
+      # rejects the expression), so the token is surfaced through job env and
+      # checked in the guard step — same pattern as release.yml's HAS_CERT.
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Guard (token present? tag resolves?)
+        run: |
+          set -euo pipefail
+          test -n "${HOMEBREW_TAP_TOKEN:-}" || {
+            echo "::warning::HOMEBREW_TAP_TOKEN secret not configured — skipping the tap bump instead of half-failing. See docs/distribution.md 'Homebrew'."
+            {
+              echo "## Homebrew tap bump — skipped"
+              echo ""
+              echo "HOMEBREW_TAP_TOKEN is not configured on this repository."
+              echo "Add a PAT with contents:write (push) scope on Penqguin/homebrew-tap to enable automated bumps."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          test -n "${TAG:-}" || {
+            echo "::error::No tag resolved (release tag_name empty and no workflow_dispatch 'tag' input)"
+            exit 1
+          }
+          if [[ ! "$TAG" =~ ^v ]]; then
+            # Canonical asset names all embed the v-prefixed tag.
+            echo "TAG=v$TAG" >> "$GITHUB_ENV"
+            echo "Normalized tag to v$TAG"
+          fi
+
+      - name: Download release tarballs + verify sidecars
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          # Read-only access to this repo's releases; the tap write token is
+          # used only for the tap repo below.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            tarball="pengwm-${TAG}-${target}.tar.gz"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$tarball" --pattern "$tarball.sha256" \
+              --dir artifacts --clobber
+            (cd artifacts && sha256sum -c "$tarball.sha256")
+            # The flat tarball must contain the bare binaries — guards a
+            # mix-up with the retired pengwm-app-* bundle artifacts.
+            tar tzf "artifacts/$tarball" | grep -q '^\./pengwm$\|^\./pengwm-menubar$' \
+              || { echo "::error::$tarball does not look like the flat binary tarball"; exit 1; }
+            h="$(sha256sum "artifacts/$tarball" | awk '{print $1}')"
+            echo "sha256 of $tarball = $h"
+            if [[ "$target" == aarch64* ]]; then
+              echo "ARM_SHA=$h" >> "$GITHUB_ENV"
+            else
+              echo "INTEL_SHA=$h" >> "$GITHUB_ENV"
+            fi
+          done
+
+      - name: Clone tap + create bump branch
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          set -euo pipefail
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Penqguin/homebrew-tap.git"
+          cd homebrew-tap
+          git config user.name "pengwm-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout -b "bump-pengwm-${TAG}"
+          ls Formula Casks 2>/dev/null || true
+
+      # Formula/pengwm.rb is the blessed brew path now (ADR-0001): bare
+      # binaries via bin.install. Version + per-arch sha256 lines are
+      # bumped; the URL strings interpolate #{version} so they follow.
+      - name: Update Formula/pengwm.rb (version + sha256s)
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          set -euo pipefail
+          formula="homebrew-tap/Formula/pengwm.rb"
+          version="${TAG#v}"
+          fail() { echo "::error::$1 — refusing to write garbage into the tap; bump by hand" >&2; exit 1; }
+          [[ -f "$formula" ]] || fail "Formula/pengwm.rb missing from the tap"
+          # version stanza renders as `version "0.6.0"` (tag minus the v).
+          grep -Eq '^  version "[0-9]+(\.[0-9]+)+"' "$formula" \
+            || fail "could not find a 'version \"...\"' line"
+          sed -i.bak -E "s/^  version \"[0-9]+(\.[0-9]+)+\"$/  version \"${version}\"/" "$formula"
+          rm -f "$formula.bak"
+          grep -Fq "  version \"${version}\"" "$formula" \
+            || fail "version line did not update to \"${version}\""
+          # sha256 stanzas: one 64-hex line per arch block.
+          grep -Eq '^      sha256 "' "$formula" \
+            || fail "could not find the per-arch sha256 lines"
+          sed -i.bak -E "/on_arm do/,/end/s|sha256 \"[0-9a-f]{64}\"|sha256 \"${ARM_SHA:-}\"|" "$formula"
+          sed -i.bak -E "/on_intel do/,/end/s|sha256 \"[0-9a-f]{64}\"|sha256 \"${INTEL_SHA:-}\"|" "$formula"
+          rm -f "$formula.bak"
+          grep -Fq "${ARM_SHA:-}" "$formula" \
+            || fail "arm sha256 (${ARM_SHA:-}) was not written"
+          grep -Fq "${INTEL_SHA:-}" "$formula" \
+            || fail "intel sha256 (${INTEL_SHA:-}) was not written"
+          n_arm="$(grep -cF "${ARM_SHA:-}" "$formula" || true)"
+          n_intel="$(grep -cF "${INTEL_SHA:-}" "$formula" || true)"
+          [[ "$n_arm" == "1" && "$n_intel" == "1" ]] \
+            || fail "expected exactly one occurrence of each sha256, found arm=$n_arm intel=$n_intel"
+          echo "--- updated formula (head) ---"
+          head -40 "$formula"
+          {
+            echo "### Tap bump"
+            echo ""
+            echo "- Formula/pengwm.rb → version \`${version}\`"
+            echo "- arm sha256: \`${ARM_SHA}\`"
+            echo "- intel sha256: \`${INTEL_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The cask is retired (ADR-0001): the bundle artifacts it points at no
+      # longer exist. Replace it with a tombstone pointing at the formula —
+      # once; later bumps leave the tombstone alone.
+      - name: Retire Casks/pengwm.rb (tombstone, once)
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          set -euo pipefail
+          cask="homebrew-tap/Casks/pengwm.rb"
+          if [[ ! -f "$cask" ]]; then
+            echo "No cask in the tap — nothing to retire."
+            exit 0
+          fi
+          if grep -q "DEPRECATED" "$cask"; then
+            echo "Cask already tombstoned — leaving it alone."
+            exit 0
+          fi
+          cat > "$cask" <<'EOF'
+cask "pengwm" do
+  # DEPRECATED — PengWM ships bare binaries now (ADR-0001 in the PengWM
+  # repo); this cask's bundle artifacts no longer exist. Install the
+  # formula instead:
+  #
+  #   brew uninstall --cask pengwm
+  #   brew install penqguin/tap/pengwm
+  #
+  # Then re-run PengWM's install.sh once to lay down the LaunchAgent for
+  # the new layout.
+  version "9999"
+  sha256 :no_check
+
+  url "https://github.com/Penqguin/PengWM"
+  name "PengWM (deprecated)"
+  homepage "https://github.com/Penqguin/PengWM"
+
+  disable! date: "2026-10-07", because: "moved to the penqguin/tap/pengwm formula (bare-binary layout)"
+end
+EOF
+          git -C homebrew-tap add Casks/pengwm.rb
+          echo "Cask tombstoned."
+
+      - name: Commit, push, open PR
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+          if git diff --quiet -- Formula/pengwm.rb Casks/pengwm.rb; then
+            echo "::notice::Tap already matches ${TAG} — nothing to commit"
+            exit 0
+          fi
+          git add Formula/pengwm.rb Casks/pengwm.rb
+          git commit -m "bump pengwm to ${TAG} (formula; cask retired)"
+          # --force: bot-owned branch, makes manual re-runs idempotent.
+          git push --force origin "bump-pengwm-${TAG}"
+          branch="bump-pengwm-${TAG}"
+          if gh pr list --repo "Penqguin/homebrew-tap" --head "$branch" --state open | grep -q .; then
+            echo "::notice::An open PR for $branch already exists — not duplicating"
+          else
+            gh pr create \
+              --repo "Penqguin/homebrew-tap" \
+              --head "$branch" \
+              --title "bump pengwm to ${TAG} (formula)" \
+              --body "Automated bump for [${TAG}](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}) — updates version + per-arch sha256 in \`Formula/pengwm.rb\` from the \`pengwm-<tag>-<target>.tar.gz\` sidecars. Per ADR-0001 the bare-binary formula is now the blessed install path; \`Casks/pengwm.rb\` is tombstoned (first run only)."
+          fi

@@ -1,10 +1,19 @@
 mod connection;
 #[cfg(target_os = "macos")]
 mod macos;
+mod update_check;
 
 use std::sync::{Arc, Mutex};
 
 use pengwm_core::command::BarState;
+
+/// Whether this process holds Accessibility trust; polled on a background
+/// thread while the daemon is unreachable (macos.rs owns the poller).
+type TrustedState = Arc<Mutex<bool>>;
+
+/// Release tag of a strictly newer PengWM release, if the update check found
+/// one (update_check.rs owns the watcher).
+type UpdateState = Arc<Mutex<Option<String>>>;
 
 fn main() {
     env_logger::init();
@@ -38,15 +47,21 @@ fn main() {
     }
 
     let state: Arc<Mutex<Option<BarState>>> = Arc::new(Mutex::new(None));
+    let trusted: TrustedState = Arc::new(Mutex::new(false));
+    let update: UpdateState = Arc::new(Mutex::new(None));
 
     {
         let state = Arc::clone(&state);
         std::thread::spawn(move || connection::subscribe(state));
     }
+    {
+        let update = Arc::clone(&update);
+        std::thread::spawn(move || update_check::watch(update));
+    }
 
     #[cfg(target_os = "macos")]
     {
-        macos::run(state);
+        macos::run(state, trusted, update);
     }
     #[cfg(not(target_os = "macos"))]
     {

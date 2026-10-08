@@ -15,6 +15,7 @@ fn main() {
 
     match cli.command {
         None | Some(cli::CliCommand::Daemon) => daemon_main(),
+        Some(cli::CliCommand::Update) => cli::update_main(),
         Some(cli::CliCommand::ClearSession) => {
             let p = pengwm_daemon::state::session::session_file_path();
             match std::fs::remove_file(&p) {
@@ -54,6 +55,11 @@ fn daemon_main() {
         eprintln!("Stop it first: pengwm quit");
         std::process::exit(0);
     }
+
+    // One-copy guard. See location.rs for why (two daemons — installed +
+    // dev checkout — once fought over the IPC socket). Enforced before the
+    // Accessibility check so a bare dev run fails fast and quiet.
+    pengwm_daemon::location::enforce_installed_location();
 
     #[cfg(target_os = "macos")]
     {

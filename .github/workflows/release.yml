@@ -40,7 +40,6 @@ jobs:
       # presence flags are computed here in job env and checked via
       # `if: env.*` / in-run guards instead.
       HAS_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
-      HAS_API_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,14 +54,17 @@ jobs:
           mkdir -p "dist/$TARGET"
           cp "target/$TARGET/release/pengwm" "dist/$TARGET/"
           cp "target/$TARGET/release/pengwm-menubar" "dist/$TARGET/"
+          cp LICENSE "dist/$TARGET/" 2>/dev/null || true
           ls -la "dist/$TARGET/"
 
       # Developer-ID signing when secrets are present; ad-hoc fallback otherwise.
       # Required secrets for real signing (see docs/distribution.md):
       #   APPLE_CERTIFICATE_P12 (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
       #   APPLE_DEVELOPER_IDENTITY (e.g. "Developer ID Application: Name (TEAMID)"),
-      #   APPLE_TEAM_ID. Notarization additionally needs:
-      #   APPLE_API_KEY_P8 (base64), APPLE_API_KEY_ID, APPLE_API_ISSUER_ID.
+      #   APPLE_TEAM_ID.
+      # A real Developer ID also makes TCC grants survive updates (the DR
+      # binds to the certificate, not the per-build cdhash) — ADR-0001
+      # records the accepted re-grant-per-update cost while ad-hoc.
       - name: Import Developer ID certificate (if configured)
         if: env.HAS_CERT == 'true'
         uses: apple-actions/import-codesign-certs@v3
@@ -83,101 +85,80 @@ jobs:
           }
           if [[ -n "${IDENTITY:-}" ]]; then
             echo "Signing with Developer ID: $IDENTITY"
-            sign_all codesign --force --options runtime --timestamp \
-              --entitlements packaging/entitlements.plist -s "$IDENTITY"
+            sign_all codesign --force --options runtime --timestamp -s "$IDENTITY"
           else
-            echo "No Developer ID configured — ad-hoc signing (stable identity NOT guaranteed)."
+            # Impossible to miss: ad-hoc means every update re-prompts.
+            echo '⚠ Release is ad-hoc signed. Users will re-prompt Accessibility every update. Set APPLE_* secrets — see docs/distribution.md "Signing".'
             sign_all codesign --force -s -
           fi
-          sign_all codesign --verify --verbose=2
+          # Hard gate: a broken/invalid signature must fail the build here,
+          # not ship.
+          sign_all codesign --verify --strict --verbose=2
+          if [[ -n "${IDENTITY:-}" ]]; then
+            # With a Developer ID configured the result must actually be a
+            # Developer ID signature (guards a silent ad-hoc fallback).
+            if ! codesign -dvv "$DIR/pengwm" 2>&1 | grep -q "Developer ID Application"; then
+              echo "::error::Expected Developer ID signature on $DIR/pengwm but none found"
+              exit 1
+            fi
+          fi
           codesign -dv --verbose=4 "$DIR/pengwm" 2>&1 | head -20 || true
 
-      # Assemble PengWM.app from the signed dist binaries. make_app.sh signs
-      # the bundle copies itself (same identity via PENGWM_SIGN_IDENTITY —
-      # re-signing identical binaries is idempotent), and signs the bundle
-      # last, which is the correct nesting order.
-      - name: Assemble PengWM.app bundle
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          # Flat tarball: the one install artifact (install.sh, formula).
+          # -C dist/$TARGET + `.` keeps the archive root at the binaries,
+          # which is what install.sh and Formula/pengwm.rb unpack.
+          tar czf "pengwm-${TAG}-${TARGET}.tar.gz" -C "dist/$TARGET" .
+          shasum -a 256 "pengwm-${TAG}-${TARGET}.tar.gz" > "pengwm-${TAG}-${TARGET}.tar.gz.sha256"
+          ls -la pengwm-*
+
+      - name: Assert artifact + checksum sidecar exist
+        run: |
+          set -euo pipefail
+          f="pengwm-${TAG}-${TARGET}.tar.gz"
+          if [[ ! -f "$f" ]]; then
+            echo "::error::Missing release artifact: $f"
+            exit 1
+          fi
+          if [[ ! -f "$f.sha256" ]]; then
+            echo "::error::Missing checksum sidecar: $f.sha256"
+            exit 1
+          fi
+          # The sidecar must actually match — a stale/typo'd hash would
+          # break install.sh and the formula.
+          shasum -a 256 -c "$f.sha256"
+
+      - name: Record signing mode in job summary
         env:
           IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
         run: |
           set -euo pipefail
           if [[ -n "${IDENTITY:-}" ]]; then
-            PENGWM_SIGN_IDENTITY="$IDENTITY" ./packaging/make_app.sh "dist/$TARGET"
+            sig="Developer ID ($IDENTITY)"
           else
-            ./packaging/make_app.sh "dist/$TARGET"
+            {
+              echo "⚠ Release is ad-hoc signed. Users will re-prompt Accessibility every update. Set APPLE_* secrets — see docs/distribution.md \"Signing\"."
+            } | tee /dev/stderr
+            sig="ad-hoc"
           fi
-          ls -la PengWM.app/Contents/MacOS
-          codesign -dv --verbose=4 PengWM.app 2>&1 | head -20 || true
-
-      - name: Package artifacts
-        run: |
-          set -euo pipefail
-          cp LICENSE "dist/$TARGET/" 2>/dev/null || true
-          # Flat tarball (legacy install artifact: Formula/pengwm.rb +
-          # `install.sh --no-app`)
-          tar czf "pengwm-${TAG}-${TARGET}.tar.gz" -C "dist/$TARGET" .
-          # Flat zip (notarytool-compatible for the flat layout); zip the named
-          # directory from dist/ so the archive has a sane root, not `.`.
-          (cd dist && ditto -c -k --keepParent "$TARGET" "../pengwm-${TAG}-${TARGET}.zip")
-          shasum -a 256 "pengwm-${TAG}-${TARGET}.tar.gz" > "pengwm-${TAG}-${TARGET}.tar.gz.sha256"
-          shasum -a 256 "pengwm-${TAG}-${TARGET}.zip" > "pengwm-${TAG}-${TARGET}.zip.sha256"
-          if [[ -d PengWM.app ]]; then
-            # Bundle tarball (primary install artifact for install.sh) —
-            # named pengwm-app-* to avoid any ambiguity with the legacy
-            # flat pengwm-* assets (GitHub asset URLs match case-insensitively).
-            tar czf "pengwm-app-${TAG}-${TARGET}.tar.gz" PengWM.app
-            # Bundle zip (cask + notarytool artifact for the bundle).
-            ditto -c -k --keepParent PengWM.app "pengwm-app-${TAG}-${TARGET}.zip"
-            shasum -a 256 "pengwm-app-${TAG}-${TARGET}.tar.gz" > "pengwm-app-${TAG}-${TARGET}.tar.gz.sha256"
-            shasum -a 256 "pengwm-app-${TAG}-${TARGET}.zip" > "pengwm-app-${TAG}-${TARGET}.zip.sha256"
-          fi
-          ls -la pengwm-* PengWM-* 2>/dev/null || ls -la pengwm-*
-
-      - name: Notarize (if API key configured)
-        if: env.HAS_API_KEY == 'true'
-        env:
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          # Double guard in case HAS_API_KEY ever drifts from the secret.
-          if [[ -z "${APPLE_API_KEY_P8:-}" ]]; then
-            echo "No notarization API key — skipping."
-            exit 0
-          fi
-          set -euo pipefail
-          echo "$APPLE_API_KEY_P8" | base64 --decode > /tmp/AuthKey.p8
-          # .p8 is a signing credential — scrub it on any exit path.
-          trap 'rm -f /tmp/AuthKey.p8' EXIT
-          # Submit both layouts: the bundle zip (primary) and the flat zip
-          # (legacy installs). notarytool accepts .zip; staple what it gives
-          # back so offline Gatekeeper checks pass too.
-          for zipname in "pengwm-app-${TAG}-${TARGET}.zip" "pengwm-${TAG}-${TARGET}.zip"; do
-            if [[ -f "$zipname" ]]; then
-              xcrun notarytool submit "$zipname" \
-                --key /tmp/AuthKey.p8 \
-                --key-id "$APPLE_API_KEY_ID" \
-                --issuer "$APPLE_API_ISSUER_ID" \
-                --wait
-              xcrun stapler staple "$zipname" || true
-            fi
-          done
+          {
+            echo "### PengWM release — signing mode"
+            echo ""
+            echo "| Target | Signing |"
+            echo "|---|---|"
+            echo "| \`$TARGET\` | $sig |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
         with:
-          # Non-overlapping globs: pengwm-*.tar.gz must not also match
-          # pengwm-app-*, or the same asset gets uploaded twice and the
-          # duplicate races the releases API (404 on update). Flat
-          # artifacts are pengwm-v<tag>-..., bundle artifacts pengwm-app-*.
+          # One artifact style: the flat tarball + its sidecar. (ADR-0001
+          # retired the pengwm-app-* bundle artifacts and the notarytool
+          # zips. The old non-overlapping-glob rule is moot now but kept
+          # correct: pengwm-v*.tar.gz matches nothing else.)
           files: |
-            pengwm-app-*.tar.gz
-            pengwm-app-*.tar.gz.sha256
-            pengwm-app-*.zip
-            pengwm-app-*.zip.sha256
             pengwm-v*.tar.gz
             pengwm-v*.tar.gz.sha256
-            pengwm-v*.zip
-            pengwm-v*.zip.sha256
           generate_release_notes: true

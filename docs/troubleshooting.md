@@ -16,6 +16,56 @@ binary, so every rebuild re-prompts).
 exits with instructions when permissions are missing — check the first log
 lines.
 
+## PengWM was open before, and now won't open after an update
+
+**Cause:** none, mostly — stable-signature prebuilt releases keep one
+Accessibility grant across updates, and that grant surviving is now the
+norm. The one legit failure path is a detached TCC entry (macOS upgrades
+and TCC database resets detach it). The tell: the menubar shows "PengWM
+needs Accessibility" instead of the workspace list, or the daemon exits
+with "needs Accessibility permissions" in its first log lines.
+
+**Fix:** remove the stale entry and re-grant. For a bare binary the TCC
+entry is path/signature-bound (no bundle id to target), so either remove
+the `pengwm` row in System Settings → Privacy & Security → Accessibility
+and re-add it, or reset all Accessibility grants:
+
+```bash
+tccutil reset Accessibility
+```
+
+then System Settings → Privacy & Security → Accessibility → add the
+installed binary (`~/.pengwm/bin/pengwm`). Note that with ad-hoc signed
+releases, **every update costs one re-grant** — that is expected behavior,
+not a bug (ADR-0001). After granting, updates between launches keep
+working until the next binary replacement.
+
+## Two copies won't install / update
+
+**Cause:** PengWM runs best as a single installed copy. The daemon refuses
+to start from outside the blessed install root (`$PENGWM_HOME/bin`,
+default `~/.pengwm/bin`; Homebrew Cellar pengwm paths are also accepted).
+`install.sh` checks for leftover `PengWM.app` bundles from the old v0.5.x
+layout (removed automatically) and reports any daemon running from a
+non-target path before replacing anything:
+
+```
+A pengwm daemon is currently running from /Users/you/PengWM/target/release/pengwm
+(not the install target). Installing over the active daemon is safe — it restarts.
+```
+
+**Fix:** let install.sh remove old bundles, kill a stray hand-started
+daemon, or — for developers rebuilding from a checkout — set `PENGWM_DEV=1`
+(`PENGWM_DEV=1 ./target/release/pengwm`) to opt the dev copy into running.
+
+**How `pengwm update` works:** run from the installed copy, it downloads
+the latest release tarball, verifies its checksum and signatures, swaps
+the binaries in `$PENGWM_HOME/bin`, and lets launchd restart the daemon
+(the menubar drops to "Starting PengWM…" briefly). It refuses to run from
+a non-installed copy: only the installed binaries update themselves, so a
+dev checkout can never spiral the installer into replacing them on its
+behalf.
+
 ## Keybinds do nothing
 
 **Cause:** the CGEventTap needs the same Accessibility grant, and an

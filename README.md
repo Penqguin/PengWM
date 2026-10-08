@@ -6,8 +6,10 @@ required — uses only public Apple APIs (Accessibility & Core Graphics).
 ## Quick Start
 
 ```bash
-# Install the latest signed release (stable Accessibility grant across updates):
-#   /Applications/PengWM.app (appears in Launchpad) + a `pengwm` CLI on PATH
+# Install the latest release — bare binaries in ~/.pengwm/bin:
+#   ~/.pengwm/bin/{pengwm,pengwm-menubar} + a `pengwm` CLI symlink on PATH
+# Releases are ad-hoc signed: expect one Accessibility re-grant per update
+# (docs/adr/0001-bare-binary-distribution.md).
 curl -fsSL https://pengwm.penqguin.com/install.sh | bash
 
 # Grant Accessibility permissions when prompted, then control it
@@ -15,6 +17,8 @@ pengwm focus left
 pengwm workspace 3
 pengwm close
 ```
+
+Updating in place later is `pengwm update` (or re-running the install one-liner) — the daemon briefly drops to "Starting PengWM…" in the menubar while launchd restarts it, and the icon shows "needs Accessibility ⚠" if macOS has withdrawn the grant.
 
 Prefer a checkout (or already have the repo cloned):
 
@@ -30,22 +34,27 @@ Uninstall later with:
 curl -fsSL https://pengwm.penqguin.com/uninstall.sh | bash -s -- --yes
 ```
 
-From source instead (requires Rust; ad-hoc signed, so macOS re-prompts
-for Accessibility after every rebuild):
-
-```bash
-./install.sh --from-source
-# or manually:
-cargo build --release
-./target/release/pengwm
-```
+> **Developers only:** `--from-source` builds from a checkout with cargo.
+> Source builds are ad-hoc signed — macOS treats every rebuild as a new
+> binary, so **every rebuild costs one Accessibility re-grant**, and so
+> does every prebuilt release update (there is no signing certificate;
+> see [docs/adr/0001-bare-binary-distribution.md](docs/adr/0001-bare-binary-distribution.md)).
+> Tip: run dev builds from your terminal — TCC attributes them to the
+> terminal app, which usually already has the grant.
+>
+> ```bash
+> ./install.sh --from-source
+> # or manually:
+> cargo build --release
+> PENGWM_DEV=1 ./target/release/pengwm
+> ```
 
 ## Prerequisites
 
 1. **macOS 14+** (Ventura should work, Sequoia tested)
 2. **Accessibility permissions:** System Settings → Privacy & Security → Accessibility → add
-   PengWM (the app, when installed via the bundle; or your terminal / the `pengwm`
-   binary directly for source builds)
+   the installed binary (`~/.pengwm/bin/pengwm`; for source builds, your
+   terminal / the `pengwm` binary directly)
 3. **Displays have separate Spaces:** System Settings → Desktop & Dock → turn on
    _Displays have separate Spaces_
 

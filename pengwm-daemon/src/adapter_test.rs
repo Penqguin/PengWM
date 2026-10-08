@@ -156,6 +156,17 @@ impl TestAdapter {
         self.window_pids.borrow_mut().insert(window_id, pid);
     }
 
+    /// Remove a window from the fake's listing without any destroyed
+    /// notification — simulates a close whose notification never arrives
+    /// (the missed-notification path the sweep untrack exists for).
+    pub fn unlist_window(&self, pid: i32, window_id: WindowId) {
+        if let Some(windows) = self.windows.borrow_mut().get_mut(&pid) {
+            windows.retain(|&w| w != window_id);
+        }
+        self.window_pids.borrow_mut().remove(&window_id);
+        self.window_rects.borrow_mut().remove(&window_id);
+    }
+
     pub fn inject_app_name(&self, pid: i32, name: String) {
         self.app_names.borrow_mut().insert(pid, name);
     }
@@ -228,6 +239,10 @@ impl TestHandle {
 
     pub fn inject_window(&self, pid: i32, window_id: WindowId) {
         self.0.inject_window(pid, window_id)
+    }
+
+    pub fn unlist_window(&self, pid: i32, window_id: WindowId) {
+        self.0.unlist_window(pid, window_id)
     }
 
     pub fn inject_app_name(&self, pid: i32, name: String) {

@@ -314,7 +314,15 @@ unsafe extern "C" fn observer_callback(
             None => match ctx.find_window_id_by_element(element) {
                 Some(id) => id,
                 None => {
-                    log::warn!("WindowDestroyed: unknown element (not in cache)");
+                    // The reliable window id is unknowable (stale ref /
+                    // CFEqual mismatch), but the pid tells us which app
+                    // reported the death. Probe that pid's listing and
+                    // untrack whatever tracked window of it is now
+                    // unlisted — a dropped warning here used to strand
+                    // the dead window in the tree until the 10s write-
+                    // path grace (or forever, if no layout ever ran).
+                    log::warn!("WindowDestroyed: unknown element, probing pid {}", pid);
+                    ctx.call_event(DaemonEvent::UnknownWindowDestroyed(pid));
                     return;
                 }
             },

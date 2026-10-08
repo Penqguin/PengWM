@@ -327,12 +327,24 @@ impl StateManager {
     /// touched: tracked-but-untiled windows are hidden (owned by
     /// `WindowStore`), popups (owned by the workspace), or intentionally
     /// overflowed at capacity.
+    ///
+    /// The same poll also serves the reverse direction: each pid's listing
+    /// is diffed against its tracked windows, and a tracked window the app
+    /// no longer lists is untracked immediately — the fast close-detector
+    /// for missed destroyed notifications (see `untrack_unlisted_windows`).
     pub(super) fn sync_untracked_windows(&mut self, pids: impl IntoIterator<Item = i32>) {
+        let mut listings: Vec<(i32, Vec<WindowId>)> = Vec::new();
         for pid in pids {
             if self.excluded_pids.contains(&pid) {
                 continue;
             }
-            for window_id in self.os.poll_windows_for_pid(pid) {
+            listings.push((pid, self.os.poll_windows_for_pid(pid)));
+        }
+        // Untrack dead members first, so the discovery layouts below
+        // compute targets against a tree that no longer holds them.
+        self.untrack_unlisted_windows(&listings);
+        for (pid, windows) in listings {
+            for window_id in windows {
                 if !self.store.contains(window_id) {
                     log::info!(
                         "sync_untracked: discovered untracked window {} pid {}",
@@ -343,6 +355,69 @@ impl StateManager {
                 }
             }
         }
+    }
+
+    /// Untrack every tracked window its own pid's listing no longer
+    /// contains. The app listed other windows but not ours: evidence of
+    /// death that needs no grace and no destroyed notification — the
+    /// missed-notification paths (1Password exit, a Preview window opened
+    /// from Finder, a stale ref failing CFEqual) previously stranded the
+    /// dead window in the tree until some unrelated event triggered a
+    /// layout, then the write-path grace added up to 10s more.
+    ///
+    /// Judgement rules that make the fast path safe outside wake:
+    /// - **Zero listing is no judgment.** An app whose poll returns
+    ///   nothing is the post-wake blackout signature, not a mass close.
+    /// - **Suppressed while a wake resync is pending** for the same
+    ///   reason: during the blackout even live apps list nothing, and a
+    ///   partial listing from a recovering app is ambiguous.
+    ///
+    /// Untracking runs the normal `on_window_destroyed` path (remove,
+    /// retile, bar publish), so a closed window's siblings re-tile within
+    /// one sweep cycle.
+    pub(super) fn untrack_unlisted_windows(&mut self, listings: &[(i32, Vec<WindowId>)]) {
+        if self.wake_resync.is_some() {
+            log::debug!("untrack_unlisted: skipped — wake resync pending");
+            return;
+        }
+        for (pid, listed) in listings {
+            if listed.is_empty() {
+                continue;
+            }
+            let tracked = self
+                .store
+                .windows_for(*pid)
+                .map(|w| w.to_vec())
+                .unwrap_or_default();
+            for window_id in tracked {
+                if !listed.contains(&window_id) {
+                    log::info!(
+                        "untrack_unlisted: window {} pid {} no longer listed by its app, untracking",
+                        window_id,
+                        pid
+                    );
+                    self.on_window_destroyed(window_id);
+                }
+            }
+        }
+    }
+
+    /// A destroyed notification arrived for an element that could not be
+    /// mapped to a window id. The owning pid still tells us who reported
+    /// the death: poll that pid and untrack its tracked-but-unlisted
+    /// windows — the same evidence the sweep uses, scoped to the one app
+    /// that reported a death, so the response is immediate rather than
+    /// waiting for the next 2s sweep.
+    pub fn on_unknown_window_destroyed(&mut self, pid: i32) {
+        if self.excluded_pids.contains(&pid) || self.wake_resync.is_some() {
+            return;
+        }
+        let windows = self.os.poll_windows_for_pid(pid);
+        if windows.is_empty() {
+            // Zero listing: no judgment (blackout signature).
+            return;
+        }
+        self.untrack_unlisted_windows(&[(pid, windows)]);
     }
     pub fn on_app_launched(&mut self, pid: i32) {
         log::info!("App launched: pid={}", pid);

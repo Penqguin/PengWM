@@ -11,9 +11,21 @@
 ```bash
 git clone https://github.com/Penqguin/PengWM
 cd PengWM
-./install.sh            # prebuilt signed release (recommended)
-# ./install.sh --from-source   # or build locally (needs Rust, re-prompts for Accessibility)
+./install.sh            # prebuilt release (recommended) — installs to ~/.pengwm/bin
+# ./install.sh --from-source   # (developers) build locally — ad-hoc signed, so
+#                              # every rebuild costs one Accessibility re-grant
 ```
+
+## Accessibility across updates
+
+Releases are ad-hoc signed (no Apple certificate), so **every update costs
+one Accessibility re-grant** — that is expected, accepted behavior, not a
+failure (ADR-0001). The menubar is the quick tell: when the grant is intact
+it lists workspaces; when it shows "PengWM needs Accessibility" instead,
+macOS has detached the grant (OS upgrades and `tccutil`/TCC database resets
+are the other usual causes). Fix: re-add `~/.pengwm/bin/pengwm` in
+System Settings → Privacy & Security → Accessibility after each update.
+See [troubleshooting.md](troubleshooting.md).
 
 ### Start the daemon
 

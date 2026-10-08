@@ -103,7 +103,8 @@ clicking a workspace switches to it. It subscribes to the daemon's push socket
 (state is refreshed each time the menu opens). The **Quit PengWM** menu item
 stops everything: the daemon shuts down — and deregisters its LaunchAgent job,
 so nothing respawns it — and the menubar exits. (`pengwm quit` does the same;
-restart with `open /Applications/PengWM.app` or a new login.)
+restart with a fresh login, `launchctl kickstart gui/$(id -u)/com.pengwm.daemon`,
+or run `~/.pengwm/bin/pengwm` directly.)
 
 | Key       | Type | Default | Description                              |
 | --------- | ---- | ------- | ---------------------------------------- |

@@ -11,8 +11,8 @@ use pengwm_core::tree::WindowId;
 pub(super) enum AfterWrite {
     /// Nothing further: still tracked, retrying, or backed off.
     Keep,
-    /// The window stayed gone past `GONE_GRACE`: untrack it via the
-    /// normal destroyed path.
+    /// The window stayed gone past the wake-scoped gone grace: untrack it
+    /// via the normal destroyed path.
     Untrack,
 }
 
@@ -61,18 +61,26 @@ pub(super) struct LayoutWriteCache {
     /// backoff late. Cleared on success, target change, destroy, terminate
     /// and wake — deliberately *not* on displace: see `invalidate`.
     pin_state: HashMap<WindowId, PinState>,
+    /// Whether a wake resync is pending. Scoped by `monitors_wake.rs`
+    /// (armed with the resync, disarmed on commit/deadline) so the
+    /// write-path gone grace can be patient during the post-wake AX
+    /// blackout and fast the rest of the time.
+    wake_pending: bool,
 }
 
 impl LayoutWriteCache {
-    /// A window the OS stops listing is kept tracked for this long before
-    /// the caller treats it as genuinely closed. Covers the post-wake
-    /// AX blackout and transient refresh races (same WindowId reappearing
-    /// seconds later); real closes arrive via the destroyed notification
-    /// immediately and don't wait on this. Do NOT shrink this to cover
-    /// "faster untracking": post-wake polling returns *empty listings for
-    /// live apps* (see `monitors_wake::on_system_woke`), so a short grace
-    /// untracks live windows and they stop being tiled entirely.
-    const GONE_GRACE: Duration = Duration::from_secs(10);
+    /// The write-path gone grace in normal operation. Short by design:
+    /// the fast untrack of genuinely closed windows is owned by the
+    /// listed-set sweep (`sync_untracked_windows`), so this grace is only
+    /// a fallback for a close the sweep somehow missed. Long enough to
+    /// ride out one layout cycle; never the primary death detector.
+    const NORMAL_GONE_GRACE: Duration = Duration::from_millis(250);
+    /// The write-path gone grace while a wake resync is pending. A
+    /// blacked-out AX reports live windows gone (`kAXWindows` comes back
+    /// empty for live apps right after `NSWorkspaceDidWake`), so untracking
+    /// on a 250ms timer there destroys the desktop. Patient again, exactly
+    /// as long as the resync: armed and disarmed by `monitors_wake.rs`.
+    const WAKE_GONE_GRACE: Duration = Duration::from_secs(10);
     /// Consecutive Pinned reports before writes back off. Three strikes is
     /// ~3–6s of futility evidence: fast enough to matter, slow enough to
     /// ride out transient contention without throttling a window that is
@@ -89,6 +97,25 @@ impl LayoutWriteCache {
             layout_fail_logged: HashMap::new(),
             gone_since: HashMap::new(),
             pin_state: HashMap::new(),
+            wake_pending: false,
+        }
+    }
+
+    /// Scope the write-path gone grace to the wake blackout: armed when a
+    /// wake resync is armed, disarmed when it commits or gives up at the
+    /// deadline. `monitors_wake.rs` owns the resync lifecycle; this only
+    /// carries the bit the grace policy reads.
+    pub(super) fn note_wake_pending(&mut self, pending: bool) {
+        self.wake_pending = pending;
+    }
+
+    /// The effective write-path gone grace: 10s while a wake resync is
+    /// pending (blacked-out AX reports live windows gone), 0.25s otherwise.
+    fn effective_gone_grace(&self) -> Duration {
+        if self.wake_pending {
+            Self::WAKE_GONE_GRACE
+        } else {
+            Self::NORMAL_GONE_GRACE
         }
     }
 
@@ -247,16 +274,17 @@ impl LayoutWriteCache {
             // Gone: the writer already refreshed + re-discovered and still
             // missed, so no second poll here — just the grace timer.
             // Post-wake / transient AX blackouts empty the writer's listing
-            // for live windows, so only windows still gone after GONE_GRACE
-            // report Untrack.
+            // for live windows, so only windows still gone past the wake-
+            // scoped grace report Untrack.
             WriteOutcome::Gone => {
                 let now = Instant::now();
+                let grace = self.effective_gone_grace();
                 match self.gone_since.get(&window_id) {
-                    Some(first) if now.duration_since(*first) >= Self::GONE_GRACE => {
+                    Some(first) if now.duration_since(*first) >= grace => {
                         log::warn!(
                             "layout_writer: window {} still gone after {:?}, untracking",
                             window_id,
-                            Self::GONE_GRACE,
+                            grace,
                         );
                         AfterWrite::Untrack
                     }
@@ -325,10 +353,11 @@ impl LayoutWriteCache {
     }
 
     /// Drop the whole cache: stale AX refs + moved displays mean every
-    /// "already applied" entry is a lie after sleep. The gone grace
-    /// restarts too — pre-sleep misses must not kill windows while
-    /// post-wake AX is still blacked out — and so does the pin count, so
-    /// post-wake writes aren't backoff-silenced.
+    /// "already applied" entry is a lie after sleep. The gone-grace and pin
+    /// evidence restart so post-wake writes retry clean. Blackout protection
+    /// itself is no longer carried here: the pending resync gates layout
+    /// work until AX answers, and the wake-scoped grace bit
+    /// (`note_wake_pending`) holds the patient grace until commit.
     pub(super) fn clear_on_wake(&mut self) {
         self.applied_rects.clear();
         self.layout_fail_logged.clear();
@@ -662,6 +691,37 @@ mod tests {
         cache.age_gone_for_test(7, Duration::from_secs(30));
         assert_eq!(
             cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Untrack
+        );
+    }
+
+    #[test]
+    fn gone_grace_is_short_off_wake_and_patient_during_wake() {
+        // Off wake: 250ms — the listed-set sweep owns fast untracking of
+        // genuinely closed windows, so the write-path grace is only a
+        // fallback and must not add the old 10s to every missed close.
+        // While a wake resync is pending: patient again — a blacked-out
+        // AX reports live windows gone.
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        cache.record_failure(7, t, WriteOutcome::Gone);
+        cache.age_gone_for_test(7, Duration::from_millis(300));
+        assert_eq!(
+            cache.record_failure(7, t, WriteOutcome::Gone),
+            AfterWrite::Untrack
+        );
+
+        cache.note_wake_pending(true);
+        cache.record_failure(8, t, WriteOutcome::Gone);
+        cache.age_gone_for_test(8, Duration::from_secs(1));
+        assert_eq!(
+            cache.record_failure(8, t, WriteOutcome::Gone),
+            AfterWrite::Keep,
+            "a 1s miss must not untrack during the wake blackout"
+        );
+        cache.age_gone_for_test(8, Duration::from_secs(30));
+        assert_eq!(
+            cache.record_failure(8, t, WriteOutcome::Gone),
             AfterWrite::Untrack
         );
     }
