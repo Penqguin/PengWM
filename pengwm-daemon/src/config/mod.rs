@@ -16,11 +16,32 @@ pub enum HiddenStrategy {
     FarOffscreen,
 }
 
+/// What the daemon does with a native-fullscreen window. `park` removes it
+/// from the tree while it is fullscreen and re-tiles its workspace around
+/// it; on unfullscreen it reveals back through the normal funnel into its
+/// remembered (or next-with-capacity) workspace. `tile` is the legacy
+/// behavior: the tree keeps the window and macOS refuses its geometry
+/// writes (absorbed by the pin backoff).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FullscreenStrategy {
+    /// Leave the tree while fullscreen; reveal back on unfullscreen.
+    #[default]
+    Park,
+    /// Keep the tree slot (legacy; writes are refused and pinned).
+    Tile,
+}
+
 /// Window lifecycle / visibility settings scoped under `[windows]` in TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowsConfig {
     #[serde(default)]
     pub hidden_strategy: HiddenStrategy,
+    /// Fullscreen window handling: `park` (default) untitles native
+    /// fullscreen windows and reveals them on exit; `tile` keeps the legacy
+    /// behavior.
+    #[serde(default)]
+    pub fullscreen: FullscreenStrategy,
     /// Share of the usable area a popup overlay takes (0.1–1.0, clamped at
     /// use). Workspace-bound popups — dialogs, floating panels, restricted
     /// apps — render centered at this ratio; magnify keeps its own 0.75.
@@ -32,6 +53,7 @@ impl Default for WindowsConfig {
     fn default() -> Self {
         Self {
             hidden_strategy: HiddenStrategy::default(),
+            fullscreen: FullscreenStrategy::default(),
             popup_ratio: default_popup_ratio(),
         }
     }

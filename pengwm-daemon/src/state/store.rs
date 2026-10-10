@@ -6,30 +6,46 @@ use pengwm_core::workspace::Workspace;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// What a hidden window remembers: the workspace index it came from and
-/// whether it hides as a popup (dialogs / floating / restricted apps) or
-/// as a tree window. One hidden map, one reveal funnel for both kinds —
-/// the kind bit only changes which membership the caller re-adds to.
+/// Why a window left the tiling tree while staying tracked. `Hide` is the
+/// minimize/app-hide path (cmd-H, dock) — it reveals through the normal
+/// shown flow; `Fullscreen` is the native-fullscreen probe — it reveals as
+/// a plain tileable window the moment the `AXFullScreen` probe says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HiddenEntry {
-    pub idx: usize,
-    pub popup: bool,
+pub enum ParkReason {
+    /// Minimized to the Dock or hidden in place (`AXMinimized`/`AXHidden`).
+    Hide,
+    /// Native fullscreen (`AXFullScreen`) — macOS owns the geometry now.
+    Fullscreen,
 }
 
-/// Single owner of wid↔pid↔hidden state. Hidden windows leave the tiling
+/// What a parked window remembers: the workspace index it came from,
+/// whether it parks as a popup (dialogs / floating / restricted apps) or as
+/// a tree window, and the reason it left the tree. One parking map, one
+/// reveal funnel for both kinds — the kind bit changes which membership the
+/// caller re-adds to; the reason bit only changes *when* the caller is
+/// allowed to fire the reveal (hidden windows wait for `window_is_hidden`,
+/// fullscreen windows for its probe to falsify).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParkedEntry {
+    pub idx: usize,
+    pub popup: bool,
+    pub reason: ParkReason,
+}
+
+/// Single owner of wid↔pid↔parked state. Parked windows leave the tiling
 /// tree but stay in `window_pids` so they can be retiled by
-/// `on_window_shown`; the `hidden` map remembers the workspace index they
-/// came from (and whether they hide as popups), so `on_window_shown` can
-/// route them back. Finding, remembering, and removal split at the seam:
-/// the store finds + remembers and returns the index; the caller
-/// (`StateManager`) mutates the workspace and re-layouts. Reconcile stays
-/// testable via a `Fn(WindowId)->bool` predicate (no `as_any_mut`
-/// downcast). This is the deep module that concentrates the "hidden means
-/// untiled but still tracked" invariant.
+/// `on_window_shown` (hide) or `on_fullscreen_exit` (fullscreen); the
+/// `parked` map remembers the workspace index they came from (and kind +
+/// reason), so the reveal funnel can route them back. Finding, remembering,
+/// and removal split at the seam: the store finds + remembers and returns
+/// the index; the caller (`StateManager`) mutates the workspace and
+/// re-layouts. Reconcile stays testable via a `Fn(WindowId)->bool`
+/// predicate (no `as_any_mut` downcast). This is the deep module that
+/// concentrates the "parked means untiled but still tracked" invariant.
 pub struct WindowStore {
     window_pids: HashMap<WindowId, i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
-    hidden: HashMap<WindowId, HiddenEntry>,
+    parked: HashMap<WindowId, ParkedEntry>,
     last_reconcile: Instant,
 }
 
@@ -38,7 +54,7 @@ impl WindowStore {
         Self {
             window_pids: HashMap::new(),
             pid_to_windows: HashMap::new(),
-            hidden: HashMap::new(),
+            parked: HashMap::new(),
             last_reconcile: Instant::now(),
         }
     }
@@ -48,7 +64,7 @@ impl WindowStore {
         Self {
             window_pids: HashMap::new(),
             pid_to_windows: HashMap::new(),
-            hidden: HashMap::new(),
+            parked: HashMap::new(),
             last_reconcile: last,
         }
     }
@@ -60,12 +76,12 @@ impl WindowStore {
             e.insert(pid);
             self.pid_to_windows.entry(pid).or_default().push(window_id);
         }
-        self.hidden.remove(&window_id);
+        self.parked.remove(&window_id);
     }
 
     pub fn unregister(&mut self, window_id: WindowId) -> Option<i32> {
         let pid = self.window_pids.remove(&window_id)?;
-        self.hidden.remove(&window_id);
+        self.parked.remove(&window_id);
         if let Some(v) = self.pid_to_windows.get_mut(&pid) {
             v.retain(|&w| w != window_id);
             if v.is_empty() {
@@ -84,14 +100,14 @@ impl WindowStore {
                 }
             }
         }
-        self.hidden.remove(&window_id);
+        self.parked.remove(&window_id);
     }
 
     pub fn remove_pid(&mut self, pid: i32) -> Vec<WindowId> {
         let windows = self.pid_to_windows.remove(&pid).unwrap_or_default();
         for &wid in &windows {
             self.window_pids.remove(&wid);
-            self.hidden.remove(&wid);
+            self.parked.remove(&wid);
         }
         windows
     }
@@ -124,43 +140,99 @@ impl WindowStore {
         self.window_pids.is_empty()
     }
 
-    // -- hidden state ----------------------------------------------------------
+    // -- parked state ----------------------------------------------------------
 
-    /// True when the window is hidden-tracked (untiled but still owned).
+    /// True when the window is parked by a hide (minimize / app-hidden):
+    /// untiled but still tracked, waiting for the shown flow.
     pub fn is_hidden(&self, window_id: WindowId) -> bool {
-        self.hidden.contains_key(&window_id)
+        self.parked_reason(window_id) == Some(ParkReason::Hide)
     }
 
-    /// Remember a tiled window's workspace and report the index. The caller
+    /// True when the window is parked native-fullscreen: untiled but still
+    /// tracked, waiting for the `window_is_fullscreen` probe to falsify.
+    pub fn is_fullscreen_parked(&self, window_id: WindowId) -> bool {
+        self.parked_reason(window_id) == Some(ParkReason::Fullscreen)
+    }
+
+    /// True whether the window is parked for any reason. Callers that must
+    /// ignore a window regardless of *why* it left the tree (drag/move
+    /// handling, focus tracking) use this; callers that care which reveal
+    /// flow applies use `is_hidden` / `is_fullscreen_parked`.
+    pub fn is_parked(&self, window_id: WindowId) -> bool {
+        self.parked.contains_key(&window_id)
+    }
+
+    fn parked_reason(&self, window_id: WindowId) -> Option<ParkReason> {
+        self.parked.get(&window_id).map(|e| e.reason)
+    }
+
+    /// Remember a leave-the-tree transition and report the index. The caller
     /// removes the window from the tree and re-layouts — tree mutation stays
-    /// with the tree owner; the store only owns hidden state.
-    pub fn hide(&mut self, window_id: WindowId, workspaces: &[Workspace]) -> Option<usize> {
+    /// with the tree owner; the store only owns parked state. `None` when the
+    /// window is not a tree member (popups park via `park_popup`).
+    pub fn park(
+        &mut self,
+        window_id: WindowId,
+        workspaces: &[Workspace],
+        reason: ParkReason,
+    ) -> Option<usize> {
         let idx = find_workspace_for_window(workspaces, window_id)?;
-        self.hidden
-            .insert(window_id, HiddenEntry { idx, popup: false });
+        self.parked.insert(
+            window_id,
+            ParkedEntry {
+                idx,
+                popup: false,
+                reason,
+            },
+        );
         Some(idx)
     }
 
-    /// Remember a hidden popup's workspace. The caller removes it from the
-    /// popup set and re-layouts. Popups need no capacity or routing: they
-    /// re-attach to the same workspace on reveal.
-    pub fn hide_popup(&mut self, window_id: WindowId, idx: usize) {
-        self.hidden
-            .insert(window_id, HiddenEntry { idx, popup: true });
+    /// Remember a parked popup's workspace. Popups need no capacity or
+    /// routing: they re-attach to the same workspace on reveal. Fullscreen
+    /// parking never applies — popups sit outside the tree by definition.
+    pub fn park_popup(&mut self, window_id: WindowId, idx: usize) {
+        self.parked.insert(
+            window_id,
+            ParkedEntry {
+                idx,
+                popup: true,
+                reason: ParkReason::Hide,
+            },
+        );
     }
 
-    /// Forget a hidden entry and return what it remembered (workspace index
-    /// and popup kind), if any. The caller decides the final placement:
+    /// A parked-fullscreen window was reported hidden (minimized with its
+    /// Space active / app Cmd-H): upgrade the reason, keep the remembered
+    /// idx. Fullscreen-exit no longer reveals this window — the normal
+    /// hidden flow owns it. Never promotes Hide → Fullscreen.
+    pub fn upgrade_park_to_hide(&mut self, window_id: WindowId) {
+        if let Some(entry) = self.parked.get_mut(&window_id) {
+            if entry.reason == ParkReason::Fullscreen {
+                entry.reason = ParkReason::Hide;
+            }
+        }
+    }
+
+    /// Forget a parked entry and return what it remembered (workspace index,
+    /// popup kind, reason), if any. The caller decides the final placement:
     /// popups re-attach to the remembered workspace; tree windows go through
-    /// `add_window_to_workspace`.
-    pub fn reveal(&mut self, window_id: WindowId) -> Option<HiddenEntry> {
-        self.hidden.remove(&window_id)
+    /// `add_window_to_workspace` (the remembered idx is the preferred slot —
+    /// overflow beyond it reuses the normal capacity routing).
+    pub fn reveal(&mut self, window_id: WindowId) -> Option<ParkedEntry> {
+        self.parked.remove(&window_id)
     }
 
     #[cfg(test)]
-    pub fn hidden_insert(&mut self, window_id: WindowId, idx: usize) {
-        self.hidden
-            .insert(window_id, HiddenEntry { idx, popup: false });
+    pub fn park_insert(&mut self, window_id: WindowId, idx: usize) {
+        self.parked.insert(
+            window_id,
+            ParkedEntry {
+                idx,
+                popup: false,
+                reason: ParkReason::Hide,
+            },
+        );
     }
 
     /// Test helper: reset the reconcile debounce so the next tick runs the
@@ -170,17 +242,45 @@ impl WindowStore {
         self.last_reconcile = Instant::now() - RECONCILE_INTERVAL;
     }
 
-    /// Test helper: seed a hidden popup entry.
+    /// Test helper: seed a parked popup entry.
     #[cfg(test)]
-    pub fn hidden_insert_popup(&mut self, window_id: WindowId, idx: usize) {
-        self.hidden
-            .insert(window_id, HiddenEntry { idx, popup: true });
+    pub fn park_insert_popup(&mut self, window_id: WindowId, idx: usize) {
+        self.parked.insert(
+            window_id,
+            ParkedEntry {
+                idx,
+                popup: true,
+                reason: ParkReason::Hide,
+            },
+        );
     }
 
-    /// Drain every hidden entry with what it remembered. The caller retiles
+    #[cfg(test)]
+    pub fn fullscreen_park_insert(&mut self, window_id: WindowId, idx: usize) {
+        self.parked.insert(
+            window_id,
+            ParkedEntry {
+                idx,
+                popup: false,
+                reason: ParkReason::Fullscreen,
+            },
+        );
+    }
+
+    /// Drain every parked entry with what it remembered. The caller retiles
     /// each (remembered, routed, or active workspace; popups re-attach).
-    pub fn reveal_all(&mut self) -> Vec<(WindowId, HiddenEntry)> {
-        self.hidden.drain().collect()
+    pub fn reveal_all(&mut self) -> Vec<(WindowId, ParkedEntry)> {
+        self.parked.drain().collect()
+    }
+
+    /// Snapshot of every fullscreen-parked window id, for the per-tick exit
+    /// probe. The parked set is tiny by construction, so the probe is cheap.
+    pub fn fullscreen_parked(&self) -> Vec<WindowId> {
+        self.parked
+            .iter()
+            .filter(|(_, e)| e.reason == ParkReason::Fullscreen)
+            .map(|(&wid, _)| wid)
+            .collect()
     }
 
     /// True when `RECONCILE_INTERVAL` has elapsed since the last reconcile.
@@ -218,7 +318,12 @@ impl WindowStore {
                 || workspaces.iter().any(|ws| ws.is_popup(wid));
             if hidden && member {
                 to_hide.push(wid);
-            } else if !hidden && self.hidden.contains_key(&wid) {
+            } else if !hidden && self.is_hidden(wid) {
+                // Hide-parked only: fullscreen-parked windows leave this
+                // reconcile — their reveal is owned by the fullscreen exit
+                // probe (`reconcile_fullscreen_windows`), which must not be
+                // shortcut by the `window_is_hidden` predicate saying "not
+                // hidden".
                 to_show.push(wid);
             }
         }
@@ -318,12 +423,12 @@ mod tests {
     }
 
     #[test]
-    fn hide_and_reveal_roundtrip() {
+    fn park_and_reveal_roundtrip() {
         let mut wss = ws_with(&[10, 20]);
         let mut r = WindowStore::new();
         r.register(10, 42);
         r.register(20, 42);
-        let idx = r.hide(10, &wss).unwrap();
+        let idx = r.park(10, &wss, ParkReason::Hide).unwrap();
         assert_eq!(idx, 0);
         assert!(r.is_hidden(10));
         // Tree removal is the caller's job.
@@ -348,29 +453,29 @@ mod tests {
     }
 
     #[test]
-    fn hide_window_remembers_idx_without_mutating_tree() {
+    fn park_window_remembers_idx_without_mutating_tree() {
         let workspaces = ws_with_windows(&[10, 20]);
         let mut t = WindowStore::new();
         t.register(10, 42);
         t.register(20, 42);
-        let idx = t.hide(10, &workspaces).unwrap();
+        let idx = t.park(10, &workspaces, ParkReason::Hide).unwrap();
         assert_eq!(idx, 0);
         assert!(workspaces[0].find_window(10).is_some());
         assert!(t.is_hidden(10));
     }
 
     #[test]
-    fn hide_window_returns_none_when_not_tiled() {
+    fn park_window_returns_none_when_not_tiled() {
         let workspaces = ws_with_windows(&[10]);
         let mut t = WindowStore::new();
-        assert!(t.hide(99, &workspaces).is_none());
+        assert!(t.park(99, &workspaces, ParkReason::Hide).is_none());
         assert!(!t.is_hidden(99));
     }
 
     #[test]
     fn take_hidden_returns_remembered_and_clears() {
         let mut t = WindowStore::new();
-        t.hidden_insert(10, 2);
+        t.park_insert(10, 2);
         assert_eq!(t.reveal(10).map(|e| e.idx), Some(2));
         assert!(!t.is_hidden(10));
     }
@@ -378,10 +483,60 @@ mod tests {
     #[test]
     fn popup_hidden_entries_roundtrip_with_kind() {
         let mut t = WindowStore::new();
-        t.hidden_insert_popup(10, 1);
+        t.park_insert_popup(10, 1);
         let entry = t.reveal(10).unwrap();
         assert_eq!(entry.idx, 1);
-        assert!(entry.popup, "popup kind survives the hidden map");
+        assert!(entry.popup, "popup kind survives the parked map");
+    }
+
+    #[test]
+    fn fullscreen_parking_roundtrips_with_reason() {
+        let mut wss = ws_with(&[10]);
+        let mut t = WindowStore::new();
+        t.register(10, 42);
+        let idx = t.park(10, &wss, ParkReason::Fullscreen).unwrap();
+        assert_eq!(idx, 0);
+        assert!(t.is_fullscreen_parked(10));
+        assert!(!t.is_hidden(10));
+        assert!(t.is_parked(10));
+        wss[0].remove_window(10);
+        let entry = t.reveal(10).unwrap();
+        assert_eq!(entry.idx, 0);
+        assert!(!entry.popup);
+        assert_eq!(entry.reason, ParkReason::Fullscreen);
+        assert!(t.fullscreen_parked().is_empty());
+    }
+
+    #[test]
+    fn upgrade_to_hide_moves_the_park_reason() {
+        let mut t = WindowStore::new();
+        t.fullscreen_park_insert(10, 3);
+        t.upgrade_park_to_hide(10);
+        assert!(!t.is_fullscreen_parked(10));
+        assert!(t.is_hidden(10));
+        assert!(
+            t.reveal(10).is_some_and(|e| e.idx == 3 && e.reason == ParkReason::Hide),
+            "idx survives the upgrade"
+        );
+    }
+
+    #[test]
+    fn upgrade_to_hide_never_promotes_a_hidden_window() {
+        let mut t = WindowStore::new();
+        t.park_insert(10, 1);
+        t.upgrade_park_to_hide(10);
+        let entry = t.reveal(10).unwrap();
+        assert_eq!(entry.reason, ParkReason::Hide);
+    }
+
+    #[test]
+    fn fullscreen_parked_snapshot_is_scoped_to_the_reason() {
+        let mut t = WindowStore::new();
+        t.fullscreen_park_insert(10, 0);
+        t.park_insert(20, 0);
+        let snapshot = t.fullscreen_parked();
+        assert_eq!(snapshot, vec![10]);
+        assert!(t.is_parked(20));
     }
 
     #[test]
@@ -402,11 +557,23 @@ mod tests {
         let mut pids = WindowStore::new();
         pids.register(1, 42);
         pids.register(2, 42);
-        pids.hidden_insert(1, 0);
+        pids.park_insert(1, 0);
         let is_hidden = |_| false;
         let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, is_hidden);
         assert!(to_hide.is_empty());
         assert_eq!(to_show, vec![1]);
+    }
+
+    #[test]
+    fn fullscreen_parked_windows_never_enter_the_hidden_reveal_set() {
+        let workspaces = ws_with_windows(&[]);
+        let mut pids = WindowStore::new();
+        pids.register(1, 42);
+        pids.fullscreen_park_insert(1, 0);
+        let is_hidden = |_| false;
+        let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, is_hidden);
+        assert!(to_hide.is_empty());
+        assert!(to_show.is_empty(), "fullscreen exit is the probe's job, not the hidden reconcile");
     }
 
     #[test]

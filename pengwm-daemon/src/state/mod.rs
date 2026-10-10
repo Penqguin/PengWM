@@ -70,6 +70,10 @@ pub struct StateManager {
     /// that drag windows along to the new workspace.
     switch_debounce_until: Option<Instant>,
     cached_hidden_strategy: Option<crate::config::HiddenStrategy>,
+    /// `[windows] fullscreen` strategy, cached from the last config load.
+    /// `Park` untitles native-fullscreen windows (the probe + parking
+    /// machinery); `Tile` disables every probe and parks nothing.
+    cached_fullscreen_strategy: Option<crate::config::FullscreenStrategy>,
     focus_first_on_switch: bool,
     /// Last time `on_tick` swept `poll_windows_for_pid` for windows whose
     /// `WindowCreated` notification was missed (Firefox tear-offs / incognito:
@@ -171,6 +175,7 @@ impl StateManager {
             shutdown_requested: false,
             switch_debounce_until: None,
             cached_hidden_strategy: Some(settings.windows.hidden_strategy),
+            cached_fullscreen_strategy: Some(settings.windows.fullscreen),
             focus_first_on_switch: settings.focus_first_on_switch,
             // Force an immediate background sweep on the first tick: login-time
             // Firefox is often still transient (not manageable / not resizable)
@@ -235,6 +240,7 @@ impl StateManager {
         self.displays.set_max_tiles(updated_settings.max_tiles);
         self.restricted_apps = updated_settings.restricted_apps;
         self.cached_hidden_strategy = Some(updated_settings.windows.hidden_strategy);
+        self.cached_fullscreen_strategy = Some(updated_settings.windows.fullscreen);
         set_popup_ratio(&mut self.workspaces, updated_settings.windows.popup_ratio);
         self.focus_first_on_switch = updated_settings.focus_first_on_switch;
         self.displays
@@ -290,6 +296,17 @@ impl StateManager {
 
     fn windows_config_hidden_strategy(&self) -> crate::config::HiddenStrategy {
         self.cached_hidden_strategy.unwrap_or_default()
+    }
+
+    /// True when native-fullscreen windows should park (leave the tree).
+    /// Fullscreen-parked entries can outlive a config switch to `tile`; the
+    /// exit probe keeps servicing them regardless (they only drain through
+    /// a genuine unfullscreen).
+    pub(super) fn fullscreen_parking_enabled(&self) -> bool {
+        matches!(
+            self.cached_fullscreen_strategy.unwrap_or_default(),
+            crate::config::FullscreenStrategy::Park
+        )
     }
 
     /// Re-tile every window currently tracked as hidden back into its
@@ -348,6 +365,11 @@ impl StateManager {
     }
 
     #[cfg(test)]
+    pub(super) fn set_fullscreen_strategy_for_test(&mut self, s: crate::config::FullscreenStrategy) {
+        self.cached_fullscreen_strategy = Some(s);
+    }
+
+    #[cfg(test)]
     fn set_restricted_apps_for_test(&mut self, apps: Vec<String>) {
         self.restricted_apps = apps;
     }
@@ -396,13 +418,32 @@ impl StateManager {
             .map(|&window_id| (window_id, self.os.window_rect(window_id)))
             .collect();
         let mut dead = Vec::new();
+        let mut pinned_fullscreen = Vec::new();
         // `record_failure` routes `Ok` to `record_success` itself, so every
         // executed write commits through one call.
         for (window_id, target) in self.layout_cache.plan_writes(&rects, &actuals) {
             let outcome = self.os.set_window_rect(window_id, target);
+            // A refused (`Pinned`) or failing (`Transient`/`Drift`) write on
+            // an otherwise-tracked window is either the expected pinned
+            // state (zoomed / busy app) or native fullscreen — full-screen
+            // failure in the wild is `kAXErrorFailure` per attempt, not only
+            // a readback-flavored `Pinned`. Probe rather than waiting for
+            // pin strikes: one AX read per failed write, and a genuine
+            // fullscreen parks immediately instead of writing into a storm.
+            if !matches!(
+                outcome,
+                pengwm_core::layout::WriteOutcome::Ok | pengwm_core::layout::WriteOutcome::Gone
+            ) && self.fullscreen_parking_enabled()
+                && self.os.window_is_fullscreen(window_id)
+            {
+                pinned_fullscreen.push(window_id);
+            }
             if self.layout_cache.record_failure(window_id, target, outcome) == AfterWrite::Untrack {
                 dead.push(window_id);
             }
+        }
+        for window_id in pinned_fullscreen {
+            self.try_park_fullscreen(window_id);
         }
         for window_id in dead {
             self.on_window_destroyed(window_id);

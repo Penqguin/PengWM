@@ -32,6 +32,9 @@ pub struct TestAdapter {
     pub app_names: RefCell<HashMap<i32, String>>,
     pub hidden_windows: RefCell<HashSet<WindowId>>,
     pub hidden_apps: RefCell<HashSet<i32>>,
+    /// Injected native-fullscreen set (missed-transition simulation for the
+    /// fullscreen parking probe).
+    pub fullscreen_windows: RefCell<HashSet<WindowId>>,
     /// Injected write faults per window. Served as the matching
     /// `WriteOutcome` without updating the OS rect — the fake and the seam
     /// share one failure language.
@@ -69,6 +72,7 @@ impl Default for TestAdapter {
             app_names: RefCell::new(HashMap::new()),
             hidden_windows: RefCell::new(HashSet::new()),
             hidden_apps: RefCell::new(HashSet::new()),
+            fullscreen_windows: RefCell::new(HashSet::new()),
             faults: RefCell::new(HashMap::new()),
             set_rect_calls: Cell::new(0),
             ax_blackout: Cell::new(false),
@@ -127,6 +131,23 @@ impl TestAdapter {
     /// simulation for the hidden reconcile).
     pub fn inject_hidden_window(&self, window_id: WindowId) {
         self.hidden_windows.borrow_mut().insert(window_id);
+    }
+
+    /// Un-mark a hidden window (deminiaturize simulation).
+    pub fn clear_hidden_window(&self, window_id: WindowId) {
+        self.hidden_windows.borrow_mut().remove(&window_id);
+    }
+
+    /// Mark a window native-fullscreen in the fake (the probe's only
+    /// transition channel — no dedicated AX notification exists in prod
+    /// either, so the fake has no event to inject).
+    pub fn inject_fullscreen_window(&self, window_id: WindowId) {
+        self.fullscreen_windows.borrow_mut().insert(window_id);
+    }
+
+    /// Clear the fullscreen mark: simulates exiting fullscreen.
+    pub fn clear_fullscreen_window(&self, window_id: WindowId) {
+        self.fullscreen_windows.borrow_mut().remove(&window_id);
     }
 
     /// Black out AX: polls return no windows and rects are unreadable,
@@ -223,6 +244,18 @@ impl TestHandle {
 
     pub fn inject_hidden_window(&self, window_id: WindowId) {
         self.0.inject_hidden_window(window_id)
+    }
+
+    pub fn clear_hidden_window(&self, window_id: WindowId) {
+        self.0.clear_hidden_window(window_id)
+    }
+
+    pub fn inject_fullscreen_window(&self, window_id: WindowId) {
+        self.0.inject_fullscreen_window(window_id)
+    }
+
+    pub fn clear_fullscreen_window(&self, window_id: WindowId) {
+        self.0.clear_fullscreen_window(window_id)
     }
 
     pub fn writes(&self) -> usize {
@@ -331,6 +364,10 @@ impl OsAdapter for SharedTestAdapter {
 
     fn window_is_hidden(&self, window_id: WindowId) -> bool {
         self.0.window_is_hidden(window_id)
+    }
+
+    fn window_is_fullscreen(&self, window_id: WindowId) -> bool {
+        self.0.window_is_fullscreen(window_id)
     }
 
     fn app_bundle_id(&self, pid: i32) -> Option<String> {
@@ -465,6 +502,10 @@ impl OsAdapter for TestAdapter {
                 .borrow()
                 .get(&window_id)
                 .is_some_and(|pid| self.hidden_apps.borrow().contains(pid))
+    }
+
+    fn window_is_fullscreen(&self, window_id: WindowId) -> bool {
+        self.fullscreen_windows.borrow().contains(&window_id)
     }
 
     fn app_bundle_id(&self, pid: i32) -> Option<String> {

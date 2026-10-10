@@ -12,6 +12,12 @@ use accessibility_sys::*;
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
 
+/// The window's native-fullscreen flag. Not in `accessibility_sys`'s
+/// constant set (only the green button's `AXFullScreenButton`
+/// attribute/subrole are), so it lives here like `ax_element.rs` handles
+/// its own out-of-set constants.
+const AX_FULLSCREEN_ATTRIBUTE: &str = "AXFullScreen";
+
 pub struct MacOsAdapter {
     observer_registry: AxObserverRegistry,
     ctx: Box<ObserverContext>,
@@ -433,6 +439,13 @@ impl OsAdapter for MacOsAdapter {
             core_foundation::base::CFRelease(app as core_foundation::base::CFTypeRef);
             hidden
         }
+    }
+
+    fn window_is_fullscreen(&self, window_id: WindowId) -> bool {
+        let Some((element, _pid)) = self.cache_get_element(window_id) else {
+            return false;
+        };
+        unsafe { ax_element::bool_attribute(element, AX_FULLSCREEN_ATTRIBUTE) }
     }
 
     fn app_bundle_id(&self, pid: i32) -> Option<String> {

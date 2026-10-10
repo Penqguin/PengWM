@@ -19,9 +19,13 @@ impl StateManager {
         // subsystem is what starts gone-grace timers on live windows.
         self.drive_wake_resync(now);
 
-        // Fallback hidden reconcile via predicate — no downcast.
+        // Fallback hidden reconcile via predicate — no downcast. The
+        // fullscreen exit probe rides the same interval: one tick of
+        // latency to catch a unfullscreen, guaranteed, because the parked
+        // set is tiny and probed unconditionally.
         if self.store.should_reconcile(now) {
             self.reconcile_hidden_windows();
+            self.reconcile_fullscreen_windows();
         }
 
         // Safety net for windows whose WindowCreated notification never
@@ -88,6 +92,27 @@ impl StateManager {
             // Only show if hidden-tracked; pending already checked.
             if self.store.is_hidden(wid) {
                 self.on_window_shown(wid);
+            }
+        }
+    }
+
+    /// Per-tick fullscreen exit probe: every fullscreen-parked window that
+    /// no longer reports `AXFullScreen` reveals through the normal funnel
+    /// (remembered workspace, capacity overflow beyond). Probing the parked
+    /// set — never the tree — is what makes unconditional probing cheap.
+    ///
+    /// Suppressed while a wake resync is pending: a blacked-out AX reports
+    /// *every* attribute as unreadable (→ `false`), which would mass-reveal
+    /// fullscreened windows into a dead layout pass — the same "zero
+    /// listing is no judgment" rule the listing sweep observes.
+    fn reconcile_fullscreen_windows(&mut self) {
+        if self.wake_resync.is_some() {
+            log::debug!("fullscreen reconcile: skipped — wake resync pending");
+            return;
+        }
+        for window_id in self.store.fullscreen_parked() {
+            if !self.os.window_is_fullscreen(window_id) {
+                self.on_fullscreen_exit(window_id);
             }
         }
     }

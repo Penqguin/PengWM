@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- **Fullscreen windows now leave the tiling tree.** A window entering
+  native fullscreen is *parked*: it leaves its tree slot (siblings reflow
+  around the freed space) while its workspace index is remembered — no
+  more refused-geometry write storms (`kAXErrorFailure` retries / pin
+  backoff against a window macOS owns). On unfullscreen it reveals back
+  through the same funnel as an un-hidden window, retiled at its
+  remembered workspace (overflowing to the next workspace with room when
+  the home is full). Detection is a `AXFullScreen` attribute probe — no
+  dedicated AX notification exists — on three paths: the
+  focused-window-changed fast path, any refused/failed layout write (the
+  probe answers "fullscreen or just zoomed?" for the pin backoff), and a
+  per-tick exit probe of the parked set (≈1s worst-case unfullscreen
+  latency). Parked-fullscreen windows are exempt from the listing-diff
+  sweep (the app still lists its own fullscreen window) and the exit
+  probe is suppressed during the wake blackout (a blacked-out AX reports
+  "not fullscreen" wrongly — same "zero listing is no judgment" rule as
+  the hidden reconcile). Hide-while-fullscreen upgrades the parking
+  reason: the hidden flow owns the reveal afterwards. Popups (dialogs,
+  restricted apps, `AXFloatingWindow`) are exempt from parking entirely.
+  New config: `[windows] fullscreen = "park" | "tile"` (default `"park"`;
+  `"tile"` is the pre-change behavior).
+- **Store vocabulary: the hidden map is now a parking map.** `HiddenEntry`
+  → `ParkedEntry { idx, popup, reason }` with `ParkReason::Hide |
+  Fullscreen`; one parking map, one reveal funnel, two reasons. The
+  `pending_for_reconcile` reveal set counts `Hide`-reason entries only —
+  fullscreen exits are owned by the probe, never the hidden predicate.
+
 ## v0.6.0 — Bare binaries
 
 - **Distribution: bare binaries, no `.app` bundle (ADR-0001).** PengWM

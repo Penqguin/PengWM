@@ -122,13 +122,30 @@ Visibility and lifecycle settings scoped under `[windows]`.
 | Key               | Type   | Default        | Description                                                                                   |
 | ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------------- |
 | `hidden_strategy` | string | `"bottom_edge"` | Where inactive-workspace windows are parked: `"bottom_edge"` (1×1 at bottom-right, dark clamped strip visible in Mission Control as daemon-down escape hatch) or `"far_offscreen"` (legacy `-100k`, fully invisible) |
+| `fullscreen`      | string | `"park"`       | Native-fullscreen handling: `"park"` removes the window from the tree while fullscreened (siblings reflow; on unfullscreen it re-enters its remembered workspace, overflowing when full) or `"tile"` (legacy: the tree keeps the slot and writes are refused — the pin backoff absorbs the storm) |
 | `popup_ratio`     | float  | `0.75`         | Share of the usable area a popup overlay takes (clamped to 0.1–1.0). See [Popups](#popups).    |
 
 ```toml
 [windows]
 hidden_strategy = "bottom_edge" # or "far_offscreen"
+fullscreen = "park"             # or "tile"
 popup_ratio = 0.75
 ```
+
+### Fullscreen
+
+With `fullscreen = "park"` (default), pressing the macOS native-fullscreen
+shortcut untitles the window: PengWM removes it from its tree slot (the
+remaining windows reflow to fill the space) and remembers which workspace it
+came from. Leaving fullscreen re-tiles it there — or in the next workspace
+with capacity if the remembered one filled up while the window was away.
+While fullscreened macOS owns the window's geometry; PengWM makes no writes
+to it. Hiding or minimizing a fullscreened window hands it to the normal
+hide flow (it returns through un-hide, not through un-fullscreen). Popups
+(dialogs, restricted-app windows, floating panels) are never fullscreen-parked
+— they sit outside the tree to begin with. `fullscreen = "tile"` restores the
+pre-0.7 behavior: the window keeps its tree slot while fullscreened and
+macOS refuses PengWM's geometry writes until it is unfullscreened.
 
 ### Popups
 

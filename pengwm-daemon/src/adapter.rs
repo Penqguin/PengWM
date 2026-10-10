@@ -109,6 +109,12 @@ pub trait OsAdapter: ObserverRegistry {
     /// `AXMinimized`, or its app is hidden). Used by the periodic reconcile so
     /// hidden windows stop being tiled even when AX notifications are missed.
     fn window_is_hidden(&self, window_id: WindowId) -> bool;
+    /// True when the window is in native fullscreen (the `AXFullScreen`
+    /// attribute). Drives full-screen parking: a fullscreened tree window
+    /// leaves the tree and reveals back through the normal funnel on exit.
+    /// No dedicated AX notification exists, so this is probed on focused /
+    /// pinned-write events and per tick for the parked set.
+    fn window_is_fullscreen(&self, window_id: WindowId) -> bool;
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
     /// Human-readable display name for the app owning `pid` (e.g. "Safari"),
     /// distinct from its bundle id ("com.apple.Safari"). Drives the menubar's

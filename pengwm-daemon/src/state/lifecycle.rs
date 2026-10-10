@@ -4,6 +4,7 @@ use crate::adapter::WindowClass;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
+use super::store::ParkReason;
 use super::StateManager;
 use crate::event_loop::DaemonEvent;
 
@@ -59,6 +60,13 @@ impl StateManager {
             .routed_workspace_idx(pid, &self.workspaces, &*self.os)
             .unwrap_or(active);
         self.add_window_to_workspace(window_id, pid, preferred);
+        // Discovery-time fast path: a window discovered already fullscreen
+        // (daemon restart, or created straight into fullscreen) tiles for
+        // one instant, then its refused first write would catch it anyway —
+        // probing here parks it before the sibling reflow ever happens.
+        if self.fullscreen_parking_enabled() && self.os.window_is_fullscreen(window_id) {
+            self.try_park_fullscreen(window_id);
+        }
         self.publish_bar_state();
     }
 
@@ -183,16 +191,28 @@ impl StateManager {
     /// (tree member or popup) so it stops being laid out, but keep pid
     /// tracking so it can be retiled when it becomes visible again.
     pub fn on_window_hidden(&mut self, window_id: WindowId) {
+        if self.store.is_fullscreen_parked(window_id) {
+            // A hide landed while the window sat fullscreen-parked: upgrade
+            // the parking reason and keep the remembered idx. The fullscreen
+            // exit probe will now left it alone — the hidden flow owns the
+            // window from here, exactly as if it had never fullscreened.
+            log::debug!(
+                "WindowHidden: fullscreen-parked window {} upgrades to hidden park",
+                window_id
+            );
+            self.store.upgrade_park_to_hide(window_id);
+            return;
+        }
         let Some(idx) = self.find_workspace_of_any(window_id) else {
             log::debug!("WindowHidden: window {} not tracked, ignoring", window_id);
             return;
         };
         debug_assert!(idx < self.workspaces.len());
         if self.workspaces[idx].is_popup(window_id) {
-            self.store.hide_popup(window_id, idx);
+            self.store.park_popup(window_id, idx);
             self.workspaces[idx].remove_popup(window_id);
         } else {
-            self.store.hide(window_id, &self.workspaces);
+            self.store.park(window_id, &self.workspaces, ParkReason::Hide);
             self.workspaces[idx].remove_window(window_id);
         }
         if self.displays.is_visible(idx, &self.workspaces) {
@@ -205,6 +225,12 @@ impl StateManager {
     /// it came from — a popup back into its workspace's popup set, a tree
     /// window back into the remembered (or routed) workspace.
     pub fn on_window_shown(&mut self, window_id: WindowId) {
+        if self.store.is_fullscreen_parked(window_id) {
+            // The probe owns this window's reveal; a stray shown event must
+            // not shortcut it.
+            log::debug!("WindowShown: fullscreen-parked window {}, ignoring", window_id);
+            return;
+        }
         if self.find_workspace_of_any(window_id).is_some() {
             return;
         }
@@ -224,8 +250,15 @@ impl StateManager {
             self.publish_bar_state();
             return;
         }
+        self.reveal_tree_window(window_id, pid, remembered.map(|e| e.idx));
+    }
+
+    /// The shared tree-window tail of the reveal funnel: re-tile at the
+    /// remembered workspace, overflowing through the normal capacity
+    /// routing (`add_window_to_workspace` → `target_with_room`) when the
+    /// remembered slot no longer has room. Publishes bar state on re-tile.
+    fn reveal_tree_window(&mut self, window_id: WindowId, pid: i32, remembered: Option<usize>) {
         let preferred = remembered
-            .map(|e| e.idx)
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
                 self.displays
@@ -240,12 +273,74 @@ impl StateManager {
         }
     }
 
+    /// True when the window is native fullscreen but this StateManager is
+    /// still acting on it — the fast path from `on_window_focused` and from
+    /// refused (`Pinned`) layout writes. Anything fullscreen-parked or
+    /// exempt (popups) reports `false`; the strategy knob gates the whole
+    /// mechanism (`[windows] fullscreen = "tile"` = legacy behavior).
+    pub(super) fn try_park_fullscreen(&mut self, window_id: WindowId) -> bool {
+        if !self.fullscreen_parking_enabled() {
+            return false;
+        }
+        if !self.store.contains(window_id) || self.store.is_parked(window_id) {
+            return false;
+        }
+        // Popups never tile anyway; parking would be no-op overhead.
+        if self.is_popup_anywhere(window_id) {
+            return false;
+        }
+        let Some(idx) = self
+            .store
+            .park(window_id, &self.workspaces, ParkReason::Fullscreen)
+        else {
+            log::debug!("FullscreenEnter: window {} not in any tree, ignoring", window_id);
+            return false;
+        };
+        log::info!(
+            "FullscreenEnter: parking window {} (workspace {}), siblings reflow",
+            window_id,
+            idx
+        );
+        self.workspaces[idx].remove_window(window_id);
+        if self.displays.is_visible(idx, &self.workspaces) {
+            self.apply_layout(idx);
+        }
+        self.publish_bar_state();
+        true
+    }
+
+    /// The window left native fullscreen: reveal it through the same funnel
+    /// as `on_window_shown` — remembered workspace first, capacity overflow
+    /// beyond it. Popups never get here (they are exempt from parking).
+    pub fn on_fullscreen_exit(&mut self, window_id: WindowId) {
+        let Some(entry) = self.store.reveal(window_id) else {
+            return;
+        };
+        let Some(pid) = self.store.pid_for(window_id) else {
+            log::debug!("FullscreenExit: unknown window {}, ignoring", window_id);
+            return;
+        };
+        log::info!("FullscreenExit: revealing window {} into workspace {:?}", window_id, entry.idx);
+        debug_assert!(
+            !entry.popup,
+            "popups are exempt from fullscreen parking"
+        );
+        self.reveal_tree_window(window_id, pid, Some(entry.idx));
+    }
+
     pub fn on_window_focused(&mut self, window_id: WindowId) {
-        // Ignore focus from windows parked at the bottom-edge hidden rect —
-        // clamped title bars retain hit-testing and would otherwise steal focus
-        // or flip DisplaySet::active.
-        if self.store.is_hidden(window_id) {
-            log::debug!("on_window_focused: ignoring hidden window {}", window_id);
+        // Ignore focus from parked windows (hidden parks steal focus via
+        // clamped title bars; fullscreen parks have no tree slot to focus).
+        if self.store.is_parked(window_id) {
+            log::debug!("on_window_focused: ignoring parked window {}", window_id);
+            return;
+        }
+        // Fullscreen enter usually re-fires focused-window-changed — the
+        // cheap fast path into parking. Cheap even when idle: focused
+        // events are rare, and the probe answers "no" in one AX read.
+        if self.fullscreen_parking_enabled() && self.os.window_is_fullscreen(window_id)
+            && self.try_park_fullscreen(window_id)
+        {
             return;
         }
         for i in 0..self.workspaces.len() {
@@ -293,8 +388,11 @@ impl StateManager {
     }
 
     pub fn on_window_moved(&mut self, window_id: WindowId, x: f64, y: f64) {
-        if self.store.is_hidden(window_id) {
-            log::debug!("on_window_moved: ignoring hidden window {}", window_id);
+        if self.store.is_parked(window_id) {
+            // Hidden parks (bottom-edge rects) and fullscreen parks (macOS
+            // owns the geometry) both stop the layout machinery here —
+            // nothing the WM tracks re-asserts on their rects.
+            log::debug!("on_window_moved: ignoring parked window {}", window_id);
             return;
         }
         if self.is_popup_anywhere(window_id) {
