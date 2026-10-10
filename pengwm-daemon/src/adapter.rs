@@ -115,6 +115,12 @@ pub trait OsAdapter: ObserverRegistry {
     /// No dedicated AX notification exists, so this is probed on focused /
     /// pinned-write events and per tick for the parked set.
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool;
+    /// Release every OS-side resource cached for `window_id` (element
+    /// caches, per-window notification records). `StateManager` calls this
+    /// from the one untrack funnel (`on_window_destroyed`) so both the
+    /// notification-driven and the missed-notification paths evict the
+    /// same way. Idempotent — evicting an already-gone window is a no-op.
+    fn forget_window(&self, window_id: WindowId);
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
     /// Human-readable display name for the app owning `pid` (e.g. "Safari"),
     /// distinct from its bundle id ("com.apple.Safari"). Drives the menubar's

@@ -80,13 +80,17 @@ impl MacOsAdapter {
                 .unwrap_or_else(|| unsafe { ax_element::classify(new_elem) });
             self.ctx.cache_insert(window_id, new_elem, pid, prior);
             unsafe {
-                self.observer_registry.register_window_destroyed(
+                // Force: the old element died, so the fresh one must carry
+                // its own registration records.
+                self.observer_registry.re_register_window_destroyed(
                     pid,
+                    window_id,
                     new_elem,
                     &*self.ctx as *const ObserverContext as *mut c_void,
                 );
-                self.observer_registry.register_window_moved(
+                self.observer_registry.re_register_window_moved(
                     pid,
+                    window_id,
                     new_elem,
                     &*self.ctx as *const ObserverContext as *mut c_void,
                 );
@@ -98,7 +102,8 @@ impl MacOsAdapter {
     }
 
     /// Drop a dead window's cached element (remove + `CFRelease`). One
-    /// eviction rule for every path — tile, hide, and close.
+    /// eviction rule for every path — tile, hide, close, and the trait's
+    /// `forget_window` delegate.
     fn evict_element(&self, window_id: WindowId) {
         use core_foundation::base::{CFRelease, CFTypeRef};
         if let Some((elem, _, _)) = unsafe { self.ctx.cache_mut() }.remove(&window_id) {
@@ -297,13 +302,19 @@ impl OsAdapter for MacOsAdapter {
             // element is already CFRetained by windows_for_pid
             self.ctx.cache_insert(window_id, element, pid, class);
             unsafe {
+                // Once per (observer, window): repeated registrations on
+                // every sweep allocate AX-side records with no removal
+                // call — the churn that grows the daemon at idle. The
+                // wake-resync replace-on-attach resets the bookkeeping.
                 self.observer_registry.register_window_destroyed(
                     pid,
+                    window_id,
                     element,
                     &*self.ctx as *const ObserverContext as *mut c_void,
                 );
                 self.observer_registry.register_window_moved(
                     pid,
+                    window_id,
                     element,
                     &*self.ctx as *const ObserverContext as *mut c_void,
                 );
@@ -446,6 +457,13 @@ impl OsAdapter for MacOsAdapter {
             return false;
         };
         unsafe { ax_element::bool_attribute(element, AX_FULLSCREEN_ATTRIBUTE) }
+    }
+
+    /// Release every OS-side resource cached for `window_id`. The trait
+    /// doc describes the prod contract; the fake records the call so state
+    /// tests can assert every untrack path evicts exactly once.
+    fn forget_window(&self, window_id: WindowId) {
+        self.evict_element(window_id);
     }
 
     fn app_bundle_id(&self, pid: i32) -> Option<String> {

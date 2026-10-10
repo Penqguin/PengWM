@@ -276,3 +276,37 @@ fn app_activated_tiles_new_window_immediately() {
         "activation poll should tile the missed window without waiting for sweep"
     );
 }
+
+#[test]
+fn every_untrack_path_forges_the_os_side_eviction() {
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    assert!(!handle.forgotten().contains(&100));
+
+    // Destroyed notification arrives: the element cache must not keep the
+    // window's retained ref — the leak that grew the daemon per closed
+    // window in apps whose AX destroyed notifications never fire.
+    sm.on_window_destroyed(100);
+    assert!(handle.forgotten().contains(&100));
+
+    // And the missed-notification sweep path evicts too (it funnels
+    // through the same `on_window_destroyed`).
+    handle.unlist_window(42, 200);
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(handle.forgotten().contains(&200));
+}
+
+#[test]
+fn app_termination_evicts_every_window_of_the_pid() {
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    // AppTerminated sends WindowDestroyed events per window; near the
+    // dispatch they drain through the same funnel.
+    handle.clear_forgotten_for_test();
+    sm.on_app_terminated(42);
+    let forgotten = handle.forgotten();
+    assert!(forgotten.contains(&100) && forgotten.contains(&200));
+}

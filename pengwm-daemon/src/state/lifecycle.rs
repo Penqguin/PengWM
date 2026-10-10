@@ -184,6 +184,11 @@ impl StateManager {
         }
         self.store.unregister(window_id);
         self.layout_cache.forget(window_id);
+        // One funnel for OS-side eviction: destroyed notification, missed
+        // notification sweep, gone-grace, and app termination all reach
+        // here, so the cached element and its registrations never outlive
+        // the window on any path.
+        self.os.forget_window(window_id);
         self.publish_bar_state();
     }
 
@@ -537,6 +542,11 @@ impl StateManager {
         self.os.detach_observer(pid);
         let windows = self.store.remove_pid(pid);
         for window_id in windows {
+            // Synchronous eviction: the queued WindowDestroyed dispatches
+            // reach the same funnel later, but the observer (and with it
+            // every per-window AX registration) is already gone — nothing
+            // needs the cached elements from here on.
+            self.os.forget_window(window_id);
             self.layout_cache.forget(window_id);
             let _ = self
                 .event_tx

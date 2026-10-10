@@ -88,9 +88,18 @@ impl ObserverContext {
 unsafe impl Send for ObserverContext {}
 unsafe impl Sync for ObserverContext {}
 
-struct RegisteredObserver {
+pub struct RegisteredObserver {
     observer: AXObserverRef,
     app: AXUIElementRef,
+    /// Per-window registration bookkeeping, keyed by window id. AX
+    /// accumulates per-registration records for the lifetime of the
+    /// observer and there is no per-notification removal in AX, so the
+    /// daemons re-registers nothing: a window is registered once against
+    /// the observer it lives under. Records die with the observer —
+    /// `attach` replaces the whole observer on re-attach intent (the wake
+    /// resync), which is what gives its first-following poll a clean
+    /// slate without any per-tick churn.
+    registered: std::cell::RefCell<std::collections::HashSet<WindowId>>,
 }
 
 impl Drop for RegisteredObserver {
@@ -120,8 +129,13 @@ impl ObserverRegistry {
     }
 
     pub fn attach(&mut self, pid: i32, ctx: &ObserverContext) {
+        // Attach intent on an already-attached pid replaces the observer:
+        // the existing AX registrations die with their AXObserver, and the
+        // caller asked for a fresh observation (the wake resync re-attach
+        // after a blackout). The first-following poll re-registers each
+        // window exactly once under the new observer.
         if self.observers.contains_key(&pid) {
-            return;
+            self.detach_locked(pid);
         }
 
         let app = unsafe { ax_element::create_app_element(pid) };
@@ -209,68 +223,12 @@ impl ObserverRegistry {
         }
 
         self.observers
-            .insert(pid, RegisteredObserver { observer, app });
+            .insert(pid, RegisteredObserver { observer, app, registered: std::cell::RefCell::new(std::collections::HashSet::new()) });
     }
 
-    /// Register a kAXWindowMovedNotification on a specific window element.
-    /// This fires when the window is dragged, allowing overlap detection.
-    /// # Safety
-    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
-    pub unsafe fn register_window_moved(
-        &self,
-        pid: i32,
-        window: AXUIElementRef,
-        refcon: *mut c_void,
-    ) {
-        if let Some(registered) = self.observers.get(&pid) {
-            let name = CFString::new(kAXWindowMovedNotification);
-            let err = AXObserverAddNotification(
-                registered.observer,
-                window,
-                name.as_concrete_TypeRef(),
-                refcon,
-            );
-            if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
-                log::warn!(
-                    "register_window_moved failed for pid {}: {}",
-                    pid,
-                    error_string(err)
-                );
-            }
-        }
-    }
-
-    /// Register a kAXUIElementDestroyedNotification on a specific window element.
-    /// This fires when the window is closed, allowing the daemon to re-layout.
-    /// # Safety
-    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
-    pub unsafe fn register_window_destroyed(
-        &self,
-        pid: i32,
-        window: AXUIElementRef,
-        refcon: *mut c_void,
-    ) {
-        if let Some(registered) = self.observers.get(&pid) {
-            let name = CFString::new(kAXUIElementDestroyedNotification);
-            let err = unsafe {
-                AXObserverAddNotification(
-                    registered.observer,
-                    window,
-                    name.as_concrete_TypeRef(),
-                    refcon,
-                )
-            };
-            if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
-                log::warn!(
-                    "register_window_destroyed failed for pid {}: {}",
-                    pid,
-                    error_string(err)
-                );
-            }
-        }
-    }
-
-    pub fn detach(&mut self, pid: i32) {
+    /// Run-loop teardown for one pid's observer. Shared by `detach` and the
+    /// replace-on-attach intent path.
+    fn detach_locked(&mut self, pid: i32) {
         if let Some(registered) = self.observers.remove(&pid) {
             let run_loop = unsafe { CFRunLoopGetCurrent() };
             let run_loop_source = unsafe { AXObserverGetRunLoopSource(registered.observer) };
@@ -285,6 +243,133 @@ impl ObserverRegistry {
             }
             log::info!("Detached AXObserver for pid {}", pid);
         }
+    }
+
+    /// Register a kAXWindowMovedNotification on a specific window element,
+    /// once per (observer, window id): repeats are skipped — both because
+    /// the poll path runs every 2s per tracked window and because AX
+    /// accumulates per-registration records with no removal call.
+    /// # Safety
+    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
+    pub unsafe fn register_window_moved(
+        &self,
+        pid: i32,
+        window_id: WindowId,
+        window: AXUIElementRef,
+        refcon: *mut c_void,
+    ) {
+        self.register_window_impl(
+            pid,
+            window_id,
+            window,
+            refcon,
+            kAXWindowMovedNotification,
+            false,
+        );
+    }
+
+    /// The refresh path: the old element died, so its registration records
+    /// are gone with it and the fresh element must carry its own — even
+    /// though the window id is already recorded.
+    /// # Safety
+    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
+    pub unsafe fn re_register_window_moved(
+        &self,
+        pid: i32,
+        window_id: WindowId,
+        window: AXUIElementRef,
+        refcon: *mut c_void,
+    ) {
+        self.register_window_impl(
+            pid,
+            window_id,
+            window,
+            refcon,
+            kAXWindowMovedNotification,
+            true,
+        );
+    }
+
+    /// Register a kAXUIElementDestroyedNotification on a specific window
+    /// element (once per (observer, window id); see `register_window_moved`).
+    /// This fires when the window is closed, allowing the daemon to re-layout.
+    /// # Safety
+    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
+    pub unsafe fn register_window_destroyed(
+        &self,
+        pid: i32,
+        window_id: WindowId,
+        window: AXUIElementRef,
+        refcon: *mut c_void,
+    ) {
+        self.register_window_impl(
+            pid,
+            window_id,
+            window,
+            refcon,
+            kAXUIElementDestroyedNotification,
+            false,
+        );
+    }
+
+    /// # Safety
+    /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
+    pub unsafe fn re_register_window_destroyed(
+        &self,
+        pid: i32,
+        window_id: WindowId,
+        window: AXUIElementRef,
+        refcon: *mut c_void,
+    ) {
+        self.register_window_impl(
+            pid,
+            window_id,
+            window,
+            refcon,
+            kAXUIElementDestroyedNotification,
+            true,
+        );
+    }
+
+    unsafe fn register_window_impl(
+        &self,
+        pid: i32,
+        window_id: WindowId,
+        window: AXUIElementRef,
+        refcon: *mut c_void,
+        notification: &str,
+        force: bool,
+    ) {
+        let Some(registered) = self.observers.get(&pid) else {
+            return;
+        };
+        {
+            let mut seen = registered.registered.borrow_mut();
+            if !force && seen.contains(&window_id) {
+                return;
+            }
+            seen.insert(window_id);
+        }
+        let name = CFString::new(notification);
+        let err = AXObserverAddNotification(
+            registered.observer,
+            window,
+            name.as_concrete_TypeRef(),
+            refcon,
+        );
+        if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
+            log::warn!(
+                "register {} failed for pid {} window {}: {}",
+                notification,
+                pid,
+                window_id,
+                error_string(err)
+            );
+        }
+    }
+
+    pub fn detach(&mut self, pid: i32) {
+        self.detach_locked(pid);
     }
 }
 

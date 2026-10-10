@@ -54,6 +54,9 @@ pub struct TestAdapter {
     /// `raise_window` calls in order, so tests can assert the switch-back
     /// "popup comes back on top" invariant.
     pub raised: RefCell<Vec<WindowId>>,
+    /// `forget_window` calls in order, so tests can assert every untrack
+    /// path evicts the OS-side resources of the window it untracked.
+    pub forgotten: RefCell<Vec<WindowId>>,
 }
 
 impl Default for TestAdapter {
@@ -78,6 +81,7 @@ impl Default for TestAdapter {
             ax_blackout: Cell::new(false),
             window_classes: RefCell::new(HashMap::new()),
             raised: RefCell::new(Vec::new()),
+            forgotten: RefCell::new(Vec::new()),
         }
     }
 }
@@ -205,6 +209,11 @@ impl TestAdapter {
     pub fn raised(&self) -> Vec<WindowId> {
         self.raised.borrow().clone()
     }
+
+    /// `forget_window` calls in order, for the eviction-on-untrack tests.
+    pub fn forgotten(&self) -> Vec<WindowId> {
+        self.forgotten.borrow().clone()
+    }
 }
 
 /// Shared handle to a `TestAdapter` boxed into a `StateManager`. Tests hold
@@ -293,6 +302,15 @@ impl TestHandle {
     pub fn raised(&self) -> Vec<WindowId> {
         self.0.raised()
     }
+
+    pub fn forgotten(&self) -> Vec<WindowId> {
+        self.0.forgotten()
+    }
+
+    /// Reset the eviction log so a later episode starts empty.
+    pub fn clear_forgotten_for_test(&self) {
+        self.0.forgotten.borrow_mut().clear();
+    }
 }
 
 /// Prod-facing view of a shared `TestAdapter`: implements only the prod
@@ -368,6 +386,10 @@ impl OsAdapter for SharedTestAdapter {
 
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool {
         self.0.window_is_fullscreen(window_id)
+    }
+
+    fn forget_window(&self, window_id: WindowId) {
+        self.0.forget_window(window_id)
     }
 
     fn app_bundle_id(&self, pid: i32) -> Option<String> {
@@ -506,6 +528,10 @@ impl OsAdapter for TestAdapter {
 
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool {
         self.fullscreen_windows.borrow().contains(&window_id)
+    }
+
+    fn forget_window(&self, window_id: WindowId) {
+        self.forgotten.borrow_mut().push(window_id);
     }
 
     fn app_bundle_id(&self, pid: i32) -> Option<String> {
