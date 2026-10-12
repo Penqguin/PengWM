@@ -4,5 +4,8 @@ mod common;
 mod fullscreen;
 mod layout_cache_hide;
 mod lifecycle;
+mod memory;
 mod popup;
+mod topology;
+mod untracked;
 mod wake;

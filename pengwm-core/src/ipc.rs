@@ -8,11 +8,21 @@ pub const COMMAND_SOCKET_PATH: &str = "/tmp/pengwm.sock";
 /// Bar socket: newline-delimited `BarMessage` push stream, no response.
 pub const BAR_SOCKET_PATH: &str = "/tmp/pengwm-bar.sock";
 
+/// The socket path a *client* connects to. `PENGWM_COMMAND_SOCKET` overrides
+/// the default — a client-only escape hatch (the cli_binary test spawns the
+/// real CLI against a disposable path, so `cargo test` can never unlink or
+/// shadow a live daemon's socket). The daemon always binds
+/// [`COMMAND_SOCKET_PATH`]; a mismatch under a stray override fails loudly
+/// ("is pengwm running?") rather than silently retargeting production.
+pub fn command_socket_path() -> String {
+    std::env::var("PENGWM_COMMAND_SOCKET").unwrap_or_else(|_| COMMAND_SOCKET_PATH.to_string())
+}
+
 /// Send a `Command` to the daemon over the command socket and read the raw
 /// `DaemonResponse` JSON back. Shared by the `pengwm` CLI client and the bar's
 /// click-to-switch handler so the wire protocol has one implementation.
 pub fn send_command(cmd: &Command) -> Result<String, String> {
-    send_command_at(cmd, COMMAND_SOCKET_PATH)
+    send_command_at(cmd, &command_socket_path())
 }
 
 /// Like [`send_command`], but against an explicit socket path (used by tests).

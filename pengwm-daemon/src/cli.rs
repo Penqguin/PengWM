@@ -213,7 +213,9 @@ fn update_to_latest_in(dir: &std::path::Path) -> Result<(), String> {
     println!("Downloading the installer…");
     let script = curl(INSTALL_SCRIPT_URL, None)?;
     if script.is_empty() {
-        return Err(format!("downloaded installer from {INSTALL_SCRIPT_URL} is empty"));
+        return Err(format!(
+            "downloaded installer from {INSTALL_SCRIPT_URL} is empty"
+        ));
     }
     std::fs::write(&script_path, script)
         .map_err(|e| format!("failed to write {}: {e}", script_path.display()))?;
@@ -230,7 +232,9 @@ fn update_to_latest_in(dir: &std::path::Path) -> Result<(), String> {
         .status()
         .map_err(|e| format!("failed to run {}: {e}", script_path.display()))?;
     if !status.success() {
-        return Err(format!("installer failed ({status}); PengWM was not updated"));
+        return Err(format!(
+            "installer failed ({status}); PengWM was not updated"
+        ));
     }
 
     println!("Updated. The daemon restarts itself via launchd.");
@@ -245,7 +249,9 @@ fn curl(url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
         cmd.arg("-H").arg(format!("Accept: {accept}"));
     }
     cmd.arg(url);
-    let out = cmd.output().map_err(|e| format!("failed to run curl: {e}"))?;
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to run curl: {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "curl failed for {url} (exit status {})",
@@ -258,9 +264,10 @@ fn curl(url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
 /// Resolve the `tag_name` of the latest GitHub release with a tiny
 /// hand-rolled JSON extraction (tags are plain strings, no escapes needed).
 fn latest_release_tag() -> Result<String, String> {
-    let body = String::from_utf8(
-        curl(GITHUB_LATEST_RELEASE_URL, Some("application/vnd.github+json"))?,
-    )
+    let body = String::from_utf8(curl(
+        GITHUB_LATEST_RELEASE_URL,
+        Some("application/vnd.github+json"),
+    )?)
     .map_err(|e| format!("release list is not valid UTF-8: {e}"))?;
     match json_string_field(&body, "tag_name") {
         Some(tag) if !tag.is_empty() => Ok(tag.to_string()),
@@ -300,12 +307,19 @@ fn tag_is_newer(current: &str, tag: &str) -> bool {
 }
 
 fn numeric_version(version: &str) -> Vec<u64> {
-    let core = version.trim_start_matches('v').split(['-', '+']).next().unwrap_or(version);
-    core.split('.').filter_map(|part| part.parse().ok()).collect()
+    let core = version
+        .trim_start_matches('v')
+        .split(['-', '+'])
+        .next()
+        .unwrap_or(version);
+    core.split('.')
+        .filter_map(|part| part.parse().ok())
+        .collect()
 }
 
 fn request_temp_dir() -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("pengwm-update-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
     Ok(dir)
 }

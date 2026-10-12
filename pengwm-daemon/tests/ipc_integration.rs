@@ -15,6 +15,9 @@ const TEST_SOCKET: &str = "/tmp/pengwm_test.sock";
 const TEST_SOCKET_2: &str = "/tmp/pengwm_test2.sock";
 const TEST_SOCKET_PROBE: &str = "/tmp/pengwm_test_probe.sock";
 const TEST_BAR_SOCKET: &str = "/tmp/pengwm_test_bar.sock";
+const TEST_SOCKET_HEAL: &str = "/tmp/pengwm_test_heal.sock";
+const TEST_SOCKET_FOREIGN: &str = "/tmp/pengwm_test_foreign.sock";
+const TEST_BAR_SOCKET_HEAL: &str = "/tmp/pengwm_test_bar_heal.sock";
 
 fn connect_with_retry(path: &str, timeout: Duration) -> std::io::Result<UnixStream> {
     let start = Instant::now();
@@ -90,8 +93,8 @@ fn ipc_send_command_receives_event() {
     };
     let body = serde_json::to_string(&cmd).unwrap();
 
-    let mut stream = connect_with_retry(TEST_SOCKET, Duration::from_secs(2))
-        .expect("connect to test socket");
+    let mut stream =
+        connect_with_retry(TEST_SOCKET, Duration::from_secs(2)).expect("connect to test socket");
     stream.write_all(body.as_bytes()).unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
 
@@ -157,8 +160,8 @@ fn cli_roundtrip_receives_ack() {
         direction: pengwm_core::tree::Direction::Right,
     })
     .unwrap();
-    let mut stream = connect_with_retry(TEST_SOCKET_2, Duration::from_secs(2))
-        .expect("connect to test socket");
+    let mut stream =
+        connect_with_retry(TEST_SOCKET_2, Duration::from_secs(2)).expect("connect to test socket");
     stream.write_all(body.as_bytes()).unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
 
@@ -178,7 +181,9 @@ fn cli_roundtrip_receives_ack() {
 fn daemon_probe_answers_liveness() {
     let _ = std::fs::remove_file(TEST_SOCKET_PROBE);
     // No daemon → not running (stale/missing socket file).
-    assert!(!pengwm_daemon::ipc_server::daemon_already_running_at(TEST_SOCKET_PROBE));
+    assert!(!pengwm_daemon::ipc_server::daemon_already_running_at(
+        TEST_SOCKET_PROBE
+    ));
 
     let (tx, _) = mpsc::channel(64);
     thread::spawn(move || {
@@ -187,7 +192,9 @@ fn daemon_probe_answers_liveness() {
     wait_for_socket(TEST_SOCKET_PROBE, Duration::from_secs(5));
 
     // Live listener → running.
-    assert!(pengwm_daemon::ipc_server::daemon_already_running_at(TEST_SOCKET_PROBE));
+    assert!(pengwm_daemon::ipc_server::daemon_already_running_at(
+        TEST_SOCKET_PROBE
+    ));
     let _ = std::fs::remove_file(TEST_SOCKET_PROBE);
 }
 
@@ -230,6 +237,148 @@ fn ipc_server_never_steals_a_live_socket() {
 }
 
 #[test]
+fn ipc_server_self_heals_after_a_rogue_rm() {
+    // The ghost-daemon state: `rm` the socket path while the daemon runs,
+    // the listener survives on an unlinked vnode, every CLI connect hits
+    // ECONNREFUSED while the WM keeps tiling. The per-tick identity check
+    // must rebind and the fresh listener must dispatch commands.
+    let _ = std::fs::remove_file(TEST_SOCKET_HEAL);
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let server_tx = event_tx.clone();
+    thread::spawn(move || {
+        ipc_server::start_ipc_server_with_path(server_tx, TEST_SOCKET_HEAL);
+    });
+    wait_until_alive(TEST_SOCKET_HEAL, Duration::from_secs(5));
+
+    // The rogue rm.
+    std::fs::remove_file(TEST_SOCKET_HEAL).unwrap();
+
+    // The server notices and rebinds; connect succeeds again.
+    wait_until_alive(TEST_SOCKET_HEAL, Duration::from_secs(5));
+
+    // The rebound socket routes to THIS server's channel (not a stale
+    // or foreign listener).
+    let body = serde_json::to_string(&Command::QueryState).unwrap();
+    let mut stream = connect_with_retry(TEST_SOCKET_HEAL, Duration::from_secs(2))
+        .expect("connect to rebound socket");
+    stream.write_all(body.as_bytes()).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let event = event_rx
+        .blocking_recv()
+        .expect("channel closed before event received");
+    assert!(
+        matches!(event, DaemonEvent::Command(Command::QueryState, _)),
+        "the rebound listener must be ours, got {:?}",
+        event
+    );
+
+    let _ = std::fs::remove_file(TEST_SOCKET_HEAL);
+}
+
+#[test]
+fn ipc_server_reclaims_a_stolen_socket() {
+    // A rival binds over the path the old (remove_file + bind) way while
+    // our server runs. The identity check must notice the foreign socket
+    // and take the path back.
+    let _ = std::fs::remove_file(TEST_SOCKET_FOREIGN);
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let server_tx = event_tx.clone();
+    thread::spawn(move || {
+        ipc_server::start_ipc_server_with_path(server_tx, TEST_SOCKET_FOREIGN);
+    });
+    wait_until_alive(TEST_SOCKET_FOREIGN, Duration::from_secs(5));
+
+    // Steal: unlink, then bind a rival listener (kept alive on a parked
+    // thread). If our server rebinding wins the race, the rival bind
+    // fails EADDRINUSE and the end state is correct anyway — treat that
+    // as a pass-through, not a failure.
+    std::fs::remove_file(TEST_SOCKET_FOREIGN).unwrap();
+    let rival = match UnixListener::bind(TEST_SOCKET_FOREIGN) {
+        Ok(l) => Some(l),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => None,
+        Err(e) => panic!("unexpected rival bind error: {e}"),
+    };
+    thread::spawn(move || {
+        let _keep = rival; // hold the vnode open for a while
+        thread::sleep(Duration::from_secs(10));
+    });
+
+    // Either the server reclaims within seconds or already owns the path:
+    // in both cases a command roundtrip must reach OUR event channel.
+    //
+    // Bounded by try_recv polling, never blocking: while the path still
+    // belongs to the rival, a connect "succeeds" into ITS backlog and no
+    // event ever comes — blocking_recv there would hang forever. A
+    // connect that reaches us is proven ours only by the event arriving.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut delivered = false;
+    while Instant::now() < deadline && !delivered {
+        if let Ok(DaemonEvent::Command(Command::QueryState, _)) = event_rx.try_recv() {
+            delivered = true;
+            break;
+        }
+        if let Ok(mut stream) = UnixStream::connect(TEST_SOCKET_FOREIGN) {
+            let body = serde_json::to_string(&Command::QueryState).unwrap();
+            let _ = stream.write_all(body.as_bytes());
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        delivered,
+        "the daemon must own the command socket within 5s of a rival stealing it"
+    );
+
+    let _ = std::fs::remove_file(TEST_SOCKET_FOREIGN);
+}
+
+#[test]
+fn bar_socket_self_heals_after_a_rogue_rm() {
+    // Same ghost-daemon state on the push socket: after a rogue rm the
+    // menubar reconnects to a missing path forever. The identity check
+    // rebinds; a reconnecting client gets the cached State replayed.
+    let _ = std::fs::remove_file(TEST_BAR_SOCKET_HEAL);
+    let sender = pengwm_daemon::bar_server::spawn_bar_server_with_path(TEST_BAR_SOCKET_HEAL);
+    wait_for_socket(TEST_BAR_SOCKET_HEAL, Duration::from_secs(5));
+
+    let state = BarState {
+        workspaces: vec![BarWorkspace {
+            name: "healed".into(),
+            monitor_id: 1,
+            window_count: 0,
+            active: true,
+            windows: vec![],
+        }],
+        active_workspace: 0,
+        split_direction: None,
+    };
+    sender.send(BarMessage::State(state));
+
+    // The rogue rm.
+    std::fs::remove_file(TEST_BAR_SOCKET_HEAL).unwrap();
+
+    // The server rebinds (file reappears and accepts connections).
+    wait_until_alive(TEST_BAR_SOCKET_HEAL, Duration::from_secs(5));
+
+    let mut stream = connect_with_retry(TEST_BAR_SOCKET_HEAL, Duration::from_secs(2))
+        .expect("connect to rebound bar socket");
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut buf = [0u8; 4096];
+    let n = stream.read(&mut buf).expect("read replayed state");
+    let msg: BarMessage =
+        serde_json::from_str(String::from_utf8_lossy(&buf[..n]).trim()).expect("valid JSON");
+    assert!(
+        matches!(&msg, BarMessage::State(s) if s.workspaces[0].name == "healed"),
+        "the rebound bar socket must replay cached state, got {:?}",
+        msg
+    );
+
+    let _ = std::fs::remove_file(TEST_BAR_SOCKET_HEAL);
+}
+
+#[test]
 fn bar_socket_receives_cached_state_on_connect() {
     let _ = std::fs::remove_file(TEST_BAR_SOCKET);
 
@@ -249,8 +398,8 @@ fn bar_socket_receives_cached_state_on_connect() {
     };
     sender.send(BarMessage::State(state));
 
-    let mut stream = connect_with_retry(TEST_BAR_SOCKET, Duration::from_secs(2))
-        .expect("connect to bar socket");
+    let mut stream =
+        connect_with_retry(TEST_BAR_SOCKET, Duration::from_secs(2)).expect("connect to bar socket");
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();

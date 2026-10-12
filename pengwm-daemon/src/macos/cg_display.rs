@@ -6,7 +6,6 @@ use tokio::sync::mpsc;
 use crate::adapter::DisplayInfo;
 use crate::event_loop::DaemonEvent;
 use crate::macos::ns_workspace;
-
 pub fn active_displays() -> Vec<DisplayInfo> {
     let ids = match CGDisplay::active_displays() {
         Ok(ids) => ids,
@@ -38,13 +37,13 @@ pub fn primary_display_id() -> u32 {
     unsafe { core_graphics::display::CGMainDisplayID() }
 }
 
+type CGDisplayChangeFlags = u32;
+
 type CGDisplayReconfigurationCallBack = unsafe extern "C" fn(
     display: CGDirectDisplayID,
     flags: CGDisplayChangeFlags,
     refcon: *mut c_void,
 );
-
-type CGDisplayChangeFlags = u32;
 
 #[allow(non_upper_case_globals)]
 const kCGDisplayAddFlag: CGDisplayChangeFlags = 1 << 0;
@@ -53,13 +52,14 @@ const kCGDisplayRemoveFlag: CGDisplayChangeFlags = 1 << 1;
 #[allow(non_upper_case_globals)]
 const kCGDisplaySetModeFlag: CGDisplayChangeFlags = 1 << 3;
 
-use std::sync::atomic::AtomicPtr;
-
-static REFCON: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-
 pub fn register_hotplug_callback(event_tx: mpsc::Sender<DaemonEvent>) {
+    // Program-lifetime ownership, made explicit: the refcon must outlive
+    // every display event, i.e. the daemon's whole run. The Box is handed
+    // to the callback and intentionally never reclaimed — there is no
+    // second registration and no teardown path that outlives the process.
+    // (A previous `unregister_hotplug_callback` teardown existed with zero
+    // callers; removed rather than keeping dead teardown code.)
     let ctx = Box::into_raw(Box::new(event_tx)) as *mut c_void;
-    REFCON.store(ctx, std::sync::atomic::Ordering::Relaxed);
 
     unsafe {
         CGDisplayRegisterReconfigurationCallback(Some(hotplug_callback), ctx);
@@ -69,10 +69,6 @@ pub fn register_hotplug_callback(event_tx: mpsc::Sender<DaemonEvent>) {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGDisplayRegisterReconfigurationCallback(
-        callback: Option<CGDisplayReconfigurationCallBack>,
-        refcon: *mut c_void,
-    );
-    fn CGDisplayRemoveReconfigurationCallback(
         callback: Option<CGDisplayReconfigurationCallBack>,
         refcon: *mut c_void,
     );
@@ -96,18 +92,6 @@ unsafe extern "C" fn hotplug_callback(
     if flags & kCGDisplaySetModeFlag != 0 {
         log::info!("Display resized: {}", display);
         let _ = tx.try_send(DaemonEvent::MonitorResized(display));
-    }
-}
-
-pub fn unregister_hotplug_callback() {
-    let ctx = REFCON.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
-    unsafe {
-        CGDisplayRemoveReconfigurationCallback(Some(hotplug_callback), ctx);
-    }
-    if !ctx.is_null() {
-        unsafe {
-            let _ = Box::from_raw(ctx as *mut mpsc::Sender<DaemonEvent>);
-        }
     }
 }
 

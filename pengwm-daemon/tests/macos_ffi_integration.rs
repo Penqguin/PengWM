@@ -45,7 +45,8 @@ fn macos_ffi_integration() {
     // Don't assert on this - the app might not have windows
 
     // 5. If there are windows, try get_window_rect and set_window_rect
-    if let Some(&(element, _window_id, _)) = windows.first() {
+    if let Some((element, _window_id, _)) = windows.first() {
+        let element = element.ptr();
         let original_rect = unsafe { ax_element::get_window_rect(element) };
         assert!(original_rect.is_some(), "should be able to get window rect");
 
@@ -154,7 +155,8 @@ fn on_window_created_tracks_pid_and_applies_layout() {
     // Every window should have a readable, positive-size rect —
     // proof that apply_layout successfully sent set_window_rect
     // rather than skipping the window due to a missing PID.
-    for &(element, _, _) in &windows_after {
+    for (element, _, _) in &windows_after {
+        let element = element.ptr();
         let rect = unsafe { ax_element::get_window_rect(element) };
         assert!(rect.is_some(), "each window should have a readable rect");
         let r = rect.unwrap();
@@ -166,10 +168,10 @@ fn on_window_created_tracks_pid_and_applies_layout() {
     }
 
     // Clean up: close the window we just opened.
-    for &(element, _, _) in &windows_after {
-        let wid = unsafe { ax_element::ax_window_id_from_element(element).unwrap_or(0) };
+    for (element, _, _) in &windows_after {
+        let wid = unsafe { ax_element::ax_window_id_from_element(element.ptr()).unwrap_or(0) };
         if !windows_before.iter().any(|&(_, id, _)| id == wid) {
-            unsafe { ax_element::close_window(element) };
+            unsafe { ax_element::close_window(element.ptr()) };
         }
     }
 }

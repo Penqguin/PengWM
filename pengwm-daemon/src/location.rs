@@ -108,7 +108,10 @@ pub fn enforce_installed_location() {
 /// Called by `pengwm update`: it modifies the installed copy, so a dev
 /// checkout must not run the installer on its behalf.
 pub fn enforce_installed_for_update() {
-    ensure_installed_location("update", "updates apply to the installed copy — install first.");
+    ensure_installed_location(
+        "update",
+        "updates apply to the installed copy — install first.",
+    );
 }
 
 #[cfg(test)]
@@ -132,11 +135,13 @@ mod tests {
         // starts_with compares components, so a sibling directory whose
         // name merely shares the bin dir's name as a prefix must not pass.
         let bin = installed_bin_dirs().into_iter().next().unwrap();
-        let exe = bin.with_file_name({
-            let mut name = bin.file_name().unwrap().to_os_string();
-            name.push(".bak");
-            name
-        }).join("pengwm");
+        let exe = bin
+            .with_file_name({
+                let mut name = bin.file_name().unwrap().to_os_string();
+                name.push(".bak");
+                name
+            })
+            .join("pengwm");
         assert!(!path_is_installed_entry(&exe));
     }
 
@@ -148,9 +153,7 @@ mod tests {
 
     #[test]
     fn homebrew_cellar_path_is_installed() {
-        let exe = Path::new(
-            "/opt/homebrew/Cellar/pengwm/0.6.0/bin/pengwm",
-        );
+        let exe = Path::new("/opt/homebrew/Cellar/pengwm/0.6.0/bin/pengwm");
         assert!(path_is_installed_entry(exe));
     }
 

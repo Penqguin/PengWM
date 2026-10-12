@@ -41,7 +41,10 @@ fn main() {
         // until the process exits.
         Ok(file) => std::mem::forget(file),
         Err(e) => {
-            log::info!("another pengwm-menubar holds its instance lock ({}); exiting", e);
+            log::info!(
+                "another pengwm-menubar holds its instance lock ({}); exiting",
+                e
+            );
             return;
         }
     }

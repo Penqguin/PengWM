@@ -47,6 +47,39 @@ pub struct WindowsConfig {
     /// apps — render centered at this ratio; magnify keeps its own 0.75.
     #[serde(default = "default_popup_ratio")]
     pub popup_ratio: f64,
+    /// Bundles whose every window is untracked — never tiled, never parked,
+    /// on top across workspace switches until the user closes them
+    /// (ADR-0002). Matched like `restricted_apps` (bundle id or app name,
+    /// case-insensitive). Default: System Settings, Calculator, Photo Booth.
+    #[serde(default = "default_float_apps")]
+    pub float_apps: Vec<String>,
+    /// The structural overlay gate: a window whose CG window level is not
+    /// the normal level classifies untracked at creation, whatever its
+    /// subrole (ADR-0002). Default on; set false to fall back to
+    /// subrole-only classification.
+    #[serde(default = "default_true")]
+    pub float_level_overlays: bool,
+}
+
+impl WindowsConfig {
+    #[cfg(test)]
+    pub fn with_float_apps(apps: Vec<String>) -> Self {
+        Self {
+            float_apps: apps,
+            ..Self::default()
+        }
+    }
+}
+
+fn default_float_apps() -> Vec<String> {
+    vec![
+        "com.apple.systempreferences".into(),
+        "System Settings".into(),
+        "com.apple.calculator".into(),
+        "Calculator".into(),
+        "com.apple.PhotoBooth".into(),
+        "Photo Booth".into(),
+    ]
 }
 
 impl Default for WindowsConfig {
@@ -55,6 +88,8 @@ impl Default for WindowsConfig {
             hidden_strategy: HiddenStrategy::default(),
             fullscreen: FullscreenStrategy::default(),
             popup_ratio: default_popup_ratio(),
+            float_apps: default_float_apps(),
+            float_level_overlays: true,
         }
     }
 }

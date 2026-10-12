@@ -2,14 +2,12 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use core_foundation::base::CFRelease;
-use core_foundation::runloop::{
-    kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopSourceRef,
-};
+use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent};
 use tokio::sync::mpsc;
 
 use crate::config::keybinds::{find_keybind, KeybindConfig, ModifierFlags, MODIFIER_NONE};
 use crate::event_loop::DaemonEvent;
+use crate::macos::cf_ref::CFRef;
 use crate::prefix::{PrefixKey, PrefixOutcome};
 
 type CGEventRef = *mut c_void;
@@ -56,16 +54,14 @@ pub fn start(
     let event_mask = CGEventMaskBit(kCGEventKeyDown);
 
     unsafe {
-        let tap = CGEventTapCreate(
+        let Some(tap) = CFRef::from_create(CGEventTapCreate(
             kCGSessionEventTap,
             kCGHeadInsertEventTap,
             kCGEventTapOptionDefault, // active filter: returning NULL swallows the event
             event_mask,
             Some(event_tap_callback),
             ctx,
-        );
-
-        if tap.is_null() {
+        ) as core_foundation::mach_port::CFMachPortRef) else {
             log::error!("Failed to create CGEventTap — check Accessibility permissions.");
             eprintln!("✗ Failed to create global keybind tap (CGEventTap).");
             eprintln!(
@@ -81,21 +77,33 @@ pub fn start(
 
             let _ = Box::from_raw(ctx as *mut Context);
             return;
-        }
+        };
 
-        let run_loop_source: CFRunLoopSourceRef =
-            CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) as CFRunLoopSourceRef;
-        if run_loop_source.is_null() {
+        let Some(run_loop_source) = CFRef::from_create(CFMachPortCreateRunLoopSource(
+            std::ptr::null_mut(),
+            tap.ptr() as *mut c_void,
+            0,
+        )
+            as core_foundation::runloop::CFRunLoopSourceRef)
+        else {
             log::error!("Failed to create CFRunLoopSource from event tap");
-            CFRelease(tap);
+            // `tap` drops here — owned and released, unlike the old
+            // hand-rolled `CFRelease` that this path performed by hand.
             let _ = Box::from_raw(ctx as *mut Context);
             return;
-        }
+        };
 
         let run_loop = CFRunLoopGetCurrent();
-        CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopDefaultMode);
+        CFRunLoopAddSource(run_loop, run_loop_source.ptr(), kCFRunLoopDefaultMode);
 
-        // The run loop source is retained by the run loop; do not release it.
+        // Program-lifetime ownership, made explicit: the tap and its
+        // runloop source must outlive this function for the daemon's whole
+        // run (the callback fires from the run loop). The +1s are handed
+        // over by one visible `Box::leak` of their CFRefs — released
+        // exactly never, by intent — instead of the old "forgotten by
+        // omission" comment that wrongly claimed the run loop's retain
+        // consumed the creator's reference.
+        Box::leak(Box::new((tap, run_loop_source)));
 
         eprintln!("✓ Global keybind tap active (Alt+h/j/k/l, arrows, etc.)");
         log::info!("CGEventTap started successfully");

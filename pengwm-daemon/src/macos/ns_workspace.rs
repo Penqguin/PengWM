@@ -55,6 +55,19 @@ pub fn running_app_pids() -> Vec<i32> {
         .collect()
 }
 
+/// Every pid NSWorkspace reports as running, regardless of activation
+/// policy. `running_app_pids` filters to Regular apps because routing
+/// cares about real apps; liveness checks must not — accessory-policy apps
+/// own windows too, and the dead-pid sweep reading their absence as death
+/// would untrack them every tick.
+pub fn running_pids_any_policy() -> Vec<i32> {
+    let ws = NSWorkspace::sharedWorkspace();
+    ws.runningApplications()
+        .into_iter()
+        .map(|app| app.processIdentifier())
+        .collect()
+}
+
 /// Resolve a process ID to its bundle identifier (e.g. "com.spotify.client").
 pub fn bundle_id_for_pid(pid: i32) -> Option<String> {
     let ws = NSWorkspace::sharedWorkspace();

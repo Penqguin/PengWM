@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use pengwm_core::layout::Rect;
@@ -6,6 +6,14 @@ use pengwm_core::tree::WindowId;
 
 use super::drag::DragTickAction;
 use super::StateManager;
+
+/// Replace observers attached longer than this. AX accumulates
+/// per-registration records for an observer's lifetime (no
+/// per-notification removal), so a long-lived app's observer grows with
+/// window churn until it is replaced — previously only on wake resync or
+/// app relaunch. Age-bounded replacement keeps the bound regardless of
+/// whether the machine ever sleeps.
+const OBSERVER_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 
 /// Owns the tick path: the hidden-state reconcile (predicate-injected, no
 /// downcast), the missed-window sweep, and the drag-to-swap tick. Shared
@@ -26,6 +34,8 @@ impl StateManager {
         if self.store.should_reconcile(now) {
             self.reconcile_hidden_windows();
             self.reconcile_fullscreen_windows();
+            self.reconcile_dead_pids();
+            self.os.refresh_aged_observers(OBSERVER_MAX_AGE);
         }
 
         // Safety net for windows whose WindowCreated notification never
@@ -36,12 +46,22 @@ impl StateManager {
         const WINDOW_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
         if now.duration_since(self.last_window_sweep) >= WINDOW_SWEEP_INTERVAL {
             self.last_window_sweep = now;
+            // Topology heals first: a missed/out-of-order display event used
+            // to leave stale geometry that the misplaced sweep below would
+            // then re-assert every 2s (writes into no-man's land, forever).
+            // The poll is one cheap CG query; a no-op answer costs nothing.
+            self.run_topology_sync();
             self.reconcile_new_windows();
             // Tracked-but-misplaced: login-time Firefox often drifts or fails
             // its first write (not-yet-resizable) and gets stuck — manual
             // re-tile is skipped via `applied_rects`, and the new-window
             // sweep above ignores tracked ids. Re-assert those here.
             self.reconcile_misplaced_windows(now);
+            // Cache-vs-store diff: elements cached for windows the store
+            // doesn't track have no eviction path of their own — released
+            // here. Runs after the sweep so windows it just registered
+            // keep their fresh elements.
+            self.prune_untracked_elements();
         }
 
         match self.drag.on_tick(
@@ -64,6 +84,60 @@ impl StateManager {
                 self.apply_layout(workspace_idx);
             }
             DragTickAction::None => {}
+        }
+    }
+
+    /// Recover from missed `AppTerminated` notifications: any pid we still
+    /// observe or still track windows for, but that NSWorkspace no longer
+    /// reports running, goes through the normal `on_app_terminated` funnel.
+    ///
+    /// NSWorkspace liveness is the one authoritative non-AX evidence for
+    /// death: a dead app's own AX poll is *always* empty — the "zero
+    /// listing is no judgment" blackout signature — so the listing sweep
+    /// can never untrack it, and only this diff can. Runs `on_app_terminated`
+    /// rather than a bespoke cleanup so the missed path and the notified
+    /// path retire an app exactly the same way.
+    ///
+    /// Suppressed while a wake resync is pending, mirroring the listing
+    /// sweep: the resync re-attaches and re-polls everything at commit, and
+    /// the next sweep cleans up after it.
+    fn reconcile_dead_pids(&mut self) {
+        if self.wake_resync.is_some() {
+            log::debug!("dead-pid sweep: skipped — wake resync pending");
+            return;
+        }
+        let running: HashSet<i32> = self.os.running_pids_any_policy().into_iter().collect();
+        // Suspects: every pid with an attached observer (a stranded
+        // observer is the leak) plus every pid whose windows we still
+        // track (a stranded tree entry is the symptom).
+        let mut suspect: HashSet<i32> = self.os.observed_pids().into_iter().collect();
+        suspect.extend(self.store.all_pids().keys().copied());
+        let dead: Vec<i32> = suspect
+            .into_iter()
+            .filter(|pid| !running.contains(pid))
+            .collect();
+        for pid in dead {
+            log::info!(
+                "dead-pid sweep: pid {} no longer running (termination missed) — running cleanup",
+                pid
+            );
+            self.on_app_terminated(pid);
+        }
+    }
+
+    /// Evict cached elements for windows the store doesn't track — the one
+    /// rule that gives every cached ref a release path, no matter which
+    /// notification was missed. The `keep` set is the store's tracked
+    /// windows: parked and popup members stay tracked while they wait, so
+    /// prunes never touch live state.
+    fn prune_untracked_elements(&mut self) {
+        let keep: HashSet<WindowId> = self.store.all_window_pids().keys().copied().collect();
+        let evicted = self.os.prune_untracked_elements(&keep);
+        if evicted > 0 {
+            log::debug!(
+                "prune: released {} cached element(s) for windows the store doesn't track",
+                evicted
+            );
         }
     }
 

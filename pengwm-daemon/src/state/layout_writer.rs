@@ -365,6 +365,19 @@ impl LayoutWriteCache {
         self.pin_state.clear();
     }
 
+    /// Drop every entry for a topology change: displays came and went, so
+    /// every "already applied" rect may name coordinates no live display
+    /// contains — the exact lie `clear_on_wake`'s reasoning covers for
+    /// sleep ("moved displays mean every applied entry is a lie"), but wired
+    /// to hotplug instead of wake. A topology change is not death evidence,
+    /// so pending gone-grace timers survive: only the applied/pin/fail-log
+    /// evidence is dropped.
+    pub(super) fn clear_topology(&mut self) {
+        self.applied_rects.clear();
+        self.layout_fail_logged.clear();
+        self.pin_state.clear();
+    }
+
     /// If the window's actual rect genuinely disagrees with where we put it,
     /// invalidate so the next layout re-asserts (snap-back, app moves).
     /// Reads within the post-write grace window are our animation settling;

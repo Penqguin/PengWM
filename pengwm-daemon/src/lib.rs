@@ -10,4 +10,5 @@ pub mod launchd;
 pub mod location;
 pub mod macos;
 pub mod prefix;
+pub mod socket_guard;
 pub mod state;

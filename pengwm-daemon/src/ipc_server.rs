@@ -1,10 +1,17 @@
 use std::io::{Read, Write};
-use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::event_loop::DaemonEvent;
+use crate::socket_guard::{bind_first, SocketGuard};
+
+/// The accept loop polls instead of blocking on `accept`, so the per-tick
+/// socket-identity check (`SocketGuard::tick`) can run and a rebound
+/// listener can be swapped in. Worst-case added accept latency is one
+/// poll — well inside the daemon's 50ms pump granularity.
+const ACCEPT_POLL: Duration = Duration::from_millis(25);
 
 pub use pengwm_core::ipc::COMMAND_SOCKET_PATH as DEFAULT_SOCKET_PATH;
 
@@ -31,62 +38,55 @@ pub fn daemon_already_running() -> bool {
 }
 
 pub fn start_ipc_server_with_path(event_tx: mpsc::Sender<DaemonEvent>, socket_path: &str) {
-    // Bind FIRST, probe only on `Address already in use`. The old
-    // remove_file+bind stole the socket from a live daemon whenever two
-    // started near-simultaneously (or anything else removed the file mid-run
-    // — the listener survived on an unlinked vnode and every CLI call hit
-    // ECONNREFUSED while the WM looked perfectly healthy). Now a live socket
-    // file cannot be unlinked by a rival: bind on it fails with EADDRINUSE,
-    // the probe distinguishes a live daemon (exit cleanly) from a stale file
-    // left by a crashed one (safe to unlink and rebind).
-    let listener = match UnixListener::bind(socket_path) {
+    // Bind FIRST, probe only on `Address already in use` (see
+    // `socket_guard::bind_first`). After binding, the accept loop runs a
+    // per-tick socket-identity check: a rogue `rm` used to leave the
+    // listener on an unlinked vnode — the WM kept tiling while every CLI
+    // connect hit ECONNREFUSED (the ghost-daemon state). Now the guard
+    // notices the missing/foreign file, logs loudly, and rebinds.
+    let listener = match bind_first(socket_path, "IPC server") {
         Ok(l) => l,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            if daemon_already_running_at(socket_path) {
-                log::error!(
-                    "Another daemon owns {} — not starting the IPC server.",
-                    socket_path
-                );
-                return;
-            }
-            log::info!("Stale socket file at {} — removing and rebinding", socket_path);
-            let _ = std::fs::remove_file(socket_path);
-            match UnixListener::bind(socket_path) {
-                Ok(l) => l,
-                Err(e) => {
-                    log::error!("Failed to bind UDS at {}: {}", socket_path, e);
-                    return;
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("Failed to bind UDS at {}: {}", socket_path, e);
-            return;
-        }
+        Err(_) => return,
     };
 
     log::info!("UDS listener bound to {}", socket_path);
 
+    let mut guard = SocketGuard::capture(socket_path);
+    let mut listener = listener;
+    listener
+        .set_nonblocking(true)
+        .expect("set listener nonblocking");
+
     let sem = Arc::new(Semaphore::new(32));
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // Accepted sockets inherit O_NONBLOCK on some platforms
+                // (Linux); handle_client does blocking reads — normalize.
+                let _ = stream.set_nonblocking(false);
                 let tx = event_tx.clone();
                 let path = socket_path.to_owned();
                 let sem = Arc::clone(&sem);
-                let Ok(_permit) = sem.try_acquire_owned() else {
+                if let Ok(_permit) = sem.try_acquire_owned() {
+                    thread::spawn(move || {
+                        let _permit = _permit; // hold until handle_client returns
+                        handle_client(stream, tx, &path);
+                    });
+                } else {
                     log::warn!("ipc thread pool full (32), dropping connection");
-                    continue;
-                };
-                thread::spawn(move || {
-                    let _permit = _permit; // hold until handle_client returns
-                    handle_client(stream, tx, &path);
-                });
+                }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => {
                 log::error!("UDS accept error: {}", e);
             }
         }
+        if let Some(fresh) = guard.tick(Instant::now()) {
+            let _ = fresh.set_nonblocking(true);
+            listener = fresh;
+            log::info!("UDS listener rebound to {}", socket_path);
+        }
+        thread::sleep(ACCEPT_POLL);
     }
 }
 

@@ -35,13 +35,19 @@ fn focus_event_fullscreen_parks_and_siblings_reflow() {
         sm.workspaces.iter().all(|ws| ws.find_window(100).is_none()),
         "fullscreen window leaves the tree"
     );
-    assert!(sm.store.is_fullscreen_parked(100), "remembered, not dropped");
+    assert!(
+        sm.store.is_fullscreen_parked(100),
+        "remembered, not dropped"
+    );
     assert!(
         sm.workspaces[0].find_window(200).is_some(),
         "sibling keeps its slot"
     );
     let sibling_after = handle.rect(200).unwrap();
-    assert_ne!(sibling_after.width, sibling_before.width, "sibling reflowed");
+    assert_ne!(
+        sibling_after.width, sibling_before.width,
+        "sibling reflowed"
+    );
 }
 
 #[test]
@@ -134,7 +140,10 @@ fn hidden_while_fullscreen_upgrades_the_park_reason() {
     // Un-minimize: the normal shown flow reveals it (not the fullscreen one).
     handle.clear_hidden_window(100);
     sm.on_window_shown(100);
-    assert!(sm.workspaces[0].find_window(100).is_some(), "revealed by hide");
+    assert!(
+        sm.workspaces[0].find_window(100).is_some(),
+        "revealed by hide"
+    );
     assert!(!sm.store.is_parked(100));
 }
 
@@ -188,7 +197,8 @@ fn failed_write_probes_fullscreen_and_parks() {
     // the 2s misplaced sweep, exactly as the drifted window is re-checked in
     // production: age past the displacement grace, displace, sweep.
     handle.displace(100, 50.0, 50.0);
-    sm.layout_cache.age_applied_for_test(100, std::time::Duration::from_secs(5));
+    sm.layout_cache
+        .age_applied_for_test(100, std::time::Duration::from_secs(5));
     sm.force_window_sweep_for_test();
     sm.on_tick();
 

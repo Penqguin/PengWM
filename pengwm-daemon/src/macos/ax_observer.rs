@@ -1,25 +1,38 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
+use std::time::{Duration, Instant};
 
 use accessibility_sys::*;
-use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
+use core_foundation::base::{CFEqual, CFTypeRef, TCFType};
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent};
 use core_foundation::string::{CFString, CFStringRef};
 
 use crate::adapter::WindowClass;
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
+use crate::macos::cf_ref::{CFPtr, CFRef};
+use crate::macos::cg_window_level;
 
 use pengwm_core::tree::WindowId;
 
+/// The element cache's value type, factored out for readability: one
+/// `CFRef`-owned element per window, its pid, and its discovery-time
+/// `WindowClass`.
+pub(crate) mod element_cache {
+    use super::*;
+    pub(crate) type CachedElement = (CFRef<AXUIElementRef>, i32, WindowClass);
+    pub type ElementCache = HashMap<WindowId, CachedElement>;
+}
+
 /// Shared mutable state accessible from both the AX observer callback and
-/// MacOsAdapter. The cache maps WindowId to a retained AXUIElementRef, its
-/// pid, and a typed `WindowClass` — classified at the discovery gate,
-/// read back by `window_kind`. The event_callback forwards AX events to
-/// the event loop.
+/// MacOsAdapter. The cache maps WindowId to an owned retained AXUIElementRef
+/// (`CFRef` — drop releases, and overwriting an existing key releases the
+/// old ref by construction), its pid, and a typed `WindowClass` —
+/// classified at the discovery gate, read back by `window_kind`. The
+/// event_callback forwards AX events to the event loop.
 pub struct ObserverContext {
-    cache: std::cell::UnsafeCell<HashMap<WindowId, (AXUIElementRef, i32, WindowClass)>>,
+    cache: std::cell::UnsafeCell<element_cache::ElementCache>,
     event_callback: Box<dyn Fn(DaemonEvent) + Send>,
 }
 
@@ -34,11 +47,11 @@ impl ObserverContext {
     /// # Safety
     /// Caller must ensure no other mutable references to the cache are outstanding.
     #[allow(clippy::mut_from_ref)]
-    pub unsafe fn cache_mut(&self) -> &mut HashMap<WindowId, (AXUIElementRef, i32, WindowClass)> {
+    pub unsafe fn cache_mut(&self) -> &mut element_cache::ElementCache {
         &mut *self.cache.get()
     }
 
-    pub fn cache_get(&self) -> &HashMap<WindowId, (AXUIElementRef, i32, WindowClass)> {
+    pub fn cache_get(&self) -> &element_cache::ElementCache {
         unsafe { &*self.cache.get() }
     }
 
@@ -46,28 +59,25 @@ impl ObserverContext {
         (self.event_callback)(event);
     }
 
-    /// Insert a window into the cache with its discovery-time class,
-    /// releasing any previously cached element.
+    /// Insert a window into the cache with its discovery-time class. A
+    /// previously cached element for the same id is released by the map
+    /// overwrite — the balance the old hand-rolled insert dance provided.
     pub fn cache_insert(
         &self,
         window_id: WindowId,
-        element: AXUIElementRef,
+        element: CFRef<AXUIElementRef>,
         pid: i32,
         class: WindowClass,
     ) {
-        if let Some((old_elem, _, _)) =
-            unsafe { self.cache_mut() }.insert(window_id, (element, pid, class))
-        {
-            unsafe { CFRelease(old_elem as CFTypeRef) };
-        }
+        unsafe { self.cache_mut() }.insert(window_id, (element, pid, class));
     }
 
     /// Find the window ID for a given element pointer by linear scan.
     /// Uses CFEqual for reliable comparison (handles toll-free bridging).
     pub fn find_window_id_by_element(&self, element: AXUIElementRef) -> Option<WindowId> {
-        for (&wid, &(cached_elem, _, _)) in self.cache_get().iter() {
+        for (&wid, (cached_elem, _, _)) in self.cache_get().iter() {
             let equal: bool =
-                unsafe { CFEqual(cached_elem as CFTypeRef, element as CFTypeRef) != 0 };
+                unsafe { CFEqual(cached_elem.ptr().as_cf_type(), element as CFTypeRef) != 0 };
             if equal {
                 return Some(wid);
             }
@@ -83,14 +93,69 @@ impl ObserverContext {
             .filter_map(|(&wid, &(_, p, _))| if p == pid { Some(wid) } else { None })
             .collect()
     }
+
+    /// Release and drop every cached element belonging to `pid`, returning
+    /// the count. The app-termination funnel for cached-but-untracked
+    /// members: `on_app_terminated` evicts store-tracked windows per id
+    /// (`forget_window`); this releases the rest — an excluded app's
+    /// windows created after bootstrap (routing returned before
+    /// `register`), so their elements would otherwise outlive the app.
+    /// No eviction path of their own exists for those entries.
+    pub fn clear_pid(&self, pid: i32) -> usize {
+        let mut evicted = 0usize;
+        unsafe { self.cache_mut() }.retain(|_, (_, p, _)| {
+            if *p == pid {
+                // `retain` drops the removed value — the CFRef release.
+                evicted += 1;
+                false
+            } else {
+                true
+            }
+        });
+        evicted
+    }
+
+    /// Release and drop every cached element whose window id is not in
+    /// `keep`, returning the count. The tick sweep's cache-vs-store diff:
+    /// entries the store doesn't track have no eviction path (see
+    /// `clear_pid`), so the sweep prunes them here.
+    pub fn prune_untracked(&self, keep: &std::collections::HashSet<WindowId>) -> usize {
+        let mut evicted = 0usize;
+        unsafe { self.cache_mut() }.retain(|wid, (_, _, _)| {
+            if keep.contains(wid) {
+                true
+            } else {
+                evicted += 1;
+                false
+            }
+        });
+        evicted
+    }
+}
+
+impl Drop for ObserverContext {
+    fn drop(&mut self) {
+        // Release every cached ref. Correct on shutdown, and required if
+        // an adapter is ever built while an old one still lives — without
+        // this, the outgoing cache's refs were stranded wholesale.
+        unsafe { &mut *self.cache.get() }.clear();
+    }
 }
 
 unsafe impl Send for ObserverContext {}
 unsafe impl Sync for ObserverContext {}
 
 pub struct RegisteredObserver {
-    observer: AXObserverRef,
-    app: AXUIElementRef,
+    observer: CFRef<AXObserverRef>,
+    /// Held (never read) for its lifetime: our +1 keeps the app element
+    /// the registrations were made against alive for as long as the
+    /// observer lives. Released by the CFRef drop.
+    _app: CFRef<AXUIElementRef>,
+    /// When `attach` built this observer. The age is the replacement
+    /// trigger: AX accumulates per-registration records for the observer's
+    /// lifetime and there is no per-notification removal, so a long-lived
+    /// observer grows its records with window churn. See `refresh_aged`.
+    attached_at: Instant,
     /// Per-window registration bookkeeping, keyed by window id. AX
     /// accumulates per-registration records for the lifetime of the
     /// observer and there is no per-notification removal in AX, so the
@@ -100,15 +165,8 @@ pub struct RegisteredObserver {
     /// resync), which is what gives its first-following poll a clean
     /// slate without any per-tick churn.
     registered: std::cell::RefCell<std::collections::HashSet<WindowId>>,
-}
-
-impl Drop for RegisteredObserver {
-    fn drop(&mut self) {
-        unsafe {
-            CFRelease(self.observer as CFTypeRef);
-            CFRelease(self.app as CFTypeRef);
-        }
-    }
+    // The `CFRef` fields release themselves — no manual Drop, so the old
+    // balance-prone `impl Drop { CFRelease; CFRelease }` is gone.
 }
 
 pub struct ObserverRegistry {
@@ -129,20 +187,18 @@ impl ObserverRegistry {
     }
 
     pub fn attach(&mut self, pid: i32, ctx: &ObserverContext) {
-        // Attach intent on an already-attached pid replaces the observer:
-        // the existing AX registrations die with their AXObserver, and the
-        // caller asked for a fresh observation (the wake resync re-attach
-        // after a blackout). The first-following poll re-registers each
-        // window exactly once under the new observer.
-        if self.observers.contains_key(&pid) {
-            self.detach_locked(pid);
-        }
-
+        // Build the replacement first, swap second: a failed build (null app
+        // element, AXObserverCreate failure, notification registration
+        // failure) keeps the existing observer running instead of dropping
+        // observation of a live pid. The replace-on-attach intent (wake
+        // resync, aged-observer refresh) must never trade a working observer
+        // for nothing — so the old observer is only torn down once the new
+        // one is fully built and registered to the run loop.
         let app = unsafe { ax_element::create_app_element(pid) };
-        if app.is_null() {
+        let Some(app) = app else {
             log::warn!("AXUIElementCreateApplication returned null for pid {}", pid);
             return;
-        }
+        };
 
         let mut observer: AXObserverRef = ptr::null_mut();
         let err = unsafe { AXObserverCreate(pid, observer_callback, &mut observer) };
@@ -153,9 +209,10 @@ impl ObserverRegistry {
                 pid,
                 error_string(err)
             );
-            unsafe { CFRelease(app as CFTypeRef) };
+            // `app` drops — the failed build releases what it owns.
             return;
         }
+        let observer = unsafe { CFRef::from_create(observer) }.expect("non-null checked above");
 
         // Individual window destroyed notifications are registered per-window
         // in observer_callback and register_window_destroyed — see below.
@@ -177,7 +234,12 @@ impl ObserverRegistry {
         for &notif_name in essential.iter().chain(optional.iter()) {
             let name = CFString::new(notif_name);
             let err = unsafe {
-                AXObserverAddNotification(observer, app, name.as_concrete_TypeRef(), ctx_ptr)
+                AXObserverAddNotification(
+                    observer.ptr(),
+                    app.ptr(),
+                    name.as_concrete_TypeRef(),
+                    ctx_ptr,
+                )
             };
             if err != kAXErrorSuccess && err != kAXErrorNotificationAlreadyRegistered {
                 if optional.contains(&notif_name) {
@@ -200,20 +262,13 @@ impl ObserverRegistry {
         }
 
         if !all_succeeded {
-            unsafe {
-                CFRelease(observer as CFTypeRef);
-                CFRelease(app as CFTypeRef);
-            }
+            // `observer` + `app` both drop — nothing released by hand.
             return;
         }
 
-        let run_loop_source = unsafe { AXObserverGetRunLoopSource(observer) };
+        let run_loop_source = unsafe { AXObserverGetRunLoopSource(observer.ptr()) };
         if run_loop_source.is_null() {
             log::warn!("AXObserverGetRunLoopSource returned null for pid {}", pid);
-            unsafe {
-                CFRelease(observer as CFTypeRef);
-                CFRelease(app as CFTypeRef);
-            }
             return;
         }
 
@@ -222,16 +277,29 @@ impl ObserverRegistry {
             CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopDefaultMode);
         }
 
-        self.observers
-            .insert(pid, RegisteredObserver { observer, app, registered: std::cell::RefCell::new(std::collections::HashSet::new()) });
+        // Success: swap. The old observer — with every per-registration
+        // record AX built under it — dies here, giving the next poll a
+        // clean registration slate.
+        self.detach_locked(pid);
+        self.observers.insert(
+            pid,
+            RegisteredObserver {
+                observer,
+                _app: app,
+                attached_at: Instant::now(),
+                registered: std::cell::RefCell::new(std::collections::HashSet::new()),
+            },
+        );
     }
 
     /// Run-loop teardown for one pid's observer. Shared by `detach` and the
-    /// replace-on-attach intent path.
+    /// replace-on-attach intent path. The removed `RegisteredObserver`
+    /// drops at scope end — observer and app element released — after the
+    /// runloop source removal below has detached the loop's retain.
     fn detach_locked(&mut self, pid: i32) {
         if let Some(registered) = self.observers.remove(&pid) {
             let run_loop = unsafe { CFRunLoopGetCurrent() };
-            let run_loop_source = unsafe { AXObserverGetRunLoopSource(registered.observer) };
+            let run_loop_source = unsafe { AXObserverGetRunLoopSource(registered.observer.ptr()) };
             if !run_loop_source.is_null() {
                 unsafe {
                     core_foundation::runloop::CFRunLoopRemoveSource(
@@ -242,6 +310,7 @@ impl ObserverRegistry {
                 }
             }
             log::info!("Detached AXObserver for pid {}", pid);
+            drop(registered);
         }
     }
 
@@ -352,7 +421,7 @@ impl ObserverRegistry {
         }
         let name = CFString::new(notification);
         let err = AXObserverAddNotification(
-            registered.observer,
+            registered.observer.ptr(),
             window,
             name.as_concrete_TypeRef(),
             refcon,
@@ -370,6 +439,40 @@ impl ObserverRegistry {
 
     pub fn detach(&mut self, pid: i32) {
         self.detach_locked(pid);
+    }
+
+    /// Every pid with an attached observer — the dead-pid sweep's suspect
+    /// set. An observer whose app quit without delivering the termination
+    /// notification is a stranded `AXObserverRef` + app element + retained
+    /// runloop source, and its callback can never fire again, so only this
+    /// diff can retire it.
+    pub fn observed_pids(&self) -> Vec<i32> {
+        self.observers.keys().copied().collect()
+    }
+
+    /// Replace observers attached longer than `older_than`, re-attaching
+    /// each through `attach` (which builds the replacement before tearing
+    /// the old one down — a failed rebuild keeps the old observer running).
+    /// The replacement resets both the AX-side per-registration records and
+    /// the per-observer `registered` set, so long window churn between
+    /// sleep events no longer grows the observer unboundedly. The pid's
+    /// next poll re-registers each listed window once under the new
+    /// observer.
+    pub fn refresh_aged(&mut self, ctx: &ObserverContext, older_than: Duration) {
+        let aged: Vec<i32> = self
+            .observers
+            .iter()
+            .filter(|(_, registered)| registered.attached_at.elapsed() >= older_than)
+            .map(|(&pid, _)| pid)
+            .collect();
+        for pid in aged {
+            log::info!(
+                "Refreshing observer for pid {} (attached > {:?}, AX record bound)",
+                pid,
+                older_than
+            );
+            self.attach(pid, ctx);
+        }
     }
 }
 
@@ -413,9 +516,8 @@ unsafe extern "C" fn observer_callback(
             },
         };
         log::debug!("WindowDestroyed: {}", window_id);
-        if let Some((elem, _, _)) = unsafe { ctx.cache_mut() }.remove(&window_id) {
-            CFRelease(elem as CFTypeRef);
-        }
+        // The removed CFRef releases itself.
+        unsafe { ctx.cache_mut() }.remove(&window_id);
         ctx.call_event(DaemonEvent::WindowDestroyed(window_id));
         return;
     }
@@ -457,7 +559,10 @@ unsafe extern "C" fn observer_callback(
             // Classify, don't drop: Sheets and unknowns return at the gate
             // exactly as the old binary check did; everything else is
             // cached + observed + evented, and the class rides the cache.
-            let class = ax_element::classify(element);
+            let class = WindowClass::apply_level_gate(
+                ax_element::classify(element),
+                cg_window_level::window_level(window_id),
+            );
             if !class.is_manageable() {
                 log::debug!(
                     "WindowCreated SKIPPED (class {:?}): {} pid={}",
@@ -468,9 +573,13 @@ unsafe extern "C" fn observer_callback(
                 return;
             }
             log::debug!("WindowCreated: {} pid={} class={:?}", window_id, pid, class);
-            CFRetain(element as CFTypeRef);
-            ax_element::apply_messaging_timeout(element);
-            ctx.cache_insert(window_id, element, pid, class);
+            // Get-rule borrow from the notification: retain it into
+            // ownership for the cache. The fresh element releases the
+            // previous cache entry when insert overwrites it.
+            if let Some(owned) = CFRef::from_get(element) {
+                ax_element::apply_messaging_timeout(owned.ptr());
+                ctx.cache_insert(window_id, owned, pid, class);
+            }
 
             // Register per-window destroyed notification so we detect when
             // this window closes (the app-level registration does NOT fire

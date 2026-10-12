@@ -4,29 +4,41 @@ use pengwm_core::tree::WindowId;
 
 use super::{StateManager, WakeResync};
 
-/// Owns monitor lifecycle and wake resync. Display geometry flows through
-/// `DisplaySet::on_added/on_removed/on_resized`; wake rebuilds stale AX
-/// state through the existing `OsAdapter` interface — no new adapter method.
+/// Owns monitor lifecycle and wake resync. **All** topology healing flows
+/// through `DisplaySet::sync` (one planner, one answer type); this file owns
+/// the executor that runs what it answers. Display geometry events
+/// (`MonitorAdded`/`MonitorRemoved`/`MonitorResized`) are hints only — the
+/// sync re-reads the live display list itself, and the tick calls the same
+/// funnel so a lost or out-of-order event heals within one sweep.
 impl StateManager {
-    pub fn on_monitor_added(&mut self, display_id: u32) {
-        let Some(sync) = self
-            .displays
-            .on_added(display_id, &mut self.workspaces, &*self.os)
-        else {
+    /// Run one complete topology healing pass and execute what it answered:
+    /// drop the write cache's "already applied" evidence (displays came and
+    /// went), park newly seatless workspaces, re-park pre-hidden workspaces
+    /// whose geometry healed, re-lay out the visible set, publish the bar.
+    /// A no-op answer runs no machinery at all — cheap on the tick.
+    pub fn run_topology_sync(&mut self) {
+        let sync = self.displays.sync(&mut self.workspaces, &*self.os);
+        if sync.is_noop() {
             return;
-        };
-        for idx in sync.relayout {
-            self.apply_layout(idx);
         }
-        self.publish_bar_state();
-    }
-
-    pub fn on_monitor_removed(&mut self, _display_id: u32) {
-        let sync = self
-            .displays
-            .on_removed(_display_id, &mut self.workspaces, &*self.os);
+        log::info!(
+            "topology sync: shown {:?}, hidden {:?}, re-parked {:?}, re-laid {:?}",
+            sync.shown,
+            sync.hidden,
+            sync.repark,
+            sync.relayout
+        );
+        // Every cached "already applied" rect may name coordinates nothing
+        // serves anymore (`clear_topology` keeps pending gone-grace timers —
+        // a topology change is not death evidence).
+        self.layout_cache.clear_topology();
         for idx in sync.hidden {
             self.hide_workspace(idx);
+        }
+        for idx in sync.repark {
+            if idx < self.workspaces.len() {
+                self.hide_workspace(idx);
+            }
         }
         for idx in sync.relayout {
             if idx < self.workspaces.len() {
@@ -36,14 +48,16 @@ impl StateManager {
         self.publish_bar_state();
     }
 
-    pub fn on_monitor_resized(&mut self, display_id: u32) {
-        let affected = self
-            .displays
-            .on_resized(display_id, &mut self.workspaces, &*self.os);
-        for idx in affected {
-            self.apply_layout(idx);
-        }
-        self.publish_bar_state();
+    pub fn on_monitor_added(&mut self, _display_id: u32) {
+        self.run_topology_sync();
+    }
+
+    pub fn on_monitor_removed(&mut self, _display_id: u32) {
+        self.run_topology_sync();
+    }
+
+    pub fn on_monitor_resized(&mut self, _display_id: u32) {
+        self.run_topology_sync();
     }
 
     /// How often `on_tick` re-probes AX while a wake resync is pending.
@@ -194,11 +208,20 @@ impl StateManager {
         self.layout_cache.note_wake_pending(false);
 
         log::info!("System woke — resyncing windows and displays");
-        // Refresh workspace geometry from current displays.
-        let displays = self.os.active_displays();
-        for ws in self.workspaces.iter_mut() {
-            if let Some(info) = displays.iter().find(|d| d.id == ws.monitor_id) {
-                ws.update_monitor_geometry(info.origin, info.size);
+        // Heal the topology first: displays may have come or gone during
+        // sleep. The same one pass the tick and the hotplug hints use —
+        // orphans remap to primary, seats settle, geometry self-heals —
+        // instead of the geometry-only refresh that used to skip workspaces
+        // whose display died in sleep (their stale origin/size re-tiled
+        // windows into no-man's land). The final re-tile below covers
+        // `relayout`; `hidden`/`repark` run here.
+        let tsync = self.displays.sync(&mut self.workspaces, &*self.os);
+        for idx in tsync.hidden {
+            self.hide_workspace(idx);
+        }
+        for idx in tsync.repark {
+            if idx < self.workspaces.len() {
+                self.hide_workspace(idx);
             }
         }
         // Drop the layout-write cache: stale AX refs + moved displays mean
@@ -236,6 +259,9 @@ impl StateManager {
                 self.apply_layout(idx);
             }
         }
+        // Everything re-stacked after sleep; stacking is globally unset, so
+        // re-assert no monitor is left with untracked overlays buried.
+        self.raise_untracked_windows(None);
         self.publish_bar_state();
         true
     }

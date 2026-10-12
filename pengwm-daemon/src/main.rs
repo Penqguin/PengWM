@@ -51,7 +51,10 @@ fn daemon_main() {
     // first and both tiled at once. Exit 0 so KeepAlive doesn't resurrect
     // the loser (SuccessfulExit=false restarts only on nonzero).
     if ipc_server::daemon_already_running() {
-        eprintln!("error: another pengwm daemon is already running (it answers on {}).", pengwm_core::ipc::COMMAND_SOCKET_PATH);
+        eprintln!(
+            "error: another pengwm daemon is already running (it answers on {}).",
+            pengwm_core::ipc::COMMAND_SOCKET_PATH
+        );
         eprintln!("Stop it first: pengwm quit");
         std::process::exit(0);
     }

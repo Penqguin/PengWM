@@ -71,6 +71,12 @@ impl StateManager {
                                 for wid in self.workspaces[dec.show].popup_ids() {
                                     self.os.raise_window(wid);
                                 }
+                                // Untracked overlays stay above the newly
+                                // shown tree: one raise per untracked window
+                                // on this monitor (ADR-0002).
+                                self.raise_untracked_windows(Some(
+                                    self.workspaces[dec.show].monitor_id,
+                                ));
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
                             }
@@ -181,7 +187,8 @@ impl StateManager {
                 self.bar_sender.send(BarMessage::Exit);
                 std::thread::sleep(Duration::from_millis(150));
                 self.shutdown_requested = true;
-                return;            }
+                return;
+            }
             Command::RevealAll => {
                 log::info!("RevealAll requested — retiling hidden windows");
                 self.reveal_all();

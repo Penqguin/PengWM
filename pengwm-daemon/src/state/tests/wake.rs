@@ -320,7 +320,10 @@ fn sweep_untrack_is_suppressed_while_wake_resync_pending() {
 
     sm.age_wake_probe_for_test();
     sm.on_tick();
-    assert!(sm.wake_resync_pending(), "blackout keeps the resync waiting");
+    assert!(
+        sm.wake_resync_pending(),
+        "blackout keeps the resync waiting"
+    );
     assert!(
         sm.store.contains(100),
         "the sweep must not untrack while the resync is pending"
@@ -330,10 +333,7 @@ fn sweep_untrack_is_suppressed_while_wake_resync_pending() {
     handle.set_ax_blackout(false);
     sm.age_wake_probe_for_test();
     sm.on_tick();
-    assert!(
-        !sm.wake_resync_pending(),
-        "resync commits once AX answers"
-    );
+    assert!(!sm.wake_resync_pending(), "resync commits once AX answers");
     assert!(
         !sm.store.contains(100),
         "the committed resync untracks the window that closed during sleep"

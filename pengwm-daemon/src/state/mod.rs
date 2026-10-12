@@ -25,6 +25,7 @@ pub mod session;
 pub mod store;
 #[cfg(test)]
 mod tests;
+pub mod untracked;
 use self::display::DisplaySet;
 use self::drag::DragState;
 use self::layout_writer::{AfterWrite, LayoutWriteCache};
@@ -56,6 +57,15 @@ pub struct StateManager {
     /// Pids whose windows are never managed by the WM — the spawned
     /// `pengwm-menubar` child process, whose status item must not be tiled.
     excluded_pids: Vec<i32>,
+    /// Bundles whose windows are untracked — never tiled, never parked, on
+    /// top across workspace switches (ADR-0002). Matched like
+    /// `restricted_apps` at creation time only.
+    float_apps: Vec<String>,
+    /// When false, the structural overlay gate is ignored at *routing*:
+    /// windows that are untracked only because of a non-normal CG window
+    /// level tile again. Cached classes persist (first-classification-
+    /// wins), so this affects windows discovered after the change.
+    float_level_overlays: bool,
     last_layout_rects: HashMap<WindowId, Rect>,
     /// Layout-write policy and the maps it reasons about (skip-if-unchanged,
     /// read-before-write, gone grace, pin backoff, hidden seeding). Owned by
@@ -169,6 +179,8 @@ impl StateManager {
             restricted_apps: settings.restricted_apps,
             bar_sender,
             excluded_pids,
+            float_apps: settings.windows.float_apps.clone(),
+            float_level_overlays: settings.windows.float_level_overlays,
             last_layout_rects: HashMap::new(),
             layout_cache: LayoutWriteCache::new(),
             drag: DragState::new(),
@@ -241,6 +253,8 @@ impl StateManager {
         self.restricted_apps = updated_settings.restricted_apps;
         self.cached_hidden_strategy = Some(updated_settings.windows.hidden_strategy);
         self.cached_fullscreen_strategy = Some(updated_settings.windows.fullscreen);
+        self.float_apps = updated_settings.windows.float_apps.clone();
+        self.float_level_overlays = updated_settings.windows.float_level_overlays;
         set_popup_ratio(&mut self.workspaces, updated_settings.windows.popup_ratio);
         self.focus_first_on_switch = updated_settings.focus_first_on_switch;
         self.displays
@@ -355,6 +369,9 @@ impl StateManager {
             }
         }
         if retiled {
+            // Reveals re-stacked the monitor(s); untracked overlays must
+            // stay above the tree after a RevealAll too.
+            self.raise_untracked_windows(None);
             self.publish_bar_state();
         }
     }
@@ -365,13 +382,26 @@ impl StateManager {
     }
 
     #[cfg(test)]
-    pub(super) fn set_fullscreen_strategy_for_test(&mut self, s: crate::config::FullscreenStrategy) {
+    pub(super) fn set_fullscreen_strategy_for_test(
+        &mut self,
+        s: crate::config::FullscreenStrategy,
+    ) {
         self.cached_fullscreen_strategy = Some(s);
     }
 
     #[cfg(test)]
     fn set_restricted_apps_for_test(&mut self, apps: Vec<String>) {
         self.restricted_apps = apps;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_float_apps_for_test(&mut self, apps: Vec<String>) {
+        self.float_apps = apps;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_float_level_overlays_for_test(&mut self, on: bool) {
+        self.float_level_overlays = on;
     }
 
     #[cfg(test)]

@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **A rogue `rm` of a socket path no longer ghost-locks the daemon's
+  IPC.** Each server's accept loop (command socket, bar push socket)
+  runs a per-tick socket-identity check: the bounded path's `(dev, ino)`
+  is compared against the identity captured at bind time, and a missing
+  or foreign file is logged loudly — including whether a live peer
+  answers on it — and rebound, with the fresh listener swapped into the
+  accept loop. Previously the listener survived on an unlinked vnode and
+  every CLI connect hit `ECONNREFUSED` while the WM kept tiling (the
+  ghost-daemon state); now CLI reachability recovers within one poll.
+  The bind-first contract is unchanged: a live daemon still can never be
+  stolen at startup. (`socket_guard.rs` owns the contract; `bind_first`
+  is now one implementation shared by both servers.)
+
+- **A closed display can no longer leave the tiling wedged.** All display
+  topology healing collapsed into `DisplaySet::sync` — one pass that diffs
+  the *live* display list against the workspace pool: dead seats leave the
+  active map, orphaned workspaces remap to primary with fresh geometry, a
+  newly live output is seated with the first hidden workspace, and every
+  workspace on a live output self-heals its geometry. The three
+  `Monitor{Added,Removed,Resized}` handlers are now hints that trigger it,
+  and the 2s tick sweep runs it first — so a dropped or out-of-order
+  hotplug event (an AirPlay tear-down emits no clean RemoveFlag) heals
+  within one sweep instead of leaving stale geometry that the misplaced
+  sweep re-asserted every 2s. Hidden workspaces on a healed display are
+  re-parked at fresh coordinates; the layout-write cache drops its
+  "already applied" evidence on any topology change (`clear_topology`,
+  same reasoning as `clear_on_wake`). Session restore seats outputs
+  through the same pass (`sync_with`): a session saved on one display no
+  longer claims a boot-time output shows workspace 0 while workspace 0's
+  geometry stays on the old display.
+
 - **Fullscreen windows now leave the tiling tree.** A window entering
   native fullscreen is *parked*: it leaves its tree slot (siblings reflow
   around the freed space) while its workspace index is remembered — no

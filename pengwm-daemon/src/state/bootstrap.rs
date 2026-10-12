@@ -55,41 +55,27 @@ pub fn assemble(
 
     if use_session {
         let sess = maybe_session.unwrap();
-        // Migrate pre-global-pool sessions: one tree per name (first wins),
-        // orphans remapped to primary, geometry refreshed.
+        // Migrate pre-global-pool sessions: one tree per name (first wins).
+        // Membership, geometry and seats are NOT decided here: after
+        // restoring only the session-saved seats whose display still exists,
+        // everything else — orphan remap, missing seats, stale geometry —
+        // goes through `DisplaySet::sync_with`, the one owner of seat
+        // assignment. A session saved on one display must never tell the
+        // active map a boot-time output shows workspace 0 while workspace
+        // 0's geometry stays on the old display (the AirPlay bug).
         let mut seen = std::collections::HashSet::new();
-        let primary_info = display_infos.iter().find(|d| d.id == primary_id);
-        let primary_origin = primary_info.map(|d| d.origin).unwrap_or((0, 0));
-        let primary_size = primary_info.map(|d| d.size).unwrap_or((1920, 1080));
         for ws in &sess.workspaces {
             if !seen.insert(ws.name.clone()) {
                 continue;
             }
-            let mut ws = ws.clone();
-            let exists = display_infos.iter().any(|d| d.id == ws.monitor_id);
-            if !exists {
-                ws.monitor_id = primary_id;
-                ws.set_monitor_origin(primary_origin);
-                ws.update_monitor_geometry(primary_origin, primary_size);
-            } else if let Some(info) = display_infos.iter().find(|d| d.id == ws.monitor_id) {
-                ws.update_monitor_geometry(info.origin, info.size);
-            }
-            workspaces.push(ws);
+            workspaces.push(ws.clone());
         }
         for (mon_id, idx) in &sess.active {
             if display_infos.iter().any(|d| d.id == *mon_id) && *idx < workspaces.len() {
                 displays.active_mut().insert(*mon_id, *idx);
             }
         }
-        for info in display_infos {
-            if !displays.active().contains_key(&info.id) {
-                if let Some(idx) = workspaces.iter().position(|ws| ws.monitor_id == info.id) {
-                    displays.active_mut().insert(info.id, idx);
-                } else if !workspaces.is_empty() {
-                    displays.active_mut().insert(info.id, 0);
-                }
-            }
-        }
+        displays.sync_with(&mut workspaces, display_infos, primary_id);
         // Focused output: primary when live, else first active.
         if display_infos.iter().any(|d| d.id == primary_id) {
             displays.set_focused_output(primary_id);
@@ -219,6 +205,82 @@ mod tests {
         assert_eq!(a.gap_outer, 15.0);
         assert_eq!(a.workspaces[0].preset_index, 0);
         assert!(a.workspaces[0].magnified.is_none());
+    }
+
+    #[test]
+    fn assemble_session_new_output_receives_a_real_workspace() {
+        // Regression: the AirPlay-extended-display session restore. The
+        // session was saved on one display; at boot a second output exists.
+        // The old fallback (`insert(new_output, 0)`) told the active map the
+        // new output shows workspace 0 — but workspace 0's monitor_id and
+        // geometry stayed on its output, so every layout write landed on the
+        // built-in while the map claimed both outputs showed workspace 0.
+        // Now the first hidden workspace is re-pointed at the new output.
+        let displays = vec![
+            disp(1, (0, 0)),
+            DisplayInfo {
+                id: 4,
+                origin: (1800, 134),
+                size: (1180, 820),
+            },
+        ];
+        // Two saved workspaces, both assigned to display 1 (they were saved
+        // on a one-display machine). Workspace 1 is hidden.
+        let ws0 = pengwm_core::workspace::Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080));
+        let ws1 = pengwm_core::workspace::Workspace::new("Browse".into(), 1, (0, 0), (1920, 1080));
+        let sess = Session::new(
+            vec![ws0, ws1],
+            std::collections::BTreeMap::from([(1, 0)]),
+            vec![],
+            10.0,
+            5.0,
+        );
+        let settings = Settings::default();
+        let a = assemble(&displays, 1, &settings, Some(&sess));
+        assert_eq!(
+            a.displays.active().get(&4),
+            Some(&1),
+            "new output shows the first hidden workspace"
+        );
+        assert_eq!(
+            a.workspaces[1].monitor_id, 4,
+            "the shown workspace is re-pointed at the new output"
+        );
+        assert_eq!(a.workspaces[1].monitor_size(), (1180, 820));
+        assert_eq!(a.workspaces[1].monitor_origin(), (1800, 134));
+        // Both outputs show distinct workspaces.
+        assert_eq!(a.displays.active().get(&1), Some(&0));
+    }
+
+    #[test]
+    fn assemble_session_extra_output_beyond_pool_stays_unmanaged() {
+        // One saved workspace is visible on the primary; a second output
+        // exists but the pool has nothing hidden. The extra output gets no
+        // active entry (rather than a lie: both outputs claiming workspace 0
+        // whose geometry belongs to the other).
+        let displays = vec![
+            disp(1, (0, 0)),
+            DisplayInfo {
+                id: 4,
+                origin: (1800, 134),
+                size: (1180, 820),
+            },
+        ];
+        let ws0 = pengwm_core::workspace::Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080));
+        let sess = Session::new(
+            vec![ws0],
+            std::collections::BTreeMap::from([(1, 0)]),
+            vec![],
+            10.0,
+            5.0,
+        );
+        let settings = Settings::default();
+        let a = assemble(&displays, 1, &settings, Some(&sess));
+        assert!(!a.displays.active().contains_key(&4));
+        assert_eq!(
+            a.workspaces[0].monitor_id, 1,
+            "the one workspace keeps its real output"
+        );
     }
 
     #[test]

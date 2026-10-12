@@ -165,6 +165,43 @@ freely afterwards — nothing snaps them back. They hide with their workspace
 and return on top when you switch back. They never count against
 `max_tiles` and never persist across restarts.
 
+### Untracked windows
+
+Untracked windows are *not* managed at all in the tiling sense: never tiled,
+never hidden when you switch workspaces, and re-raised above the newly shown
+windows on every switch, until you close them (or app-hide them with
+Cmd-H). They stay exactly where macOS or you put them, on top, across every
+workspace on their monitor. They don't count against `max_tiles` and don't
+show in the menubar's workspace lists.
+
+Two things make a window untracked:
+
+- **Overlay level (structural):** a window macOS itself keeps off the normal
+  window level — PiP players, call decks, always-on-top palettes, the
+  level-3 `AXStandardWindow` windows some apps float. Detected from the macOS
+  window level at creation; first classification wins. Set
+  `float_level_overlays = false` under `[windows]` if you'd rather see these
+  tiled (only affects windows discovered after the change).
+- **`float_apps` (app-level):** bundles whose every window should float this
+  way. Defaults:
+
+  ```toml
+  [windows]
+  float_apps = [
+    "com.apple.systempreferences", "System Settings",
+    "com.apple.calculator", "Calculator",
+    "com.apple.PhotoBooth", "Photo Booth",
+  ]
+  ```
+
+  Matched like `restricted_apps` (bundle id or app name,
+  case-insensitive) and only applied to windows discovered after the
+  config change; a reload doesn't re-route windows already in the tree.
+
+Untracked windows are deliberately different from popups: a popup belongs to
+the workspace it appeared on (hides with it, comes back on switch-back); an
+untracked window belongs to no workspace and never hides.
+
 ### Corner radius
 
 `corner_radius` defaults to the corner radius of the current macOS version so

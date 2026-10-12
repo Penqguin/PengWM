@@ -211,7 +211,8 @@ const ACTION_TABLE: &[(&str, Command)] = &[
     ),
     ("close", Command::Close),
     ("cycle-layout", Command::CycleLayout),
-    ("toggle-magnify", Command::ToggleMagnify),    (
+    ("toggle-magnify", Command::ToggleMagnify),
+    (
         "select-layout-even-horizontal",
         Command::SelectLayout {
             preset: LayoutPreset::EvenHorizontal,
@@ -433,10 +434,7 @@ mod tests {
             Command::parse_action("set-gap-inner-6"),
             Some(Command::SetGapInner { pixels: 6 })
         );
-        assert_eq!(
-            Command::parse_action("toggle-bar"),
-            None
-        );
+        assert_eq!(Command::parse_action("toggle-bar"), None);
         assert_eq!(
             Command::parse_action("reload-config"),
             Some(Command::ReloadConfig)

@@ -14,24 +14,26 @@ pub const AGENT_LABEL: &str = "com.pengwm.daemon";
 
 pub fn agent_plist_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(std::path::PathBuf::from(home)
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{AGENT_LABEL}.plist")))
+    Some(
+        std::path::PathBuf::from(home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{AGENT_LABEL}.plist")),
+    )
 }
 
 /// Remove the LaunchAgent job registration. Called on clean shutdown
 /// (`pengwm quit`, menubar Quit, SIGTERM). When the daemon is not running
 /// under launchd the `launchctl bootout` fails non-fatally and is ignored.
 pub fn remove_agent_job() {
-    let Some(plist) = agent_plist_path() else { return };
+    let Some(plist) = agent_plist_path() else {
+        return;
+    };
     if !plist.exists() {
         // No agent installed (manual run) — nothing to deregister.
         return;
     }
-    let sh = format!(
-        "launchctl bootout gui/$(id -u)/{AGENT_LABEL} 2>/dev/null || true"
-    );
+    let sh = format!("launchctl bootout gui/$(id -u)/{AGENT_LABEL} 2>/dev/null || true");
     match std::process::Command::new("sh").arg("-c").arg(&sh).status() {
         Ok(_) => log::info!("LaunchAgent job deregistered ({AGENT_LABEL}) — quit stays quit"),
         Err(e) => log::debug!("launchctl bootout failed to spawn: {e}"),

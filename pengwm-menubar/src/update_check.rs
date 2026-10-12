@@ -31,7 +31,10 @@ fn check(latest: &Mutex<Option<String>>) {
         return;
     };
     if is_newer(&tag, env!("CARGO_PKG_VERSION")) {
-        log::info!("update available: {tag} (running {})", env!("CARGO_PKG_VERSION"));
+        log::info!(
+            "update available: {tag} (running {})",
+            env!("CARGO_PKG_VERSION")
+        );
         *latest.lock().unwrap() = Some(tag);
     } else {
         log::debug!("no newer release than {}", env!("CARGO_PKG_VERSION"));
@@ -82,7 +85,11 @@ fn parse_tag(body: &str) -> Option<String> {
 fn numeric_core(tag: &str) -> Option<Vec<u64>> {
     let tag = tag.trim().strip_prefix('v').unwrap_or(tag.trim());
     let core = tag.split(['-', '+']).next().unwrap_or(tag);
-    let parts: Vec<u64> = core.split('.').map(str::parse).collect::<Result<_, _>>().ok()?;
+    let parts: Vec<u64> = core
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
     (!parts.is_empty()).then_some(parts)
 }
 

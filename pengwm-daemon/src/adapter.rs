@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
@@ -21,6 +22,11 @@ pub enum WindowClass {
     /// Floating windows: PiP, launcher panels, Chromium popups
     /// (`AXFloatingWindow`).
     Floating,
+    /// Cross-workspace untracked overlay (see *UntrackedWindow* in
+    /// CONTEXT.md): never tiled, never parked, never hidden with its
+    /// workspace. Set at discovery by the CG window-level gate, or at
+    /// routing by the `float_apps` bundle list.
+    Untracked,
     /// Sheets attached to a parent window — left alone, as before.
     Sheet,
     /// Anything else, including unreadable or missing attributes.
@@ -61,6 +67,20 @@ impl WindowClass {
             _ => WindowClass::Unknown,
         }
     }
+
+    /// The CG window-level gate: a window whose level is not the normal
+    /// level (0) declared itself an overlay — it floats above every
+    /// level-0 window and (for system overlays) across Spaces, so it is
+    /// untracked no matter what its subrole says (level beats popup
+    /// classes; a PiP window at level 3 stops being workspace-bound).
+    /// `None` (unqueried — unreadable CG snapshot) keeps the subrole
+    /// answer; first-classification wins, same as popups.
+    pub fn apply_level_gate(class: WindowClass, level: Option<i32>) -> WindowClass {
+        if class.is_manageable() && level.is_some_and(|l| l != 0) {
+            return WindowClass::Untracked;
+        }
+        class
+    }
 }
 
 /// AX role/subrole strings. Mirrors the `accessibility_sys` constants,
@@ -76,6 +96,17 @@ const AX_SHEET_SUBROLE: &str = "AXSheet";
 pub trait ObserverRegistry {
     fn attach_observer(&mut self, pid: i32);
     fn detach_observer(&mut self, pid: i32);
+    /// Pids with an attached observer — the dead-pid sweep's suspect set:
+    /// an observer whose app died without a termination notification is a
+    /// stranded `AXObserverRef` + app element + runloop-source retain.
+    fn observed_pids(&self) -> Vec<i32>;
+    /// Replace observers attached longer than `older_than`. AX accumulates
+    /// per-registration records for an observer's lifetime (no
+    /// per-notification removal), so the tick re-attaches on an age bound —
+    /// the same replace-on-attach path the wake resync uses. The adapter owns
+    /// the mechanics; the state owns the policy (the interval), passed here
+    /// so configuration can tune it from one place later.
+    fn refresh_aged_observers(&mut self, older_than: Duration);
 }
 
 pub trait OsAdapter: ObserverRegistry {
@@ -121,6 +152,26 @@ pub trait OsAdapter: ObserverRegistry {
     /// notification-driven and the missed-notification paths evict the
     /// same way. Idempotent — evicting an already-gone window is a no-op.
     fn forget_window(&self, window_id: WindowId);
+    /// Release every OS-side resource cached for `pid`, including cached
+    /// elements for windows the store never tracked — an excluded app's
+    /// windows created after bootstrap (their routing returned before
+    /// `register`), or any other cached-but-untracked member of the pid.
+    /// `StateManager` calls this from `on_app_terminated` after the
+    /// per-window untrack loop, so nothing the observer cached outlives
+    /// the app. Idempotent; returns the number of elements evicted.
+    fn forget_pid(&self, pid: i32) -> usize;
+    /// Evict every cached element whose window is not in `keep`. The tick
+    /// sweep's cache-vs-store diff: entries the store doesn't track have
+    /// no eviction path of their own (excluded apps, missed terminations,
+    /// windows that closed during sleep between the resync and the
+    /// untrack), so the tick prunes them here. Returns the eviction count.
+    fn prune_untracked_elements(&self, keep: &HashSet<WindowId>) -> usize;
+    /// Every pid NSWorkspace reports as running, regardless of activation
+    /// policy. `running_app_pids` filters to Regular apps because routing
+    /// cares about real apps; the dead-pid sweep must not — accessory-policy
+    /// apps own windows too, and reading their absence as death would
+    /// untrack them every tick. One authoritative liveness list per call.
+    fn running_pids_any_policy(&self) -> Vec<i32>;
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
     /// Human-readable display name for the app owning `pid` (e.g. "Safari"),
     /// distinct from its bundle id ("com.apple.Safari"). Drives the menubar's
@@ -167,5 +218,59 @@ mod tests {
         let non_window_role =
             WindowClass::classify_window(Some("AXButton"), Some("AXStandardWindow"));
         assert_eq!(non_window_role, WindowClass::Unknown);
+    }
+
+    #[test]
+    fn non_zero_window_level_means_untracked_regardless_of_subrole() {
+        // Level beats the subrole: a PiP window (`AXFloatingWindow`, level 3)
+        // and a deck window (`AXStandardWindow`, level 3) are cross-workspace
+        // overlays, not workspace-bound popups and not tiles.
+        for class in [
+            WindowClass::Standard,
+            WindowClass::Dialog,
+            WindowClass::SystemDialog,
+            WindowClass::Floating,
+        ] {
+            assert_eq!(
+                WindowClass::apply_level_gate(class, Some(3)),
+                WindowClass::Untracked,
+                "{:?} at a non-normal level is untracked",
+                class
+            );
+        }
+    }
+
+    #[test]
+    fn normal_and_unqueried_levels_keep_the_subrole_answer() {
+        assert_eq!(
+            WindowClass::apply_level_gate(WindowClass::Standard, Some(0)),
+            WindowClass::Standard
+        );
+        assert_eq!(
+            WindowClass::apply_level_gate(WindowClass::Floating, Some(0)),
+            WindowClass::Floating
+        );
+        assert_eq!(
+            WindowClass::apply_level_gate(WindowClass::Standard, None),
+            WindowClass::Standard
+        );
+        // Negative levels are desktop/decals — still not normal, still
+        // not ours.
+        assert_eq!(
+            WindowClass::apply_level_gate(WindowClass::Standard, Some(-20)),
+            WindowClass::Untracked
+        );
+    }
+
+    #[test]
+    fn dropped_classes_never_become_untracked_via_level() {
+        assert_eq!(
+            WindowClass::apply_level_gate(WindowClass::Sheet, Some(3)),
+            WindowClass::Sheet
+        );
+        assert_eq!(
+            WindowClass::apply_level_gate(WindowClass::Unknown, Some(3)),
+            WindowClass::Unknown
+        );
     }
 }

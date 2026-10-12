@@ -84,14 +84,7 @@ impl EventLoop {
         // The shared prefix state: the event tap mutates it per keystroke and
         // `StateManager::reload_config` refreshes it, so both hold this Arc.
         let excluded_pids = menubar_pid.into_iter().collect::<Vec<_>>();
-        let state = StateManager::new(
-            tx.clone(),
-            keybinds,
-            prefix,
-            os,
-            bar_sender,
-            excluded_pids,
-        );
+        let state = StateManager::new(tx.clone(), keybinds, prefix, os, bar_sender, excluded_pids);
         (Self { rx, state }, tx)
     }
 
@@ -135,9 +128,7 @@ impl EventLoop {
         match event {
             DaemonEvent::WindowCreated(id, pid) => self.state.on_window_created(id, pid),
             DaemonEvent::WindowDestroyed(id) => self.state.on_window_destroyed(id),
-            DaemonEvent::UnknownWindowDestroyed(pid) => {
-                self.state.on_unknown_window_destroyed(pid)
-            }
+            DaemonEvent::UnknownWindowDestroyed(pid) => self.state.on_unknown_window_destroyed(pid),
             DaemonEvent::WindowFocused(id) => self.state.on_window_focused(id),
             DaemonEvent::WindowMoved(id, x, y) => self.state.on_window_moved(id, x, y),
             DaemonEvent::WindowHidden(id) => self.state.on_window_hidden(id),

@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 
 use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
@@ -178,7 +178,13 @@ pub fn run(state: Arc<Mutex<Option<BarState>>>, trusted: TrustedState, update: U
     let menu = NSMenu::new(mtm);
     menu.setDelegate(Some(ProtocolObject::from_ref(&*target)));
     menu.setAutoenablesItems(false);
-    rebuild_menu(&menu, &target.ivars().state, &target.ivars().trusted, &target.ivars().update, &target);
+    rebuild_menu(
+        &menu,
+        &target.ivars().state,
+        &target.ivars().trusted,
+        &target.ivars().update,
+        &target,
+    );
     item.setMenu(Some(&menu));
 
     if let Some(button) = item.button(mtm) {
@@ -198,7 +204,13 @@ pub fn run(state: Arc<Mutex<Option<BarState>>>, trusted: TrustedState, update: U
     NSApplication::sharedApplication(mtm).run();
 }
 
-fn rebuild_menu(menu: &NSMenu, state: &Mutex<Option<BarState>>, trusted: &TrustedState, update: &UpdateState, target: &MenuTarget) {
+fn rebuild_menu(
+    menu: &NSMenu,
+    state: &Mutex<Option<BarState>>,
+    trusted: &TrustedState,
+    update: &UpdateState,
+    target: &MenuTarget,
+) {
     let mtm = target.mtm();
     menu.removeAllItems();
 
@@ -326,7 +338,12 @@ fn add_disconnected_items(
 /// Update-available surface when update_check.rs saw a strictly newer
 /// release: a disabled informational label naming the version, then an
 /// enabled row that kicks off `pengwm update` via the installed app bundle.
-fn add_update_items(menu: &NSMenu, mtm: MainThreadMarker, target: &MenuTarget, update: &UpdateState) {
+fn add_update_items(
+    menu: &NSMenu,
+    mtm: MainThreadMarker,
+    target: &MenuTarget,
+    update: &UpdateState,
+) {
     let Some(tag) = update.lock().unwrap().clone() else {
         return;
     };

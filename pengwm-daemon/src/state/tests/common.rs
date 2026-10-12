@@ -33,7 +33,7 @@ pub(super) fn make_adapter(display_count: u32) -> TestAdapter {
         ];
     }
     adapter.frontmost = Some(42);
-    adapter.running_apps = vec![42];
+    adapter.running_apps.borrow_mut().push(42);
     adapter
         .windows
         .borrow_mut()
@@ -64,7 +64,14 @@ pub(super) fn setup_with_handle(display_count: u32) -> (StateManager, TestHandle
     let boxed: Box<dyn crate::adapter::OsAdapter> = Box::new(handle.shared());
     let (bar_tx, _) = mpsc::channel(64);
     (
-        StateManager::new(tx, keybinds, prefix, boxed, BarSender::from_channel(bar_tx), vec![]),
+        StateManager::new(
+            tx,
+            keybinds,
+            prefix,
+            boxed,
+            BarSender::from_channel(bar_tx),
+            vec![],
+        ),
         handle,
     )
 }

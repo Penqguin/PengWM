@@ -448,123 +448,137 @@ impl DisplaySet {
         }
     }
 
-    /// Handle `MonitorAdded`: the new output shows the first hidden workspace,
-    /// else pulls the first global workspace (swap). No new trees are created
-    /// (#1/Q7). Answers what to show/lay out; the caller executes (#3/Q12).
-    pub fn on_added(
-        &mut self,
-        display_id: u32,
-        workspaces: &mut [Workspace],
-        os: &dyn OsAdapter,
-    ) -> Option<TopologySync> {
-        let info = os
-            .active_displays()
-            .into_iter()
-            .find(|d| d.id == display_id)?;
-        if workspaces.is_empty() {
-            return None;
+    /// One healing pass over the whole topology — the single owner of seat
+    /// assignment (`Workspace.monitor_id` + display geometry). Polls the
+    /// adapter's *live* display list and makes the pool match it: dead seats
+    /// leave `active`, orphaned workspaces are remapped to primary, a newly
+    /// live output is seated with the first hidden workspace, and every
+    /// workspace on a live output reads that output's current geometry.
+    /// Replacing `on_added`/`on_removed`/`on_resized` (which trusted one
+    /// CG event each): a missed, dropped, or out-of-order event costs one
+    /// call of this — a hotplug hint, the tick, or a wake resync — and the
+    /// topology is healed. Answers a `TopologySync`; the caller executes.
+    pub fn sync(&mut self, workspaces: &mut [Workspace], os: &dyn OsAdapter) -> TopologySync {
+        let infos = os.active_displays();
+        let mut primary = os.primary_display_id();
+        if !infos.iter().any(|d| d.id == primary) {
+            primary = infos.first().map(|d| d.id).unwrap_or(primary);
         }
-        let visible: std::collections::HashSet<usize> = self.active.values().copied().collect();
-        let shown = (0..workspaces.len())
-            .find(|idx| !visible.contains(idx))
-            .unwrap_or(0);
-        workspaces[shown].monitor_id = display_id;
-        workspaces[shown].update_monitor_geometry(info.origin, info.size);
-        self.active.insert(display_id, shown);
-        Some(TopologySync {
-            shown: vec![shown],
-            hidden: vec![],
-            relayout: vec![shown],
-        })
+        self.sync_with(workspaces, &infos, primary)
     }
 
-    /// Handle `MonitorRemoved`: workspaces assigned to the removed output move
-    /// to primary (hidden there unless primary shows them); the removed id
-    /// leaves `active`. Names are already unique so no dedup is needed.
-    /// Answers the sync; the caller hides + re-layouts + publishes (#3/Q12).
-    pub fn on_removed(
+    /// The pure planner behind `sync`, driven by an already-retrieved display
+    /// snapshot. `bootstrap::assemble` (no `OsAdapter` in scope) feeds this
+    /// its query result; tests drive the same math with mock values.
+    pub fn sync_with(
         &mut self,
-        removed_id: u32,
-        workspaces: &mut Vec<Workspace>,
-        os: &dyn OsAdapter,
+        workspaces: &mut [Workspace],
+        infos: &[DisplayInfo],
+        primary_id: u32,
     ) -> TopologySync {
-        let was_visible = self.active.get(&removed_id).copied();
-        let primary = os.primary_display_id();
-        let primary_info = os.active_displays().into_iter().find(|d| d.id == primary);
-        let (primary_origin, primary_size) = primary_info
-            .map(|d| (d.origin, d.size))
-            .unwrap_or(((0, 0), (1920, 1080)));
-        for ws in workspaces.iter_mut() {
-            if ws.monitor_id == removed_id {
-                ws.monitor_id = primary;
-                ws.update_monitor_geometry(primary_origin, primary_size);
+        if workspaces.is_empty() || infos.is_empty() {
+            return TopologySync::empty();
+        }
+        let live: std::collections::HashSet<u32> = infos.iter().map(|d| d.id).collect();
+        let was_visible: std::collections::HashSet<usize> = self.active.values().copied().collect();
+        let mut changed = false;
+        let mut shown: Vec<usize> = Vec::new();
+        let mut geometry_changed: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+
+        // 1. Purge dead seats: a display that vanished in reality cannot keep
+        //    a visible-workspace claim.
+        let dead: Vec<u32> = self
+            .active
+            .keys()
+            .copied()
+            .filter(|id| !live.contains(id))
+            .collect();
+        for id in &dead {
+            self.active.remove(id);
+            changed = true;
+            // Focus follows a seat that died: answer switches ("here") on a
+            // surviving output instead of an id the adapter can never return.
+            if self.focused_output == Some(*id) {
+                self.focused_output = Some(primary_id);
             }
         }
-        self.active.remove(&removed_id);
-        if self.focused_output == Some(removed_id) {
-            self.focused_output = Some(primary);
+
+        // 2. Orphans → primary. A workspace whose display is gone must not
+        //    keep retrying writes into no-man's land; its seat is merely
+        //    hidden on primary (never pulled onto a busy output).
+        for ws in workspaces.iter_mut() {
+            if !live.contains(&ws.monitor_id) {
+                ws.monitor_id = primary_id;
+                changed = true;
+            }
         }
-        if workspaces.is_empty() {
-            workspaces.push(Workspace::new(
-                "ws-1".into(),
-                primary,
-                primary_origin,
-                primary_size,
-            ));
-        }
-        // Every live output shows exactly one workspace.
-        let live: Vec<u32> = os.active_displays().iter().map(|d| d.id).collect();
-        for mon in &live {
-            if !self.active.contains_key(mon) {
-                let visible: std::collections::HashSet<usize> =
+
+        // 3. Every live output owns exactly one workspace: by existing
+        //    assignment first, then the first hidden workspace re-pointed at
+        //    real geometry (what `plan_switch` does on a pull). An output the
+        //    pool cannot serve stays unmanaged rather than claiming a
+        //    workspace whose geometry belongs to another display.
+        for info in infos {
+            if self.active.contains_key(&info.id) {
+                continue;
+            }
+            if let Some(idx) = workspaces.iter().position(|ws| ws.monitor_id == info.id) {
+                self.active.insert(info.id, idx);
+                shown.push(idx);
+                changed = true;
+            } else {
+                let visible_now: std::collections::HashSet<usize> =
                     self.active.values().copied().collect();
-                let shown = (0..workspaces.len()).find(|idx| !visible.contains(idx));
-                if let Some(idx) = shown {
-                    if let Some(info) = os.active_displays().into_iter().find(|d| &d.id == mon) {
-                        workspaces[idx].monitor_id = *mon;
-                        workspaces[idx].update_monitor_geometry(info.origin, info.size);
-                    }
-                    self.active.insert(*mon, idx);
-                } else if !workspaces.is_empty() {
-                    self.active.insert(*mon, 0);
+                if let Some(idx) = (0..workspaces.len()).find(|i| !visible_now.contains(i)) {
+                    let ws = &mut workspaces[idx];
+                    ws.monitor_id = info.id;
+                    ws.update_monitor_geometry(info.origin, info.size);
+                    self.active.insert(info.id, idx);
+                    shown.push(idx);
+                    changed = true;
                 }
             }
         }
-        let visible_now: std::collections::HashSet<usize> = self.active.values().copied().collect();
-        let hidden = was_visible
-            .filter(|idx| !visible_now.contains(idx))
-            .into_iter()
-            .collect();
-        TopologySync {
-            shown: vec![],
-            hidden,
-            relayout: visible_now.into_iter().collect(),
-        }
-    }
 
-    /// Handle `MonitorResized`: update geometry on matching workspaces.
-    /// Returns the indices that need `apply_layout`.
-    pub fn on_resized(
-        &self,
-        display_id: u32,
-        workspaces: &mut [Workspace],
-        os: &dyn OsAdapter,
-    ) -> Vec<usize> {
-        let Some(info) = os
-            .active_displays()
-            .into_iter()
-            .find(|d| d.id == display_id)
-        else {
-            return Vec::new();
-        };
-        let mut affected = Vec::new();
-        for (i, ws) in workspaces.iter_mut().enumerate() {
-            if ws.monitor_id == display_id {
-                ws.update_monitor_geometry(info.origin, info.size);
-                affected.push(i);
+        // 4. Geometry self-heals: every workspace on a live output reads that
+        //    output's current geometry (resizes, insets, AirPlay resolution
+        //    drift) — visible ones get re-laid out, hidden ones get re-parked.
+        for info in infos {
+            for (i, ws) in workspaces.iter_mut().enumerate() {
+                if ws.monitor_id == info.id
+                    && (ws.monitor_origin() != info.origin || ws.monitor_size() != info.size)
+                {
+                    ws.update_monitor_geometry(info.origin, info.size);
+                    geometry_changed.insert(i);
+                    changed = true;
+                }
             }
         }
-        affected
+
+        // 5. Broadcast the membership changes the pass made.
+        let now_visible: std::collections::HashSet<usize> = self.active.values().copied().collect();
+        let hidden = was_visible
+            .iter()
+            .copied()
+            .filter(|idx| !now_visible.contains(idx))
+            .collect();
+        let repark = geometry_changed
+            .iter()
+            .copied()
+            .filter(|idx| !now_visible.contains(idx))
+            .collect();
+        let relayout = if changed {
+            now_visible.iter().copied().collect()
+        } else {
+            Vec::new()
+        };
+        TopologySync {
+            shown,
+            hidden,
+            repark,
+            relayout,
+        }
     }
 }
 
@@ -590,15 +604,41 @@ pub struct SwitchDecision {
     pub focus: Option<WindowId>,
 }
 
-/// A decided monitor-topology sync: `shown` workspaces need layout on their
-/// (new) output, `hidden` are newly parked offscreen, `relayout` the full
-/// set needing `apply_layout`. Answered by `DisplaySet`, executed by the
-/// caller (#3/Q12: hide + layout + bar stay with `StateManager`).
+/// A decided topology sync: `shown` are workspaces newly seated on a live
+/// output, `hidden` are the ones that just lost their seat (park offscreen),
+/// `repark` are already-hidden workspaces whose geometry healed (their parked
+/// windows sit at dead coordinates — re-park them at the fresh geometry),
+/// `relayout` the visible set needing `apply_layout`. Answered by
+/// `DisplaySet` (one `sync` pass), executed by the caller: hide + re-park +
+/// layout + bar stay with `StateManager`.
 #[derive(Debug)]
 pub struct TopologySync {
     pub shown: Vec<usize>,
     pub hidden: Vec<usize>,
+    pub repark: Vec<usize>,
     pub relayout: Vec<usize>,
+}
+
+impl TopologySync {
+    pub fn empty() -> Self {
+        Self {
+            shown: Vec::new(),
+            hidden: Vec::new(),
+            repark: Vec::new(),
+            relayout: Vec::new(),
+        }
+    }
+
+    /// True when the pass changed nothing: callers skip the whole
+    /// hide/repark/layout/publish machinery. A topology poll that saw the
+    /// same topology as before answers `empty` — that is what makes the
+    /// tick's repeated sync cheap.
+    pub fn is_noop(&self) -> bool {
+        self.shown.is_empty()
+            && self.hidden.is_empty()
+            && self.repark.is_empty()
+            && self.relayout.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -663,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn on_added_shows_first_hidden() {
+    fn sync_seats_a_newly_live_output_with_the_first_hidden_workspace() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss: Vec<Workspace> = Vec::new();
         ds.init_workspaces(&mut wss, &test_displays_one(), 1);
@@ -671,18 +711,19 @@ mod tests {
 
         let mut adapter = TestAdapter::new();
         adapter.displays = test_displays_two();
-        // One display shows entry 0; entry 1 is hidden → new output shows it.
-        let sync = ds.on_added(2, &mut wss, &adapter).unwrap();
+        // One display shows entry 0; entry 1 is hidden → the new output
+        // shows it, re-pointed at real geometry.
+        let sync = ds.sync(&mut wss, &adapter);
         assert_eq!(sync.shown, vec![1]);
-        assert_eq!(sync.relayout, vec![1]);
         assert!(sync.hidden.is_empty());
-        assert_eq!(wss.len(), 2);
         assert_eq!(ds.active.get(&2), Some(&1));
         assert_eq!(wss[1].monitor_id, 2);
+        assert_eq!(wss[1].monitor_size(), (1920, 1080));
+        assert_eq!(wss[1].monitor_origin(), (1920, 0));
     }
 
     #[test]
-    fn on_added_pulls_first_when_none_hidden() {
+    fn sync_skips_an_output_beyond_the_pool() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss: Vec<Workspace> = Vec::new();
         ds.init_workspaces(&mut wss, &test_displays_two(), 1);
@@ -704,30 +745,37 @@ mod tests {
                 size: (1920, 1080),
             },
         ];
-        let sync = ds.on_added(3, &mut wss, &adapter).unwrap();
-        assert_eq!(sync.shown, vec![0]);
-        assert_eq!(ds.active.get(&3), Some(&0));
+        // Both workspaces are already visible; display 3 gets no seat rather
+        // than claiming one whose output is another display.
+        let sync = ds.sync(&mut wss, &adapter);
+        assert!(sync.is_noop());
+        assert!(!ds.active.contains_key(&3));
     }
 
     #[test]
-    fn on_removed_reassigns_orphans_to_primary() {
+    fn sync_heals_a_removal_whose_event_was_lost() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss: Vec<Workspace> = Vec::new();
         ds.init_workspaces(&mut wss, &test_displays_two(), 1);
-        // Display 2 showed entry 1; after removal it is hidden on primary.
+        // Display 2 showed entry 1; it vanished without any event reaching
+        // us — sync drifts only on the live display list.
         let mut adapter = TestAdapter::new();
         adapter.displays = test_displays_one();
-        let sync = ds.on_removed(2, &mut wss, &adapter);
+        ds.set_focused_output(2);
+        let sync = ds.sync(&mut wss, &adapter);
         assert!(wss.iter().all(|ws| ws.monitor_id == 1));
         assert_eq!(wss.len(), 2);
-        assert!(!ds.active().contains_key(&2));
+        assert!(!ds.active.contains_key(&2));
         // Entry 1 was visible on removed output 2 → now hidden.
         assert_eq!(sync.hidden, vec![1]);
+        assert!(sync.repark.contains(&1));
         assert!(sync.relayout.contains(&0));
+        // Focus follows the crash-free primary.
+        assert_eq!(ds.focused_output(), Some(1));
     }
 
     #[test]
-    fn on_resized_updates_geometry_and_returns_affected() {
+    fn sync_heals_a_resize() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss: Vec<Workspace> = Vec::new();
         ds.init_workspaces(&mut wss, &test_displays_two(), 1);
@@ -744,10 +792,22 @@ mod tests {
                 size: (1920, 1080),
             },
         ];
-        let affected = ds.on_resized(1, &mut wss, &adapter);
-        assert_eq!(affected, vec![0]);
+        let sync = ds.sync(&mut wss, &adapter);
         assert_eq!(wss[0].monitor_size(), (2560, 1440));
         assert_eq!(wss[1].monitor_size(), (1920, 1080));
+        assert!(!sync.is_noop());
+        assert!(sync.relayout.contains(&0));
+    }
+
+    #[test]
+    fn sync_is_noop_when_the_topology_already_matches() {
+        let mut ds = DisplaySet::new(entries_two());
+        let mut wss: Vec<Workspace> = Vec::new();
+        ds.init_workspaces(&mut wss, &test_displays_two(), 1);
+        let mut adapter = TestAdapter::new();
+        adapter.displays = test_displays_two();
+        let sync = ds.sync(&mut wss, &adapter);
+        assert!(sync.is_noop());
     }
 
     // -- routing helpers (global pool) --

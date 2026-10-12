@@ -1,9 +1,16 @@
 use std::io::Write;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use pengwm_core::command::BarMessage;
+
+use crate::socket_guard::{bind_first, SocketGuard};
+
+/// The bar accept loop polls instead of blocking on `accept`, so the
+/// per-tick socket-identity check can run and a rebound listener can be
+/// swapped in (same contract as the command socket; see `ipc_server`).
+const ACCEPT_POLL: Duration = Duration::from_millis(25);
 
 pub use pengwm_core::ipc::BAR_SOCKET_PATH;
 
@@ -42,38 +49,19 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     thread::spawn(move || {
         // Bind FIRST, probe on `Address already in use` — same contract as
-        // the command socket (see `ipc_server::start_ipc_server_with_path`):
-        // a live listener can never be unlinked by a rival, only a stale
-        // file from a crashed daemon is removed.
-        let listener = match UnixListener::bind(&socket_path) {
+        // the command socket (see `socket_guard::bind_first` and
+        // `ipc_server::start_ipc_server_with_path`): a live listener can
+        // never be unlinked by a rival, only a stale file from a crashed
+        // daemon is removed. The accept loop runs the same per-tick
+        // socket-identity check, so a rogue `rm` of the bar socket heals
+        // too (a reconnecting menubar used to hit ECONNREFUSED forever).
+        let mut listener = match bind_first(&socket_path, "UI push server") {
             Ok(l) => l,
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                if UnixStream::connect(&socket_path).is_ok() {
-                    log::error!(
-                        "Another daemon owns {} — not starting the UI push server.",
-                        socket_path
-                    );
-                    return;
-                }
-                log::info!(
-                    "Stale socket file at {} — removing and rebinding",
-                    socket_path
-                );
-                let _ = std::fs::remove_file(&socket_path);
-                match UnixListener::bind(&socket_path) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        log::error!("Failed to bind bar socket {}: {}", socket_path, e);
-                        return;
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to bind bar socket {}: {}", socket_path, e);
-                return;
-            }
+            Err(_) => return,
         };
         log::info!("Bar listener bound to {}", socket_path);
+        let mut guard = SocketGuard::capture(&socket_path);
+        let _ = listener.set_nonblocking(true);
 
         // Per-client channels: each client gets its own writer thread owning its
         // UnixStream. Broadcast only enqueues via try_send without holding a
@@ -88,37 +76,42 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
         {
             let clients = Arc::clone(&clients);
             let last_state = Arc::clone(&last_state);
-            thread::spawn(move || {
-                for stream in listener.incoming() {
-                    match stream {
-                        Ok(mut stream) => {
-                            let (client_tx, mut client_rx) =
-                                tokio::sync::mpsc::channel::<Vec<u8>>(32);
-                            // Writer thread owns the UnixStream
-                            thread::spawn(move || {
-                                while let Some(payload) = client_rx.blocking_recv() {
-                                    if stream.write_all(&payload).is_err() {
-                                        break;
-                                    }
-                                    let _ = stream.flush();
+            thread::spawn(move || loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let (client_tx, mut client_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+                        // Writer thread owns the UnixStream
+                        thread::spawn(move || {
+                            while let Some(payload) = client_rx.blocking_recv() {
+                                if stream.write_all(&payload).is_err() {
+                                    break;
                                 }
-                            });
-
-                            // Replay the cached state to the new client
-                            let state = last_state.lock().unwrap().clone();
-                            if let Some(payload) = state {
-                                let _ = client_tx.try_send(payload);
+                                let _ = stream.flush();
                             }
+                        });
 
-                            clients.lock().unwrap().push(client_tx);
-                            log::info!("bar connected ({} clients)", clients.lock().unwrap().len());
-
-                            // Prune disconnected senders (channel closed)
-                            clients.lock().unwrap().retain(|tx| !tx.is_closed());
+                        // Replay the cached state to the new client
+                        let state = last_state.lock().unwrap().clone();
+                        if let Some(payload) = state {
+                            let _ = client_tx.try_send(payload);
                         }
-                        Err(e) => log::error!("bar socket accept error: {}", e),
+
+                        clients.lock().unwrap().push(client_tx);
+                        log::info!("bar connected ({} clients)", clients.lock().unwrap().len());
+
+                        // Prune disconnected senders (channel closed)
+                        clients.lock().unwrap().retain(|tx| !tx.is_closed());
                     }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => log::error!("bar socket accept error: {}", e),
                 }
+                if let Some(fresh) = guard.tick(Instant::now()) {
+                    let _ = fresh.set_nonblocking(true);
+                    listener = fresh;
+                    log::info!("Bar listener rebound to {}", socket_path);
+                }
+                thread::sleep(ACCEPT_POLL);
             });
         }
 

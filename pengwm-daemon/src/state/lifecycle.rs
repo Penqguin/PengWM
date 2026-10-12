@@ -41,6 +41,29 @@ impl StateManager {
             return;
         }
         let restricted = self.app_is_restricted(pid);
+        // Untracked floats when (a) discovery's CG-level gate said so and
+        // the gate isn't disabled, or (b) the bundle is in `float_apps`.
+        // Popups are decided before the float list: the subrole answer is
+        // the more specific signal.
+        let float_app = self.app_is_float_app(pid);
+        if class == WindowClass::Untracked && self.float_level_overlays && !restricted {
+            log::info!(
+                "WindowCreated untracked overlay: {} pid={} — left out of the tree",
+                window_id,
+                pid
+            );
+            self.publish_bar_state();
+            return;
+        }
+        if float_app {
+            log::info!(
+                "WindowCreated untracked (float_apps): {} pid={} — left out of the tree",
+                window_id,
+                pid
+            );
+            self.publish_bar_state();
+            return;
+        }
         if class.is_popup() || restricted {
             log::info!(
                 "WindowCreated popup: {} pid={} class={:?} restricted={}",
@@ -111,6 +134,19 @@ impl StateManager {
     pub(super) fn app_is_restricted(&self, pid: i32) -> bool {
         let bundle = self.os.app_bundle_id(pid);
         self.restricted_apps.iter().any(|app| {
+            bundle
+                .as_deref()
+                .is_some_and(|b| b.eq_ignore_ascii_case(app))
+        })
+    }
+
+    /// `float_apps` semantics (ADR-0002): every window of these bundles is
+    /// untracked — never tiled, on top across workspace switches until
+    /// closed. Same case-insensitive bundle-or-name match as
+    /// `restricted_apps`.
+    pub(super) fn app_is_float_app(&self, pid: i32) -> bool {
+        let bundle = self.os.app_bundle_id(pid);
+        self.float_apps.iter().any(|app| {
             bundle
                 .as_deref()
                 .is_some_and(|b| b.eq_ignore_ascii_case(app))
@@ -217,7 +253,8 @@ impl StateManager {
             self.store.park_popup(window_id, idx);
             self.workspaces[idx].remove_popup(window_id);
         } else {
-            self.store.park(window_id, &self.workspaces, ParkReason::Hide);
+            self.store
+                .park(window_id, &self.workspaces, ParkReason::Hide);
             self.workspaces[idx].remove_window(window_id);
         }
         if self.displays.is_visible(idx, &self.workspaces) {
@@ -233,7 +270,10 @@ impl StateManager {
         if self.store.is_fullscreen_parked(window_id) {
             // The probe owns this window's reveal; a stray shown event must
             // not shortcut it.
-            log::debug!("WindowShown: fullscreen-parked window {}, ignoring", window_id);
+            log::debug!(
+                "WindowShown: fullscreen-parked window {}, ignoring",
+                window_id
+            );
             return;
         }
         if self.find_workspace_of_any(window_id).is_some() {
@@ -270,10 +310,7 @@ impl StateManager {
                     .routed_workspace_idx(pid, &self.workspaces, &*self.os)
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
-        if self
-            .add_window_to_workspace(window_id, pid, preferred)
-            .is_some()
-        {
+        if self.add_window_to_workspace(window_id, pid, preferred).is_some() {
             self.publish_bar_state();
         }
     }
@@ -298,7 +335,10 @@ impl StateManager {
             .store
             .park(window_id, &self.workspaces, ParkReason::Fullscreen)
         else {
-            log::debug!("FullscreenEnter: window {} not in any tree, ignoring", window_id);
+            log::debug!(
+                "FullscreenEnter: window {} not in any tree, ignoring",
+                window_id
+            );
             return false;
         };
         log::info!(
@@ -325,11 +365,12 @@ impl StateManager {
             log::debug!("FullscreenExit: unknown window {}, ignoring", window_id);
             return;
         };
-        log::info!("FullscreenExit: revealing window {} into workspace {:?}", window_id, entry.idx);
-        debug_assert!(
-            !entry.popup,
-            "popups are exempt from fullscreen parking"
+        log::info!(
+            "FullscreenExit: revealing window {} into workspace {:?}",
+            window_id,
+            entry.idx
         );
+        debug_assert!(!entry.popup, "popups are exempt from fullscreen parking");
         self.reveal_tree_window(window_id, pid, Some(entry.idx));
     }
 
@@ -343,7 +384,8 @@ impl StateManager {
         // Fullscreen enter usually re-fires focused-window-changed — the
         // cheap fast path into parking. Cheap even when idle: focused
         // events are rare, and the probe answers "no" in one AX read.
-        if self.fullscreen_parking_enabled() && self.os.window_is_fullscreen(window_id)
+        if self.fullscreen_parking_enabled()
+            && self.os.window_is_fullscreen(window_id)
             && self.try_park_fullscreen(window_id)
         {
             return;
@@ -369,6 +411,10 @@ impl StateManager {
                 if let Some(prev_idx) = prev {
                     if prev_idx != i {
                         self.hide_workspace(prev_idx);
+                        // Focus-driven switch: the incoming workspace is
+                        // already visible, so re-assert the untracked
+                        // overlays above it (ADR-0002).
+                        self.raise_untracked_windows(Some(mon_id));
                     }
                 }
                 self.publish_bar_state();
@@ -400,10 +446,11 @@ impl StateManager {
             log::debug!("on_window_moved: ignoring parked window {}", window_id);
             return;
         }
-        if self.is_popup_anywhere(window_id) {
+        if self.is_popup_anywhere(window_id) || self.is_untracked(window_id) {
             // Popups are free-drag after placement (placed once at creation
-            // and on wake): never displaced-noted (nothing re-centers them)
-            // and never a drag-swap participant.
+            // and on wake); untracked windows are user-positioned overlays
+            // with no placement at all. Both: never displaced-noted
+            // (nothing re-centers them) and never a drag-swap participant.
             return;
         }
         let now = Instant::now();
@@ -552,6 +599,11 @@ impl StateManager {
                 .event_tx
                 .try_send(DaemonEvent::WindowDestroyed(window_id));
         }
+        // Evict what the per-window loop can't see: elements the observer
+        // cached for windows the store never tracked (an excluded app's
+        // post-bootstrap windows route out before `register`). Without
+        // this, those refs outlive the app forever.
+        self.os.forget_pid(pid);
         self.publish_bar_state();
     }
 
