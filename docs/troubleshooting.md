@@ -70,6 +70,12 @@ non-installed copy: only the installed binaries update themselves, so a
 dev checkout can never spiral the installer into replacing them on its
 behalf.
 
+**The menubar's "Skip this version":** clicking it records a Not-now
+verdict for that one release tag in `$PENGWM_HOME/skip-update`, so the
+update rows stay quiet across menubar restarts. A newer release re-arms
+the ask, and `pengwm update` always offers regardless. Delete
+`~/.pengwm/skip-update` to un-skip early.
+
 ## Keybinds do nothing
 
 **Cause:** the CGEventTap needs the same Accessibility grant, and an

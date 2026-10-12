@@ -19,6 +19,20 @@
   an update, one didn't); the unified rule is *strictly newer numeric
   core only* — a re-published same-version release is never an update.
 
+- **The menubar asks once per release, and remembers the answer.** Next
+  to "Update now…" the menu now offers "Skip this version": one click
+  records the declined tag in `$PENGWM_HOME/skip-update` and the rows
+  vanish — across menubar restarts, because `$PENGWM_HOME` is the layout
+  seam. When a different, newer release appears the ask re-arms. The
+  watcher's first check reads the file, so a user who declined v0.7.0 is
+  not re-nagged on every menu open. `pengwm update` never consults the
+  skip: an explicit command always offers.
+- **`pengwm_home()` moved to core.** `$PENGWM_HOME` (default `~/.pengwm`)
+  is the layout seam the whole repo shares, so its resolution now lives
+  in `pengwm_core::home` (the daemon's one-copy policy re-exports it);
+  the menubar uses the same seam for the skip file instead of a private
+  copy of the env logic.
+
 ## v0.6.1 — Untracked windows & AX hardening (2026-10-11)
 
 - **A rogue `rm` of a socket path no longer ghost-locks the daemon's

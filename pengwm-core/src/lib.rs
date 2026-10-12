@@ -1,5 +1,6 @@
 pub mod command;
 pub mod config;
+pub mod home;
 pub mod ipc;
 pub mod layout;
 pub mod release;

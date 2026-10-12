@@ -30,3 +30,7 @@ comes from the design skill, not this file.
 - **AX blackout** — The post-wake window where AX answers nothing (zero
   listings, unreadable attributes). No structural judgment may run during
   a blackout; see the wake resync machinery.
+- **Skip** — The menubar's persisted "Not now" verdict for one release
+  tag, recorded in `$PENGWM_HOME/skip-update`. Silences the update ask
+  for that tag only; a different, newer tag re-arms it. Explicit commands
+  (`pengwm update`) never consult it.

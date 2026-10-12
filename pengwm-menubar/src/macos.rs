@@ -101,6 +101,27 @@ define_class!(
             }
         }
 
+        // SAFETY: matches `skipUpdate:` — the action selector attached to
+        // the "Skip this version" row next to the update-available label.
+        // Records the declined tag in $PENGWM_HOME/skip-update (the verdict
+        // survives menubar restarts) and clears the shared cell so the rows
+        // disappear on the next menu open. A different, newer tag re-arms
+        // the ask; `pengwm update` never consults the skip — an explicit
+        // command always offers.
+        #[unsafe(method(skipUpdate:))]
+        fn skip_update(&self, _sender: &NSMenuItem) {
+            let Some(tag) = self.ivars().update.lock().unwrap().clone() else {
+                return;
+            };
+            match crate::update_check::write_skipped_tag(&tag) {
+                Ok(()) => {
+                    *self.ivars().update.lock().unwrap() = None;
+                    log::info!("menubar skipping update {tag} (recorded in skip-update)");
+                }
+                Err(e) => log::warn!("could not record skip for {tag}: {e}"),
+            }
+        }
+
         // SAFETY: matches `switchWorkspace:` — the action selector attached to
         // workspace rows; the sender's tag carries the workspace id.
         #[unsafe(method(switchWorkspace:))]
@@ -365,6 +386,17 @@ fn add_update_items(
         now.setAction(Some(sel));
     }
     menu.addItem(&now);
+
+    // The decline row: one click records the verdict, the rows vanish on
+    // the next open, and the same tag stays quiet across menubar restarts.
+    let skip = NSMenuItem::new(mtm);
+    skip.setTitle(&NSString::from_str("Skip this version"));
+    let skip_sel = Sel::register(c"skipUpdate:");
+    unsafe {
+        skip.setTarget(Some(target));
+        skip.setAction(Some(skip_sel));
+    }
+    menu.addItem(&skip);
 
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 }

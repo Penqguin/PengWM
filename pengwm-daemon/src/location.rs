@@ -17,17 +17,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The install root: `$PENGWM_HOME` (default `~/.pengwm`). The blessed
-/// binary directory is `<root>/bin`; the CLI symlinks, LaunchAgent, and
-/// this policy all resolve against it.
-pub fn pengwm_home() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("PENGWM_HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home));
-        }
-    }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".pengwm"))
-}
+/// The install root now lives in core (`pengwm_core::home`) so the menubar
+/// resolves it the same way the daemon does; re-exported here for the
+/// daemon's existing callers.
+pub use pengwm_core::home::pengwm_home;
 
 /// The installed-binary directory the one-copy policy accepts.
 pub fn installed_bin_dirs() -> Vec<PathBuf> {
