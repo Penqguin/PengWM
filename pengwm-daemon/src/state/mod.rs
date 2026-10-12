@@ -393,6 +393,8 @@ impl StateManager {
             self.reveal_stack(None);
             self.publish_bar_state();
         }
+        #[cfg(test)]
+        self.assert_identity_invariant();
     }
 
     #[cfg(test)]

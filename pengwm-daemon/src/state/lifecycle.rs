@@ -16,6 +16,14 @@ use crate::event_loop::DaemonEvent;
 /// `reconcile.rs` keeps calling the same interface.
 impl StateManager {
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
+        self.route_window_created(window_id, pid);
+        #[cfg(test)]
+        self.assert_identity_invariant();
+    }
+
+    /// The routing body of `on_window_created` (ADR-0003): classify at
+    /// discovery, decide once, note the verdict, place the window.
+    fn route_window_created(&mut self, window_id: WindowId, pid: i32) {
         if self.excluded_pids.contains(&pid) {
             log::debug!("Ignoring window {} from excluded pid {}", window_id, pid);
             return;
@@ -230,6 +238,8 @@ impl StateManager {
         // here, so the cached element and its registrations never outlive
         // the window on any path.
         self.os.forget_window(window_id);
+        #[cfg(test)]
+        self.assert_identity_invariant();
         self.publish_bar_state();
     }
 
@@ -265,6 +275,8 @@ impl StateManager {
         if self.displays.is_visible(idx, &self.workspaces) {
             self.apply_layout(idx);
         }
+        #[cfg(test)]
+        self.assert_identity_invariant();
         self.publish_bar_state();
     }
 
@@ -272,6 +284,13 @@ impl StateManager {
     /// it came from — a popup back into its workspace's popup set, a tree
     /// window back into the remembered (or routed) workspace.
     pub fn on_window_shown(&mut self, window_id: WindowId) {
+        self.reveal_window_shown(window_id);
+        #[cfg(test)]
+        self.assert_identity_invariant();
+    }
+
+    /// The reveal body of `on_window_shown`.
+    fn reveal_window_shown(&mut self, window_id: WindowId) {
         if self.store.is_fullscreen_parked(window_id) {
             // The probe owns this window's reveal; a stray shown event must
             // not shortcut it.
@@ -362,6 +381,8 @@ impl StateManager {
         if self.displays.is_visible(idx, &self.workspaces) {
             self.apply_layout(idx);
         }
+        #[cfg(test)]
+        self.assert_identity_invariant();
         self.publish_bar_state();
         true
     }
@@ -384,6 +405,8 @@ impl StateManager {
         );
         debug_assert!(!entry.popup, "popups are exempt from fullscreen parking");
         self.reveal_tree_window(window_id, pid, Some(entry.idx));
+        #[cfg(test)]
+        self.assert_identity_invariant();
     }
 
     pub fn on_window_focused(&mut self, window_id: WindowId) {
@@ -444,6 +467,65 @@ impl StateManager {
     /// the displaced note, the misplaced sweep, capacity.
     pub(super) fn is_popup_anywhere(&self, window_id: WindowId) -> bool {
         self.workspaces.iter().any(|ws| ws.is_popup(window_id))
+    }
+
+    /// The verdict-tree invariant, enforced by the test harness after
+    /// every identity-mutating funnel (ADR-0003): an unparked Popup must
+    /// sit in some workspace's popup set and never a tree member;
+    /// Untracked must be a member of nothing and never parked; an
+    /// unparked Tiled must never sit in a popup set. (The positive
+    /// Tiled⇒tree-member side is deliberately unchecked: capacity-
+    /// overflow windows are legitimately tracked-but-untiled between
+    /// layouts.)
+    #[cfg(test)]
+    pub(super) fn assert_identity_invariant(&self) {
+        for &wid in self.store.all_window_pids().keys() {
+            match self.store.routing_verdict(wid) {
+                None => {} // never routed: lives as it did pre-refactor
+                Some(RoutingVerdict::Popup) => {
+                    // An unparked popup must sit in a popup set; a parked
+                    // one must have left it. Exactly one of the two.
+                    assert!(
+                        self.store.is_parked(wid) ^ self.is_popup_anywhere(wid),
+                        "window {} is Popup-verdicted: parked xor popup-member must hold",
+                        wid
+                    );
+                    assert!(
+                        self.workspaces
+                            .iter()
+                            .all(|ws| ws.find_window(wid).is_none()),
+                        "window {} is Popup-verdicted but sits in a tree",
+                        wid
+                    );
+                }
+                Some(RoutingVerdict::Untracked) => {
+                    assert!(
+                        !self.store.is_parked(wid),
+                        "window {} is Untracked: ADR-0002 says never parked",
+                        wid
+                    );
+                    assert!(
+                        !self.is_popup_anywhere(wid),
+                        "window {} is Untracked but sits in a popup set",
+                        wid
+                    );
+                    assert!(
+                        self.workspaces
+                            .iter()
+                            .all(|ws| ws.find_window(wid).is_none()),
+                        "window {} is Untracked but sits in a tree",
+                        wid
+                    );
+                }
+                Some(RoutingVerdict::Tiled) => {
+                    assert!(
+                        self.workspaces.iter().all(|ws| !ws.is_popup(wid)),
+                        "window {} is Tiled-verdicted but sits in a popup set",
+                        wid
+                    );
+                }
+            }
+        }
     }
 
     pub fn on_window_moved(&mut self, window_id: WindowId, x: f64, y: f64) {

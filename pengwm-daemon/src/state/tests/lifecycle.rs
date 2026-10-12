@@ -1,4 +1,5 @@
 use super::common::*;
+use crate::state::store::RoutingVerdict;
 use pengwm_core::command::Command;
 use tokio::sync::mpsc;
 
@@ -8,6 +9,18 @@ fn on_window_created_tracks_pid_and_adds_to_workspace() {
     sm.on_window_created(300, 42);
     assert_eq!(sm.store.all_window_pids().get(&300), Some(&42));
     assert!(sm.workspaces[0].find_window(300).is_some());
+}
+
+#[test]
+#[should_panic(expected = "parked xor popup-member must hold")]
+fn identity_invariant_catches_a_drifted_verdict() {
+    // ADR-0003's harness check: a Popup verdict that is neither parked
+    // nor a member of any popup set is exactly the drift the check
+    // exists to catch; every funnel ends its tests through the assert.
+    let mut sm = setup(1);
+    sm.store.inject(300, 42);
+    sm.store.note_routed(300, RoutingVerdict::Popup);
+    sm.assert_identity_invariant();
 }
 
 #[test]
