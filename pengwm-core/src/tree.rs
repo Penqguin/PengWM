@@ -51,6 +51,16 @@ pub struct Node {
     pub data: NodeData,
 }
 
+impl Node {
+    /// The split's shares, when this node is a split.
+    pub fn ratios(&self) -> Option<&[f64]> {
+        match &self.data {
+            NodeData::Split { ratios, .. } => Some(ratios),
+            NodeData::Window { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Arena {
     pub(crate) nodes: std::collections::HashMap<NodeId, Node>,
@@ -64,6 +74,12 @@ impl Default for Arena {
 }
 
 impl Arena {
+    /// Equal shares for `n` children — the ratio length invariant lives
+    /// beside the node type it guards.
+    pub(crate) fn equal_shares(n: usize) -> Vec<f64> {
+        vec![1.0 / n as f64; n]
+    }
+
     pub fn new() -> Self {
         Self {
             nodes: std::collections::HashMap::new(),
@@ -150,6 +166,119 @@ impl Arena {
         if let Some(parent_node) = self.nodes.get_mut(&new_parent) {
             parent_node.children.push(child);
         }
+    }
+
+    // -- child-list mutation ---------------------------------------------------
+    // The interface for building trees. Children lists and split ratios are
+    // wired together here, by construction — call sites splicing `children`
+    // by hand and remembering `insert_balanced`/`rebalance_ratios` afterwards
+    // were the reason the ratio invariant drifted, whatever the drift rescue
+    // branch pretended.
+
+    /// Allocate a split with equal shares for `children`, wiring every
+    /// child's parent and the split's own parent. The one constructor for
+    /// split nodes — `ratios.len() == children.len()` holds by construction.
+    pub fn alloc_split(
+        &mut self,
+        direction: SplitDirection,
+        parent: Option<NodeId>,
+        children: &[NodeId],
+    ) -> NodeId {
+        let id = self.alloc(NodeData::Split {
+            direction,
+            ratios: Self::equal_shares(children.len()),
+        });
+        for &child in children {
+            self.nodes.get_mut(&child).unwrap().parent = Some(id);
+        }
+        self.set_children(id, children);
+        if let Some(pid) = parent {
+            self.nodes.get_mut(&id).unwrap().parent = Some(pid);
+        }
+        id
+    }
+
+    /// Point `parent`'s children at `children` (each child's parent field
+    /// follows). Pure wiring — split shares are *not* touched; callers
+    /// pick their policy (`equalize` for re-equalize, slot splices for
+    /// preserve).
+    pub fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
+        for &child in children {
+            self.nodes.get_mut(&child).unwrap().parent = Some(parent);
+        }
+        self.nodes
+            .get_mut(&parent)
+            .expect("set_children: parent exists")
+            .children = children.to_vec();
+    }
+
+    /// Re-equalize a split's shares across its children. The policy half
+    /// of `set_children` — the share-preserving operations (removals, slot
+    /// splices) never call it. Drift is repaired here too: the vector is
+    /// rebuilt, not patched, so a drifted length costs the design, and no
+    /// caller needs a rescue branch.
+    pub fn equalize(&mut self, split_id: NodeId) {
+        let n = self
+            .nodes
+            .get(&split_id)
+            .map(|n| n.children.len())
+            .unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        if let Some(node) = self.nodes.get_mut(&split_id) {
+            if let NodeData::Split { ref mut ratios, .. } = &mut node.data {
+                *ratios = Self::equal_shares(n);
+            }
+        }
+    }
+
+    /// Append `child` under `parent` and, for a split parent, make room:
+    /// the survivors' shares scale down by one slot and the newcomer takes
+    /// an equal slice (preserves relative sizes — no re-equalize). A drifted
+    /// ratio vector is resorted to equal shares here, at the container.
+    pub fn attach(&mut self, parent: NodeId, child: NodeId) {
+        self.nodes.get_mut(&child).unwrap().parent = Some(parent);
+        let (is_split, n) = match self.nodes.get(&parent) {
+            Some(node) => (
+                matches!(node.data, NodeData::Split { .. }),
+                node.children.len() + 1,
+            ),
+            None => (false, 0),
+        };
+        self.nodes.get_mut(&parent).unwrap().children.push(child);
+        if is_split {
+            if let Some(node) = self.nodes.get_mut(&parent) {
+                if let NodeData::Split { ref mut ratios, .. } = &mut node.data {
+                    if ratios.len() + 1 == n {
+                        let scale = (n - 1) as f64 / n as f64;
+                        for r in ratios.iter_mut() {
+                            *r *= scale;
+                        }
+                        ratios.push(1.0 / n as f64);
+                    } else {
+                        // Lengths drifted out of sync — restore at the
+                        // container, once, where the invariant belongs.
+                        *ratios = Self::equal_shares(n);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Swap `old` for `new` in `parent`'s children and re-parent `new`.
+    /// Ratio counts are unchanged.
+    pub fn replace_child(&mut self, parent: NodeId, old: NodeId, new: NodeId) -> bool {
+        let Some(slot) = self
+            .nodes
+            .get(&parent)
+            .and_then(|node| node.children.iter().position(|&c| c == old))
+        else {
+            return false;
+        };
+        self.nodes.get_mut(&parent).unwrap().children[slot] = new;
+        self.nodes.get_mut(&new).unwrap().parent = Some(parent);
+        true
     }
 
     /// Find the node that holds `window_id`, if any. Encapsulates the scan so
@@ -323,5 +452,96 @@ mod tests {
         });
         assert!(arena.is_leaf(leaf));
         assert!(!arena.is_leaf(split));
+    }
+
+    #[test]
+    fn alloc_split_wires_parents_and_equal_shares() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let s = arena.alloc_split(SplitDirection::Vertical, None, &[a, b]);
+        assert_eq!(arena.get(s).unwrap().children, vec![a, b]);
+        assert!(arena.get(s).unwrap().parent.is_none());
+        assert_eq!(arena.get(a).unwrap().parent, Some(s));
+        assert_eq!(
+            arena.get(s).unwrap().ratios(),
+            Some(&[0.5, 0.5][..]),
+            "shares match the child count by construction"
+        );
+    }
+
+    #[test]
+    fn attach_scales_shares_and_reparents() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let s = arena.alloc_split(SplitDirection::Vertical, None, &[a]);
+        let c = arena.alloc(NodeData::Window {
+            window_id: 9,
+            is_focused: false,
+        });
+        arena.attach(s, c);
+        assert_eq!(arena.get(c).unwrap().parent, Some(s));
+        // Two equal children after the attach: survivors scaled, newcomer equal.
+        assert_eq!(arena.get(s).unwrap().ratios(), Some(&[0.5, 0.5][..]));
+    }
+
+    #[test]
+    fn replace_child_swaps_slot_and_reparents() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let s = arena.alloc_split(SplitDirection::Vertical, None, &[a]);
+        assert!(arena.replace_child(s, a, b));
+        assert_eq!(arena.get(s).unwrap().children, vec![b]);
+        assert_eq!(arena.get(b).unwrap().parent, Some(s));
+        // The old child's parent is the caller's business — in add_window
+        // the replaced child was just re-parented to its new split, and
+        // clearing here would destroy that wiring.
+        assert_eq!(arena.get(a).unwrap().parent, Some(s));
+        assert!(
+            !arena.replace_child(s, a, b),
+            "missing old child is a no-op"
+        );
+    }
+
+    #[test]
+    fn set_children_wires_parents_without_touching_shares() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(NodeData::Window {
+            window_id: 1,
+            is_focused: false,
+        });
+        let b = arena.alloc(NodeData::Window {
+            window_id: 2,
+            is_focused: false,
+        });
+        let s = arena.alloc(NodeData::Split {
+            direction: SplitDirection::Vertical,
+            ratios: vec![0.75],
+        });
+        arena.set_children(s, &[a, b]);
+        assert_eq!(arena.get(s).unwrap().children, vec![a, b]);
+        assert_eq!(
+            arena.get(s).unwrap().ratios(),
+            Some(&[0.75][..]),
+            "wiring is not re-equalizing: share policy stays with the caller"
+        );
+        arena.equalize(s);
+        assert_eq!(arena.get(s).unwrap().ratios(), Some(&[0.5, 0.5][..]));
     }
 }

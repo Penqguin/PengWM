@@ -88,11 +88,6 @@ fn default_popup_ratio() -> f64 {
     POPUP_RATIO_DEFAULT
 }
 
-/// Equal shares for `n` children. Callers guarantee `n >= 1`.
-pub(super) fn equal_shares(n: usize) -> Vec<f64> {
-    vec![1.0 / n as f64; n]
-}
-
 /// Flat index of the workspace holding `window_id` as a tree member.
 /// Popups are excluded: parking and the drag hit-test both want tiles only.
 /// The one spelling of "which workspace holds this window" — the store and

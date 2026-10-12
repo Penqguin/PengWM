@@ -1,6 +1,6 @@
-use crate::tree::{NodeData, NodeId, SplitDirection, WindowId};
+use crate::tree::{Arena, NodeData, NodeId, SplitDirection, WindowId};
 
-use super::{equal_shares, Workspace};
+use super::Workspace;
 
 impl Workspace {
     pub fn add_window(&mut self, window_id: WindowId, direction: Option<SplitDirection>) -> NodeId {
@@ -44,9 +44,7 @@ impl Workspace {
                 window_id,
                 is_focused: true,
             });
-            self.arena.get_mut(parent_id).unwrap().children.push(new_id);
-            self.arena.get_mut(new_id).unwrap().parent = Some(parent_id);
-            self.insert_balanced(parent_id);
+            self.arena.attach(parent_id, new_id);
             self.set_focused_node(new_id);
             return new_id;
         }
@@ -56,22 +54,10 @@ impl Workspace {
             window_id,
             is_focused: true,
         });
-        let split_id = self.arena.alloc(NodeData::Split {
-            direction: dir,
-            ratios: vec![0.5, 0.5],
-        });
-
-        self.arena.get_mut(split_id).unwrap().children = vec![focused, new_id];
-        self.arena.get_mut(focused).unwrap().parent = Some(split_id);
-        self.arena.get_mut(new_id).unwrap().parent = Some(split_id);
-
+        let split_id = self.arena.alloc_split(dir, old_parent, &[focused, new_id]);
         match old_parent {
             Some(pid) => {
-                let parent = self.arena.get_mut(pid).unwrap();
-                if let Some(pos) = parent.children.iter().position(|&c| c == focused) {
-                    parent.children[pos] = split_id;
-                }
-                self.arena.get_mut(split_id).unwrap().parent = Some(pid);
+                self.arena.replace_child(pid, focused, split_id);
             }
             None => {
                 self.root = Some(split_id);
@@ -96,13 +82,9 @@ impl Workspace {
                 window_id,
                 is_focused: true,
             });
-            let split_id = self.arena.alloc(NodeData::Split {
-                direction: SplitDirection::Vertical,
-                ratios: vec![0.5, 0.5],
-            });
-            self.arena.get_mut(split_id).unwrap().children = vec![root_id, new_id];
-            self.arena.get_mut(root_id).unwrap().parent = Some(split_id);
-            self.arena.get_mut(new_id).unwrap().parent = Some(split_id);
+            let split_id =
+                self.arena
+                    .alloc_split(SplitDirection::Vertical, None, &[root_id, new_id]);
             self.root = Some(split_id);
             self.set_focused_node(new_id);
             return Some(new_id);
@@ -133,23 +115,18 @@ impl Workspace {
         match &right_data {
             NodeData::Window { .. } => {
                 // Right is single window → convert to Horizontal stack [right, new]
-                let stack_id = self.arena.alloc(NodeData::Split {
-                    direction: SplitDirection::Horizontal,
-                    ratios: vec![0.5, 0.5],
-                });
-                self.arena.get_mut(stack_id).unwrap().children = vec![right_id, new_id];
-                self.arena.get_mut(right_id).unwrap().parent = Some(stack_id);
-                self.arena.get_mut(new_id).unwrap().parent = Some(stack_id);
-                self.arena.get_mut(root_id).unwrap().children[1] = stack_id;
-                self.arena.get_mut(stack_id).unwrap().parent = Some(root_id);
+                let stack_id = self.arena.alloc_split(
+                    SplitDirection::Horizontal,
+                    Some(root_id),
+                    &[right_id, new_id],
+                );
+                self.arena.replace_child(root_id, right_id, stack_id);
                 self.set_focused_node(new_id);
                 Some(new_id)
             }
             NodeData::Split { direction, .. } if *direction == SplitDirection::Horizontal => {
                 // Right is already a Horizontal stack → append
-                self.arena.get_mut(right_id).unwrap().children.push(new_id);
-                self.arena.get_mut(new_id).unwrap().parent = Some(right_id);
-                self.insert_balanced(right_id);
+                self.arena.attach(right_id, new_id);
                 self.set_focused_node(new_id);
                 Some(new_id)
             }
@@ -218,48 +195,6 @@ impl Workspace {
         }
     }
 
-    fn rebalance_ratios(&mut self, split_id: NodeId) {
-        let n = self
-            .arena
-            .get(split_id)
-            .map(|n| n.children.len())
-            .unwrap_or(0);
-        if n > 0 {
-            let equal = 1.0 / n as f64;
-            if let NodeData::Split { ref mut ratios, .. } =
-                &mut self.arena.get_mut(split_id).unwrap().data
-            {
-                *ratios = vec![equal; n];
-            }
-        }
-    }
-
-    /// A child was just pushed onto `split_id`: scale the existing shares to
-    /// make room and give the newcomer an equal slice, preserving the
-    /// survivors' relative sizes (no re-equalize on add).
-    fn insert_balanced(&mut self, split_id: NodeId) {
-        let n = match self.arena.get(split_id) {
-            Some(n) => n.children.len(),
-            None => return,
-        };
-        if n == 0 {
-            return;
-        }
-        let node = self.arena.get_mut(split_id).unwrap();
-        if let NodeData::Split { ref mut ratios, .. } = &mut node.data {
-            if ratios.len() + 1 == n {
-                let scale = (n - 1) as f64 / n as f64;
-                for r in ratios.iter_mut() {
-                    *r *= scale;
-                }
-                ratios.push(1.0 / n as f64);
-            } else {
-                // Lengths drifted out of sync — restore the invariant equally.
-                *ratios = equal_shares(n);
-            }
-        }
-    }
-
     /// A child at `pos` was just removed from `split_id`: drop its share and
     /// rescale the survivors proportionally (no re-equalize on remove).
     fn drop_ratio_at(&mut self, split_id: NodeId, pos: usize) {
@@ -280,7 +215,7 @@ impl Workspace {
                     *r /= sum;
                 }
             } else {
-                *ratios = equal_shares(ratios.len());
+                *ratios = Arena::equal_shares(ratios.len());
             }
         }
     }
@@ -346,16 +281,12 @@ impl Workspace {
             ) {
                 let grandchildren: Vec<NodeId> =
                     self.arena.get(only_child).unwrap().children.clone();
-                {
-                    let node = self.arena.get_mut(id).unwrap();
-                    node.children = grandchildren.clone();
-                }
-                for &gc in &grandchildren {
-                    self.arena.get_mut(gc).unwrap().parent = Some(id);
-                }
+                // Absorb: `id` takes the grandchildren, shares re-equalized
+                // by the container's `equalize`.
+                self.arena.set_children(id, &grandchildren);
+                self.arena.equalize(id);
                 self.arena.get_mut(only_child).unwrap().children.clear();
                 self.arena.remove(only_child);
-                self.rebalance_ratios(id);
                 continue;
             }
 
@@ -363,10 +294,7 @@ impl Workspace {
 
             match parent_id {
                 Some(gp_id) => {
-                    let gp = self.arena.get_mut(gp_id).unwrap();
-                    if let Some(pos) = gp.children.iter().position(|&c| c == id) {
-                        gp.children[pos] = only_child;
-                    }
+                    self.arena.replace_child(gp_id, id, only_child);
                 }
                 None => {
                     self.root = Some(only_child);

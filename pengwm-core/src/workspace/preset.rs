@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::Workspace;
 use crate::tree::{Arena, Direction, NodeData, NodeId, SplitDirection, WindowId};
-
-use super::{equal_shares, Workspace};
 
 /// One resize-pane step as a share of the split (5%).
 pub const RESIZE_STEP: f64 = 0.05;
@@ -90,10 +89,12 @@ impl Workspace {
         let first = nodes[0];
         let root = match preset {
             LayoutPreset::EvenHorizontal => {
-                self.alloc_split(SplitDirection::Horizontal, nodes, equal_shares(order.len()))
+                self.arena
+                    .alloc_split(SplitDirection::Horizontal, None, &nodes)
             }
             LayoutPreset::EvenVertical => {
-                self.alloc_split(SplitDirection::Vertical, nodes, equal_shares(order.len()))
+                self.arena
+                    .alloc_split(SplitDirection::Vertical, None, &nodes)
             }
             LayoutPreset::MainVertical => self.alloc_main(
                 SplitDirection::Vertical,
@@ -227,8 +228,8 @@ impl Workspace {
             nodes[1]
         } else {
             let rest = nodes[1..].to_vec();
-            let n = rest.len();
-            self.alloc_split(stack_axis, rest, equal_shares(n))
+            let shares = Arena::equal_shares(rest.len());
+            self.alloc_split(stack_axis, rest, shares)
         };
         self.alloc_split(main_axis, vec![nodes[0], stack], vec![main, 1.0 - main])
     }
@@ -247,15 +248,17 @@ impl Workspace {
             if chunk.len() == 1 {
                 rows.push(chunk[0]);
             } else {
-                let k = chunk.len();
-                rows.push(self.alloc_split(SplitDirection::Vertical, chunk, equal_shares(k)));
+                rows.push(
+                    self.arena
+                        .alloc_split(SplitDirection::Vertical, None, &chunk),
+                );
             }
         }
         if rows.len() == 1 {
             return rows.into_iter().next().unwrap();
         }
-        let k = rows.len();
-        self.alloc_split(SplitDirection::Horizontal, rows, equal_shares(k))
+        self.arena
+            .alloc_split(SplitDirection::Horizontal, None, &rows)
     }
 
     fn alloc_window(&mut self, window_id: WindowId) -> NodeId {
@@ -273,10 +276,7 @@ impl Workspace {
     ) -> NodeId {
         debug_assert_eq!(children.len(), ratios.len());
         let id = self.arena.alloc(NodeData::Split { direction, ratios });
-        for &child in &children {
-            self.arena.get_mut(child).unwrap().parent = Some(id);
-        }
-        self.arena.get_mut(id).unwrap().children = children;
+        self.arena.set_children(id, &children);
         id
     }
 
