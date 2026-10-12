@@ -102,8 +102,7 @@ impl StateManager {
     /// sweep: the resync re-attaches and re-polls everything at commit, and
     /// the next sweep cleans up after it.
     fn reconcile_dead_pids(&mut self) {
-        if self.wake_resync.is_some() {
-            log::debug!("dead-pid sweep: skipped — wake resync pending");
+        if !self.may_judge("dead-pid sweep") {
             return;
         }
         let running: HashSet<i32> = self.os.running_pids_any_policy().into_iter().collect();
@@ -177,11 +176,11 @@ impl StateManager {
     ///
     /// Suppressed while a wake resync is pending: a blacked-out AX reports
     /// *every* attribute as unreadable (→ `false`), which would mass-reveal
-    /// fullscreened windows into a dead layout pass — the same "zero
-    /// listing is no judgment" rule the listing sweep observes.
+    /// fullscreened windows into a dead layout pass. The gate is the
+    /// blackout module's `may_judge` — the same funnel the listing sweep
+    /// and the dead-pid sweep ask.
     fn reconcile_fullscreen_windows(&mut self) {
-        if self.wake_resync.is_some() {
-            log::debug!("fullscreen reconcile: skipped — wake resync pending");
+        if !self.may_judge("fullscreen reconcile") {
             return;
         }
         for window_id in self.store.fullscreen_parked() {

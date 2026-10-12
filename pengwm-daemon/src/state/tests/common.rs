@@ -55,7 +55,7 @@ pub(super) fn setup(display_count: u32) -> StateManager {
     setup_with_handle(display_count).0
 }
 
-pub(super) fn setup_with_handle(display_count: u32) -> (StateManager, TestHandle) {
+pub(in crate::state) fn setup_with_handle(display_count: u32) -> (StateManager, TestHandle) {
     let (tx, _) = mpsc::channel(64);
     let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
     let prefix = test_prefix();

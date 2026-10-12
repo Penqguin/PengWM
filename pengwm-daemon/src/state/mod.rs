@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+pub mod blackout;
 pub mod bootstrap;
 pub mod commands;
 pub mod display;
@@ -93,7 +94,8 @@ pub struct StateManager {
     /// Armed by `DaemonEvent::SystemWoke`, drained by `on_tick`. The wake
     /// notification arrives while the AX subsystem is still blacked out —
     /// polls come back empty and cached elements are stale — so the resync
-    /// cannot run inline. See `monitors_wake::WakeResync`.
+    /// cannot run inline. See `state::blackout` — the one owner of the
+    /// resync lifecycle and the no-judgment-while-blackout rules.
     wake_resync: Option<WakeResync>,
 }
 

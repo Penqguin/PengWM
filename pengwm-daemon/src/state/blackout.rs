@@ -1,0 +1,295 @@
+use std::time::{Duration, Instant};
+
+use pengwm_core::tree::WindowId;
+
+use super::{StateManager, WakeResync};
+
+/// One owner of the AX blackout: the wake resync lifecycle (arm → probe →
+/// commit) and the judgment rules that keep every sweep honest while AX is
+/// blacked out. Two rules, stated here once and asked everywhere:
+///
+/// **No structural judgment while a resync is pending.** During the
+/// blackout even live apps list nothing and every attribute reads
+/// unreadable, so a sweeping judgment (death, mass-close, fullscreen
+/// exit) would act on blackout artifacts — the root cause of the
+/// `6f92075` gone-grace regression. Every sweep asks `may_judge`
+/// instead of re-deriving the suppression.
+///
+/// **Zero listing is no judgment.** An app whose poll returns nothing is
+/// the blackout signature, never mass-close evidence — every sweep injects
+/// its listings through `listing_is_evidence`.
+///
+/// The wake-pending bit the write-path grace reads is armed and cleared
+/// here, at the exact points the resync state changes — the twin bit and
+/// its hand-sync disappear with this module.
+impl StateManager {
+    /// How often `on_tick` re-probes AX while a wake resync is pending.
+    /// Fast enough that the desktop settles promptly, slow enough that a
+    /// long blackout costs a handful of polls rather than one per tick.
+    pub(super) const WAKE_PROBE_INTERVAL: Duration = Duration::from_millis(500);
+    /// Give up waiting for AX and resync anyway after this long. A resync
+    /// into a still-dead AX is wasteful, but never resyncing is worse —
+    /// this bounds the damage of a probe that can never succeed (every
+    /// app legitimately windowless, say).
+    pub(super) const WAKE_DEADLINE: Duration = Duration::from_secs(20);
+
+    /// Machine woke from sleep. **Arms** the resync; it does not run it.
+    ///
+    /// `NSWorkspaceDidWake` arrives while the AX subsystem is still blacked
+    /// out: `AXUIElementCopyAttributeValue(kAXWindows)` comes back empty for
+    /// live apps and every cached element is stale. Resyncing at that moment
+    /// is worse than doing nothing — the polls that are supposed to refresh
+    /// `WindowElementCache` return nothing, so the stale refs survive, and
+    /// the layout writes that follow all fail `kAXErrorInvalidUIElement`,
+    /// which `refresh_element` cannot heal either, so every live window
+    /// reports `Gone` and starts a 10s death timer. `on_tick` drives
+    /// `drive_wake_resync` until AX answers.
+    pub fn on_system_woke(&mut self) {
+        let now = Instant::now();
+        if self.wake_resync.is_some() {
+            // Both `NSWorkspaceDidWake` and `ScreensDidWake` fire for one
+            // wake; the first arm wins and the second is a no-op.
+            log::debug!("System woke — resync already pending");
+            return;
+        }
+        self.arm_wake_resync(now);
+    }
+
+    /// The arm point — the one place the resync state and the
+    /// write-path's wake-pending grace bit are set together.
+    fn arm_wake_resync(&mut self, now: Instant) {
+        log::info!("System woke — deferring resync until AX responds");
+        // Patient gone grace while the blackout lasts: every layout write
+        // this window of time attempts reports live windows as Gone.
+        self.layout_cache.note_wake_pending(true);
+        self.wake_resync = Some(WakeResync {
+            since: now,
+            // Probe on the very next tick rather than after one interval.
+            last_probe: now - Self::WAKE_PROBE_INTERVAL,
+        });
+    }
+
+    /// The commit point — clears the resync state and the wake-pending
+    /// grace bit together, so the protection never outlives the resync
+    /// (deadline-force path included).
+    fn commit_wake_resync(&mut self) {
+        self.wake_resync = None;
+        self.layout_cache.note_wake_pending(false);
+    }
+
+    /// Tick hook: retry the pending wake resync until AX answers, then
+    /// commit it. Returns immediately when nothing is pending.
+    pub(super) fn drive_wake_resync(&mut self, now: Instant) {
+        let pending = match self.wake_resync {
+            Some(p) => p,
+            None => return,
+        };
+        if now.duration_since(pending.last_probe) < Self::WAKE_PROBE_INTERVAL {
+            return;
+        }
+        self.wake_resync = Some(WakeResync {
+            last_probe: now,
+            ..pending
+        });
+
+        let expired = now.duration_since(pending.since) >= Self::WAKE_DEADLINE;
+        if self.try_wake_resync(expired) {
+            log::info!(
+                "Wake resync committed {:?} after wake",
+                now.duration_since(pending.since)
+            );
+            // The commit point cleared the resync state and the
+            // wake-pending grace bit, including the deadline force — a
+            // resync that never probed successfully still ends.
+        } else {
+            log::debug!("Wake resync: AX not answering yet, retrying");
+        }
+    }
+
+    /// Age the probe timer so the next tick re-probes immediately
+    /// (mirrors `WAKE_PROBE_INTERVAL` of wall clock passing).
+    #[cfg(test)]
+    pub(super) fn age_wake_probe_for_test(&mut self) {
+        if let Some(pending) = self.wake_resync {
+            self.wake_resync = Some(WakeResync {
+                last_probe: Instant::now() - Self::WAKE_PROBE_INTERVAL,
+                ..pending
+            });
+        }
+    }
+
+    /// Age the wake deadline so the next probe is the forced one.
+    #[cfg(test)]
+    pub(super) fn age_wake_deadline_for_test(&mut self) {
+        if let Some(pending) = self.wake_resync {
+            self.wake_resync = Some(WakeResync {
+                since: Instant::now() - Self::WAKE_DEADLINE,
+                last_probe: Instant::now() - Self::WAKE_PROBE_INTERVAL,
+            });
+            let _ = pending;
+        }
+    }
+
+    /// True while a wake resync is still waiting on AX.
+    #[cfg(test)]
+    pub(super) fn wake_resync_pending(&self) -> bool {
+        self.wake_resync.is_some()
+    }
+
+    /// The one funnel every judgment sweep asks: "may I judge?" While a
+    /// wake resync is pending the answer is no — logged here with the
+    /// sweep's own name so each site keeps its voice but not its own
+    /// suppression check.
+    pub(super) fn may_judge(&self, sweep: &str) -> bool {
+        if self.wake_resync.is_none() {
+            return true;
+        }
+        log::debug!("{}: skipped — wake resync pending", sweep);
+        false
+    }
+
+    /// "Zero listing is no judgment": an app whose poll returns nothing is
+    /// the post-wake blackout signature, not a mass close — an empty
+    /// answer is inadmissible death evidence for every sweep. The one
+    /// definition; previously restated as a comment in seven places.
+    pub(super) fn listing_is_evidence(listed: &[WindowId]) -> bool {
+        !listed.is_empty()
+    }
+
+    /// One resync attempt. Re-attaches observers and re-polls every app —
+    /// polling is what replaces the stale refs in `WindowElementCache` —
+    /// then, **only if the poll actually produced windows**, commits the
+    /// rest: display geometry, cache clear, routing and re-tile.
+    ///
+    /// The poll result is the AX liveness probe (`listing_is_evidence`
+    /// over the union of answers). Committing behind it is what keeps a
+    /// blacked-out wake from clearing good state and writing through dead
+    /// elements. `force` commits regardless, for the deadline.
+    ///
+    /// The commit point clears the resync state and the wake-pending grace
+    /// bit, so the committed polls can be diffed against the tracked set:
+    /// windows that closed during sleep are untracked right there (AX is
+    /// answering, so "not listed by its app" is real evidence), before the
+    /// re-tile computes capacity against them.
+    ///
+    /// Returns whether the resync committed.
+    fn try_wake_resync(&mut self, force: bool) -> bool {
+        let pids: Vec<i32> = self
+            .os
+            .running_app_pids()
+            .into_iter()
+            .filter(|pid| !self.excluded_pids.contains(pid))
+            .collect();
+        for pid in &pids {
+            self.os.attach_observer(*pid);
+        }
+        // Poll every app first: this refreshes the element cache and tells
+        // us whether AX is answering at all.
+        let polled: Vec<(i32, Vec<WindowId>)> = pids
+            .iter()
+            .map(|&pid| (pid, self.os.poll_windows_for_pid(pid)))
+            .collect();
+        let any_windows = polled
+            .iter()
+            .any(|(_, wins)| Self::listing_is_evidence(wins));
+        if !any_windows && !force {
+            // Every app reported zero windows. On a machine that was
+            // managing windows a moment ago that means AX is still dead,
+            // not that every window closed during sleep.
+            return false;
+        }
+
+        // Commit point. Drop the pending resync first: the unlisted-untrack
+        // below must not be suppressed by its own pending-guard, and the
+        // fast grace resumes — on the deadline-force path too, per the
+        // "nothing outlives the resync" boundary.
+        self.commit_wake_resync();
+
+        log::info!("System woke — resyncing windows and displays");
+        // Heal the topology first: displays may have come or gone during
+        // sleep. The same one pass the tick and the hotplug hints use —
+        // orphans remap to primary, seats settle, geometry self-heals —
+        // instead of the geometry-only refresh that used to skip workspaces
+        // whose display died in sleep (their stale origin/size re-tiled
+        // windows into no-man's land). The final re-tile below covers
+        // `relayout`; `hidden`/`repark` run here.
+        let tsync = self.displays.sync(&mut self.workspaces, &*self.os);
+        for idx in tsync.hidden {
+            self.hide_workspace(idx);
+        }
+        for idx in tsync.repark {
+            if idx < self.workspaces.len() {
+                self.hide_workspace(idx);
+            }
+        }
+        // Drop the layout-write cache: stale AX refs + moved displays mean
+        // every "already applied" entry is a lie after sleep. The gone
+        // grace restarts too — pre-sleep misses must not kill windows
+        // while post-wake AX is still settling — and so does the pin
+        // count, so post-wake writes aren't backoff-silenced.
+        self.layout_cache.clear_on_wake();
+        // Force the background sweep on next tick for windows created mid-sleep.
+        self.last_window_sweep = Instant::now() - Duration::from_secs(5);
+        self.frontmost_pid = self.os.frontmost_pid();
+        // Untrack windows that closed during sleep first: AX is answering
+        // now, so a tracked window missing from its app's listing is
+        // genuinely dead — and the re-tile below must compute capacity
+        // against a tree that no longer holds them.
+        self.untrack_unlisted_windows(&polled);
+        // Tile anything that appeared during sleep, reusing the poll above
+        // instead of querying every app a second time.
+        for (pid, windows) in polled {
+            for window_id in windows {
+                if !self.store.contains(window_id) {
+                    log::info!(
+                        "wake resync: discovered untracked window {} pid {}",
+                        window_id,
+                        pid
+                    );
+                    self.on_window_created(window_id, pid);
+                }
+            }
+        }
+        // Re-tile every visible workspace.
+        let visible: Vec<usize> = self.displays.active().values().copied().collect();
+        for idx in visible {
+            if idx < self.workspaces.len() {
+                self.apply_layout(idx);
+            }
+        }
+        // Everything re-stacked after sleep; stacking is globally unset, so
+        // re-assert no monitor is left with untracked overlays buried.
+        self.raise_untracked_windows(None);
+        self.publish_bar_state();
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::tests::common::setup_with_handle;
+
+    #[test]
+    fn may_judge_gates_on_the_resync_state() {
+        let (mut sm, _handle) = setup_with_handle(1);
+        assert!(sm.may_judge("test sweep"), "no blackout — judgment is free");
+        sm.on_system_woke();
+        assert!(
+            !sm.may_judge("test sweep"),
+            "while a resync is pending, no structural judgment"
+        );
+        // Commit (deadline force) frees the gate again — nothing outlives
+        // the resync.
+        sm.age_wake_deadline_for_test();
+        sm.age_wake_probe_for_test();
+        sm.drive_wake_resync(Instant::now());
+        assert!(sm.may_judge("test sweep"));
+    }
+
+    #[test]
+    fn zero_listing_is_never_evidence() {
+        assert!(!StateManager::listing_is_evidence(&[]));
+        assert!(StateManager::listing_is_evidence(&[10, 20]));
+    }
+}

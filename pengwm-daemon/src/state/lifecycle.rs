@@ -533,12 +533,11 @@ impl StateManager {
     /// retile, bar publish), so a closed window's siblings re-tile within
     /// one sweep cycle.
     pub(super) fn untrack_unlisted_windows(&mut self, listings: &[(i32, Vec<WindowId>)]) {
-        if self.wake_resync.is_some() {
-            log::debug!("untrack_unlisted: skipped — wake resync pending");
+        if !self.may_judge("untrack_unlisted") {
             return;
         }
         for (pid, listed) in listings {
-            if listed.is_empty() {
+            if !StateManager::listing_is_evidence(listed) {
                 continue;
             }
             let tracked = self
@@ -566,11 +565,11 @@ impl StateManager {
     /// that reported a death, so the response is immediate rather than
     /// waiting for the next 2s sweep.
     pub fn on_unknown_window_destroyed(&mut self, pid: i32) {
-        if self.excluded_pids.contains(&pid) || self.wake_resync.is_some() {
+        if self.excluded_pids.contains(&pid) || !self.may_judge("unknown-destroyed probe") {
             return;
         }
         let windows = self.os.poll_windows_for_pid(pid);
-        if windows.is_empty() {
+        if !StateManager::listing_is_evidence(&windows) {
             // Zero listing: no judgment (blackout signature).
             return;
         }

@@ -1,6 +1,6 @@
 mod bootstrap_routing;
 mod commands;
-mod common;
+pub(super) mod common;
 mod fullscreen;
 mod layout_cache_hide;
 mod lifecycle;
