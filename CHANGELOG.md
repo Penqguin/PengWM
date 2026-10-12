@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.1 — Untracked windows & AX hardening (2026-10-11)
 
 - **A rogue `rm` of a socket path no longer ghost-locks the daemon's
   IPC.** Each server's accept loop (command socket, bar push socket)
