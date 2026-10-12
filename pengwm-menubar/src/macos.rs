@@ -72,6 +72,9 @@ define_class!(
 
         // SAFETY: matches `runUpdateNow:` — the action selector attached to
         // the "Update now…" row shown next to the update-available label.
+        // The click is the consent, so pass --yes: the child runs detached
+        // with stdin nulled and would otherwise read EOF and politely
+        // decline to update.
         // Detaches the daemon binary's own `pengwm update` subcommand so the
         // menubar never blocks or waits on it.
         #[unsafe(method(runUpdateNow:))]
@@ -86,9 +89,9 @@ define_class!(
                 .filter(|path| path.is_file())
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "pengwm".to_string());
-            log::info!("menubar launching {bin} update");
+            log::info!("menubar launching {bin} update --yes");
             let child = std::process::Command::new(bin)
-                .arg("update")
+                .args(["update", "--yes"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())

@@ -1,10 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use pengwm_core::command::Command;
+use pengwm_core::release::{self, UpdateCheck};
 use pengwm_core::tree::{Direction, SplitDirection};
 use pengwm_core::workspace::LayoutPreset;
 
-const GITHUB_LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/Penqguin/PengWM/releases/latest";
 const INSTALL_SCRIPT_URL: &str = "https://pengwm.penqguin.com/install.sh";
 
 #[derive(Parser, Debug)]
@@ -23,8 +22,13 @@ pub enum CliCommand {
     /// Start the daemon (used by launchd and manual starts)
     Daemon,
     /// Update the installed PengWM binaries from the latest GitHub release
-    /// (does not need a running daemon)
-    Update,
+    /// (does not need a running daemon). Asks before installing; answer
+    /// anything but y to keep your current edition.
+    Update {
+        /// Update without asking (for scripts and the menubar's Update now…)
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
     Focus {
         direction: DirectionArg,
     },
@@ -164,22 +168,28 @@ impl From<CliCommand> for Command {
             CliCommand::State => Command::QueryState,
             CliCommand::Quit => Command::Quit,
             CliCommand::RevealAll => Command::RevealAll,
-            CliCommand::Update => unreachable!("update handled before IPC"),
+            CliCommand::Update { .. } => unreachable!("update handled before IPC"),
             CliCommand::ClearSession => unreachable!("clear-session handled before IPC"),
         }
     }
 }
 
-/// `pengwm update` — check GitHub for the latest release and, if newer than
-/// this build, hand off to the published install.sh (which downloads,
+/// `pengwm update` — check GitHub for the latest release and, with the
+/// user's consent, hand off to the published install.sh (which downloads,
 /// verifies, installs, and restarts the launchd agent). Deliberately does
 /// not need the daemon socket: the daemon may be down while updating.
-pub fn update_main() {
+///
+/// Consent lives here because an update costs the user an Accessibility
+/// re-grant (ADR-0001's accepted trade-off for ad-hoc-signed bare
+/// binaries): nobody pays that toll unasked. The default answer is No —
+/// declining means staying on the current edition, which is a successful
+/// outcome, not an error.
+pub fn update_main(yes: bool) {
     // One-copy policy applies here too: updates modify the installed copy,
     // so a dev checkout must run them itself, not via this binary.
     pengwm_daemon::location::enforce_installed_for_update();
 
-    match update_to_latest() {
+    match update_to_latest(yes) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("error: {e}");
@@ -188,26 +198,64 @@ pub fn update_main() {
     }
 }
 
-fn update_to_latest() -> Result<(), String> {
+fn update_to_latest(yes: bool) -> Result<(), String> {
     // The temp dir is removed on every exit path (success and failure) —
     // update_to_latest_in owns the steps; this wrapper owns the cleanup.
     let dir = request_temp_dir()?;
-    let result = update_to_latest_in(&dir);
+    let result = update_to_latest_in(&dir, yes);
     let _ = std::fs::remove_dir_all(&dir);
     result
 }
 
-fn update_to_latest_in(dir: &std::path::Path) -> Result<(), String> {
+fn update_to_latest_in(dir: &std::path::Path, yes: bool) -> Result<(), String> {
     println!("Checking for the latest PengWM release…");
-    let tag = latest_release_tag()?;
     let current = env!("CARGO_PKG_VERSION");
 
-    if !tag_is_newer(current, &tag) {
-        println!("PengWM v{current} is up to date (latest {tag})");
-        return Ok(());
+    match release::check(current) {
+        UpdateCheck::Failed { reason } => Err(format!("update check failed: {reason}")),
+        UpdateCheck::UpToDate { latest } => {
+            println!("PengWM v{current} is up to date (latest {latest})");
+            Ok(())
+        }
+        UpdateCheck::UpdateAvailable { latest } => {
+            println!("Latest release is {latest} (this build is v{current}).");
+            if !yes {
+                println!("Note: releases are ad-hoc signed — updating costs one");
+                println!("Accessibility re-grant in System Settings.");
+                if !confirm_install(&latest)? {
+                    println!("Staying on v{current}. Run `pengwm update` to upgrade later.");
+                    return Ok(());
+                }
+            }
+            install_release(dir, &latest)
+        }
     }
+}
 
-    println!("Latest release is {tag} (this build is v{current}).");
+/// The consent seam. Prints the question and reads one line; EOF (piped
+/// stdin, closed terminal) counts as No, so a scripted call without `--yes`
+/// still lands on "keep my current edition" instead of hanging.
+fn confirm_install(latest: &str) -> Result<bool, String> {
+    use std::io::Write;
+    print!("Install PengWM {latest} now? [y/N] ");
+    std::io::stdout()
+        .flush()
+        .map_err(|e| format!("could not write prompt: {e}"))?;
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) => Ok(false),
+        Ok(_) => Ok(accepts(&line)),
+        Err(e) => Err(format!("could not read confirmation: {e}")),
+    }
+}
+
+/// The consent rule, pure so it tests without stdin: `y`/`yes` installs,
+/// anything else (including empty) keeps the current edition.
+fn accepts(line: &str) -> bool {
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn install_release(dir: &std::path::Path, tag: &str) -> Result<(), String> {
     let script_path = dir.join("install.sh");
 
     println!("Downloading the installer…");
@@ -227,7 +275,7 @@ fn update_to_latest_in(dir: &std::path::Path) -> Result<(), String> {
     let status = std::process::Command::new("/bin/bash")
         .arg("install.sh")
         .arg("--version")
-        .arg(&tag)
+        .arg(tag)
         .current_dir(dir)
         .status()
         .map_err(|e| format!("failed to run {}: {e}", script_path.display()))?;
@@ -261,65 +309,25 @@ fn curl(url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
-/// Resolve the `tag_name` of the latest GitHub release with a tiny
-/// hand-rolled JSON extraction (tags are plain strings, no escapes needed).
-fn latest_release_tag() -> Result<String, String> {
-    let body = String::from_utf8(curl(
-        GITHUB_LATEST_RELEASE_URL,
-        Some("application/vnd.github+json"),
-    )?)
-    .map_err(|e| format!("release list is not valid UTF-8: {e}"))?;
-    match json_string_field(&body, "tag_name") {
-        Some(tag) if !tag.is_empty() => Ok(tag.to_string()),
-        _ => Err(format!(
-            "could not parse a release tag from {GITHUB_LATEST_RELEASE_URL}"
-        )),
-    }
-}
-
-/// Pull `"key": "value"` out of a JSON document, tolerating variable spacing.
-fn json_string_field<'a>(body: &'a str, key: &str) -> Option<&'a str> {
-    let needle = format!("\"{key}\"");
-    let rest = &body[body.find(&needle)? + needle.len()..];
-    let rest = &rest[rest.find(':')? + 1..];
-    let rest = rest.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(&rest[..end])
-}
-
-/// Numeric version compare without a semver crate: compare `.` components
-/// numerically and ignore prerelease suffixes (v1.2.3-rc1 parses as 1.2.3).
-/// When the numeric cores are equal, a tag that merely differs from the
-/// current version still counts as a new release worth offering.
-fn tag_is_newer(current: &str, tag: &str) -> bool {
-    let tag_num = numeric_version(tag);
-    let cur_num = numeric_version(current);
-    let n = tag_num.len().max(cur_num.len());
-    for i in 0..n {
-        let t = tag_num.get(i).copied().unwrap_or(0);
-        let c = cur_num.get(i).copied().unwrap_or(0);
-        if t != c {
-            return t > c;
-        }
-    }
-    tag != current && tag != format!("v{current}")
-}
-
-fn numeric_version(version: &str) -> Vec<u64> {
-    let core = version
-        .trim_start_matches('v')
-        .split(['-', '+'])
-        .next()
-        .unwrap_or(version);
-    core.split('.')
-        .filter_map(|part| part.parse().ok())
-        .collect()
-}
-
 fn request_temp_dir() -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("pengwm-update-{}", std::process::id()));
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consent_rule() {
+        assert!(accepts("y\n"));
+        assert!(accepts("Y"));
+        assert!(accepts(" yes "));
+        assert!(!accepts("n\n"));
+        assert!(!accepts(""));
+        assert!(!accepts("no\n"));
+        assert!(!accepts("y es"));
+    }
 }

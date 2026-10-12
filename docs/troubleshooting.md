@@ -58,11 +58,15 @@ A pengwm daemon is currently running from /Users/you/PengWM/target/release/pengw
 daemon, or — for developers rebuilding from a checkout — set `PENGWM_DEV=1`
 (`PENGWM_DEV=1 ./target/release/pengwm`) to opt the dev copy into running.
 
-**How `pengwm update` works:** run from the installed copy, it downloads
-the latest release tarball, verifies its checksum and signatures, swaps
-the binaries in `$PENGWM_HOME/bin`, and lets launchd restart the daemon
-(the menubar drops to "Starting PengWM…" briefly). It refuses to run from
-a non-installed copy: only the installed binaries update themselves, so a
+**How `pengwm update` works:** run from the installed copy, it checks the
+latest release, tells you what it found, and **asks before installing**
+(`Install PengWM vX now? [y/N]` — the default is No, so answering anything
+else, or piping a closed stdin, keeps your current edition; pass `--yes`
+to skip the prompt for scripts). On consent it downloads the latest
+release tarball, verifies its checksum and signatures, swaps the binaries
+in `$PENGWM_HOME/bin`, and lets launchd restart the daemon (the menubar
+drops to "Starting PengWM…" briefly). It refuses to run from a
+non-installed copy: only the installed binaries update themselves, so a
 dev checkout can never spiral the installer into replacing them on its
 behalf.
 

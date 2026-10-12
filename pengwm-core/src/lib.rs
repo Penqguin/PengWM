@@ -2,6 +2,7 @@ pub mod command;
 pub mod config;
 pub mod ipc;
 pub mod layout;
+pub mod release;
 pub mod tree;
 pub mod workspace;
 

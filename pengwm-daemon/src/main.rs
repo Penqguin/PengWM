@@ -15,7 +15,7 @@ fn main() {
 
     match cli.command {
         None | Some(cli::CliCommand::Daemon) => daemon_main(),
-        Some(cli::CliCommand::Update) => cli::update_main(),
+        Some(cli::CliCommand::Update { yes }) => cli::update_main(yes),
         Some(cli::CliCommand::ClearSession) => {
             let p = pengwm_daemon::state::session::session_file_path();
             match std::fs::remove_file(&p) {

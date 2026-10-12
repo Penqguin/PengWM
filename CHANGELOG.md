@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **`pengwm update` now asks before installing.** Once the release check
+  finds a strictly newer release it prints what it found and asks
+  `Install PengWM vX now? [y/N]` — the default is No, so answering
+  anything else (or closing stdin) keeps you on your current edition,
+  reported as a success. The question is worth asking because every
+  update costs one Accessibility re-grant (ADR-0001); scripts and the
+  menubar's `Update now…` row pass `--yes` to skip the prompt — the
+  menu click is itself the consent.
+- **The release check is one module, not two drifting copies.** Fetch,
+  tag parsing, and version comparison moved out of `pengwm-daemon/src/cli.rs`
+  and `pengwm-menubar/src/update_check.rs` into `pengwm_core::release`,
+  which answers `check(current)` in one shape: `UpdateAvailable`,
+  `UpToDate`, or `Failed`. Both callers previously disagreed on the
+  edge case of an equal-version-but-different-tag release (one reported
+  an update, one didn't); the unified rule is *strictly newer numeric
+  core only* — a re-published same-version release is never an update.
+
 ## v0.6.1 — Untracked windows & AX hardening (2026-10-11)
 
 - **A rogue `rm` of a socket path no longer ghost-locks the daemon's
