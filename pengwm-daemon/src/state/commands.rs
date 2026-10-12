@@ -44,10 +44,11 @@ impl StateManager {
                         }
                         if let Some(target) = self.displays.resolve_workspace(n, &self.workspaces) {
                             let focus_first = self.focus_first_on_switch;
+                            let display_snapshot = self.os.active_displays();
                             if let Some(dec) = self.displays.plan_switch(
                                 target,
                                 &mut self.workspaces,
-                                &*self.os,
+                                &display_snapshot,
                                 focus_first,
                             ) {
                                 for &idx in &dec.hide {
@@ -68,9 +69,7 @@ impl StateManager {
                                 // Stacking after the reveal: popups of the
                                 // shown workspace come back on top, then
                                 // the untracked overlays (ADR-0002).
-                                self.reveal_stack(Some(
-                                    self.workspaces[dec.show].monitor_id,
-                                ));
+                                self.reveal_stack(Some(self.workspaces[dec.show].monitor_id));
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
                             }
@@ -252,11 +251,12 @@ impl StateManager {
         if current_idx >= self.workspaces.len() {
             return;
         }
+        let displays = self.os.active_displays();
         let target_idx = match self.displays.direction_target(
             &self.workspaces,
             current_idx,
             direction,
-            &*self.os,
+            &displays,
         ) {
             Some(idx) => idx,
             None => {
@@ -299,11 +299,12 @@ impl StateManager {
         if current_idx >= self.workspaces.len() {
             return;
         }
+        let displays = self.os.active_displays();
         let target_idx = match self.displays.direction_target(
             &self.workspaces,
             current_idx,
             direction,
-            &*self.os,
+            &displays,
         ) {
             Some(idx) => idx,
             None => return,

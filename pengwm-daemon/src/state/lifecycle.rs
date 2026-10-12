@@ -85,10 +85,7 @@ impl StateManager {
         }
 
         let active = self.active_workspace_idx();
-        let preferred = self
-            .displays
-            .routed_workspace_idx(pid, &self.workspaces, &*self.os)
-            .unwrap_or(active);
+        let preferred = self.routed_workspace_for(pid).unwrap_or(active);
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
         self.add_window_to_workspace(window_id, preferred);
         // Discovery-time fast path: a window discovered already fullscreen
@@ -311,8 +308,7 @@ impl StateManager {
         let preferred = remembered
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
-                self.displays
-                    .routed_workspace_idx(pid, &self.workspaces, &*self.os)
+                self.routed_workspace_for(pid)
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
         if self.add_window_to_workspace(window_id, preferred).is_some() {

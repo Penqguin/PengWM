@@ -99,6 +99,17 @@ impl Workspace {
         self.monitor_size = size;
     }
 
+    /// Assign a seat to a live display: the output id and its geometry in
+    /// one call. Geometry-when-reseating is the invariant the split-brain
+    /// used to break — an assignment without the refresh tiled into no-
+    /// man's land (the stale-origin bug) — so callers reseat instead of
+    /// assigning, and the pair is unrepresentable.
+    pub fn reseat(&mut self, monitor_id: u32, origin: (i32, i32), size: (u32, u32)) {
+        self.monitor_id = monitor_id;
+        self.monitor_origin = origin;
+        self.monitor_size = size;
+    }
+
     /// Reserve a region of the monitor (in global coordinates) that windows
     /// must avoid — used for the bar strip. `None` clears the reservation.
     pub fn set_reserved_rect(&mut self, global: Option<Rect>) {

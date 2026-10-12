@@ -230,6 +230,16 @@ impl StateManager {
         )
     }
 
+    /// Global workspace a window of `pid` routes to per the app routing
+    /// config — the one ask with the `OsAdapter` identity reads; the
+    /// planner stays pure over the already-fetched bundle/name options.
+    pub(super) fn routed_workspace_for(&self, pid: i32) -> Option<usize> {
+        let bundle = self.os.app_bundle_id(pid);
+        let app_name = self.os.app_name(pid);
+        self.displays
+            .routed_workspace_idx(&self.workspaces, bundle.as_deref(), app_name.as_deref())
+    }
+
     /// True once `Command::Quit` has been handled; the event loop polls this
     /// to know when to stop running.
     pub fn shutdown_requested(&self) -> bool {
@@ -363,8 +373,7 @@ impl StateManager {
             let preferred = if entry.idx < self.workspaces.len() {
                 entry.idx
             } else {
-                self.displays
-                    .routed_workspace_idx(pid, &self.workspaces, &*self.os)
+                self.routed_workspace_for(pid)
                     .unwrap_or_else(|| self.active_workspace_idx())
             };
             if self.add_window_to_workspace(wid, preferred).is_some() {
