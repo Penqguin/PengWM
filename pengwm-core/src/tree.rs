@@ -212,6 +212,22 @@ impl Arena {
             .children = children.to_vec();
     }
 
+    /// Wire `children` as children of `parent` and splice them into the
+    /// list at `pos` (replacing whatever child held `pos` — the caller has
+    /// already taken it). Share policy stays with the caller: an absorbed
+    /// slot's share dividing into the newcomers is the splice caller's
+    /// business, not this container's.
+    pub fn insert_children(&mut self, parent: NodeId, pos: usize, children: &[NodeId]) {
+        for &child in children {
+            self.nodes.get_mut(&child).unwrap().parent = Some(parent);
+        }
+        let node = self
+            .nodes
+            .get_mut(&parent)
+            .expect("insert_children: parent exists");
+        node.children.splice(pos..=pos, children.to_vec());
+    }
+
     /// Re-equalize a split's shares across its children. The policy half
     /// of `set_children` — the share-preserving operations (removals, slot
     /// splices) never call it. Drift is repaired here too: the vector is

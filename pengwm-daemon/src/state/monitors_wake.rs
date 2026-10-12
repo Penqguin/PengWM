@@ -8,6 +8,21 @@ use super::StateManager;
 /// funnel so a lost or out-of-order event heals within one sweep.
 /// Wake resync and the blackout judgment rules live in `state::blackout`.
 impl StateManager {
+    /// Execute a topology answer's park half: newly-hidden workspaces off-
+    /// screen, and already-hidden workspaces whose geometry healed re-parked
+    /// at the fresh coordinates. The two passes (`run_topology_sync`, the
+    /// wake resync) share one shape — this is it.
+    pub(super) fn park_topology_changes(&mut self, hidden: Vec<usize>, repark: Vec<usize>) {
+        for idx in hidden {
+            self.hide_workspace(idx);
+        }
+        for idx in repark {
+            if idx < self.workspaces.len() {
+                self.hide_workspace(idx);
+            }
+        }
+    }
+
     /// Run one complete topology healing pass and execute what it answered:
     /// drop the write cache's "already applied" evidence (displays came and
     /// went), park newly seatless workspaces, re-park pre-hidden workspaces
@@ -29,14 +44,7 @@ impl StateManager {
         // serves anymore (`clear_topology` keeps pending gone-grace timers —
         // a topology change is not death evidence).
         self.layout_cache.clear_topology();
-        for idx in sync.hidden {
-            self.hide_workspace(idx);
-        }
-        for idx in sync.repark {
-            if idx < self.workspaces.len() {
-                self.hide_workspace(idx);
-            }
-        }
+        self.park_topology_changes(sync.hidden, sync.repark);
         for idx in sync.relayout {
             if idx < self.workspaces.len() {
                 self.apply_layout(idx);

@@ -79,20 +79,15 @@ impl Workspace {
             .arena
             .get(parent_id)
             .and_then(|p| p.children.iter().position(|&c| c == split_id));
-        for &child in &children {
-            self.arena.get_mut(child).unwrap().parent = Some(parent_id);
-        }
-        let parent = self.arena.get_mut(parent_id).unwrap();
-        if let Some(pos) = parent.children.iter().position(|&c| c == split_id) {
-            parent.children.splice(pos..=pos, children);
-        }
+        let Some(pos) = slot_pos else {
+            return;
+        };
+        self.arena.insert_children(parent_id, pos, &children);
         self.arena.get_mut(split_id).unwrap().children.clear();
         self.arena.remove(split_id);
         // The absorbed slot's share is split equally among the absorbed
         // children; every other share is untouched (no re-equalize).
-        if let Some(pos) = slot_pos {
-            self.split_ratio_slot(parent_id, pos, absorbed);
-        }
+        self.split_ratio_slot(parent_id, pos, absorbed);
     }
 
     pub(super) fn next_direction(&self) -> SplitDirection {

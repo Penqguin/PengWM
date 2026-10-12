@@ -156,7 +156,7 @@ impl WindowStore {
         self.window_pids.is_empty()
     }
 
-    // -- parked state ----------------------------------------------------------
+    // -- routing verdict ------------------------------------------------------
 
     /// Record the routing verdict for a tracked window. First call wins:
     /// routing runs once per window birth, and ADR-0002's first-

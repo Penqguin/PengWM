@@ -42,6 +42,27 @@ fn float_apps_promote_windows_at_routing() {
 }
 
 #[test]
+fn popup_subroles_beat_the_float_list() {
+    // Precedence (ADR-0002): level gate → popup subroles → float_apps →
+    // tile. A `Floating` window of a `float_apps` bundle is a
+    // workspace-bound popup — the subrole answer is the more specific
+    // signal — not an untracked overlay.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.set_float_apps_for_test(vec!["com.apple.custom.floater".into()]);
+    handle.inject_bundle_id(42, "com.apple.custom.floater".into());
+    handle.inject_window_kind(300, crate::adapter::WindowClass::Floating);
+    sm.on_window_created(300, 42);
+    assert_eq!(
+        sm.store.routing_verdict(300),
+        Some(crate::state::store::RoutingVerdict::Popup)
+    );
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.is_popup(300)),
+        "a float-listed app's dialog still lands in a popup set"
+    );
+}
+
+#[test]
 fn float_level_overlays_false_downgrades_level_gated_class() {
     // The kill-switch: untracked *only* because of the CG-level gate tiles
     // again when the gate is disabled (and the bundle is not float-listed).

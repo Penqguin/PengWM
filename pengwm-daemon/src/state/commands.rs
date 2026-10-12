@@ -60,16 +60,24 @@ impl StateManager {
                                 if let Some(wid) = dec.focus {
                                     self.workspaces[dec.show].focus_window(wid);
                                 }
-                                for idx in dec.relayout {
+                                for &idx in &dec.relayout {
                                     self.apply_layout(idx);
                                 }
                                 if let Some(wid) = dec.focus {
                                     self.os.focus_window(wid);
                                 }
-                                // Stacking after the reveal: popups of the
-                                // shown workspace come back on top, then
-                                // the untracked overlays (ADR-0002).
+                                // Stacking for every monitor whose visible
+                                // workspace changed: the focused output shows
+                                // `dec.show`, and a swap also restacked the
+                                // other output (it now shows the workspace
+                                // just left). ADR-0002's raise funnel covers
+                                // every said monitor.
                                 self.reveal_stack(Some(self.workspaces[dec.show].monitor_id));
+                                if let Some(other) =
+                                    dec.relayout.iter().copied().find(|&i| i != dec.show)
+                                {
+                                    self.reveal_stack(Some(self.workspaces[other].monitor_id));
+                                }
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
                             }

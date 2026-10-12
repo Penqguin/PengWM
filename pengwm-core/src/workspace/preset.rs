@@ -229,9 +229,9 @@ impl Workspace {
         } else {
             let rest = nodes[1..].to_vec();
             let shares = Arena::equal_shares(rest.len());
-            self.alloc_split(stack_axis, rest, shares)
+            self.alloc_weighted_split(stack_axis, rest, shares)
         };
-        self.alloc_split(main_axis, vec![nodes[0], stack], vec![main, 1.0 - main])
+        self.alloc_weighted_split(main_axis, vec![nodes[0], stack], vec![main, 1.0 - main])
     }
 
     /// Grid: rows of vertical splits under a horizontal outer split.
@@ -268,7 +268,11 @@ impl Workspace {
         })
     }
 
-    fn alloc_split(
+    /// Allocate a split with caller-chosen shares (the presets carry
+    /// weighted ratios — `main-*`): wiring via the Arena, the ratio vector
+    /// verbatim. `children.len()` must equal `ratios.len()`; the container
+    /// keeps shares synced from there on.
+    fn alloc_weighted_split(
         &mut self,
         direction: SplitDirection,
         children: Vec<NodeId>,

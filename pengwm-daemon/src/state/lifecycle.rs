@@ -60,16 +60,6 @@ impl StateManager {
             self.publish_bar_state();
             return;
         }
-        if float_app {
-            log::info!(
-                "WindowCreated untracked (float_apps): {} pid={} — left out of the tree",
-                window_id,
-                pid
-            );
-            self.store.note_routed(window_id, RoutingVerdict::Untracked);
-            self.publish_bar_state();
-            return;
-        }
         if class.is_popup() || restricted {
             log::info!(
                 "WindowCreated popup: {} pid={} class={:?} restricted={}",
@@ -80,6 +70,19 @@ impl StateManager {
             );
             self.store.note_routed(window_id, RoutingVerdict::Popup);
             self.add_popup_to_workspace(window_id);
+            self.publish_bar_state();
+            return;
+        }
+        // Precedence (ADR-0002): popup subroles — and restricted's
+        // force-popup role — decide *before* the float list; the float
+        // list is the tile-boundary fallback below.
+        if float_app {
+            log::info!(
+                "WindowCreated untracked (float_apps): {} pid={} — left out of the tree",
+                window_id,
+                pid
+            );
+            self.store.note_routed(window_id, RoutingVerdict::Untracked);
             self.publish_bar_state();
             return;
         }

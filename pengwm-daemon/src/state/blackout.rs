@@ -214,14 +214,7 @@ impl StateManager {
         // windows into no-man's land). The final re-tile below covers
         // `relayout`; `hidden`/`repark` run here.
         let tsync = self.displays.sync(&mut self.workspaces, &*self.os);
-        for idx in tsync.hidden {
-            self.hide_workspace(idx);
-        }
-        for idx in tsync.repark {
-            if idx < self.workspaces.len() {
-                self.hide_workspace(idx);
-            }
-        }
+        self.park_topology_changes(tsync.hidden, tsync.repark);
         // Drop the layout-write cache: stale AX refs + moved displays mean
         // every "already applied" entry is a lie after sleep. The gone
         // grace restarts too — pre-sleep misses must not kill windows
