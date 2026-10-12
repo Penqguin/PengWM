@@ -92,3 +92,21 @@ fn default_popup_ratio() -> f64 {
 pub(super) fn equal_shares(n: usize) -> Vec<f64> {
     vec![1.0 / n as f64; n]
 }
+
+/// Flat index of the workspace holding `window_id` as a tree member.
+/// Popups are excluded: parking and the drag hit-test both want tiles only.
+/// The one spelling of "which workspace holds this window" — the store and
+/// the drag tracker share it instead of each carrying a copy.
+pub fn position_of_window(workspaces: &[Workspace], window_id: WindowId) -> Option<usize> {
+    workspaces
+        .iter()
+        .position(|ws| ws.find_window(window_id).is_some())
+}
+
+/// Flat index of the workspace tracking `window_id` as any member — tree or
+/// popup. Destroy/hide/show cleanup needs both kinds; popups count.
+pub fn position_of_member(workspaces: &[Workspace], window_id: WindowId) -> Option<usize> {
+    workspaces
+        .iter()
+        .position(|ws| ws.find_window(window_id).is_some() || ws.is_popup(window_id))
+}

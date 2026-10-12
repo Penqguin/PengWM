@@ -71,3 +71,41 @@ fn untracked_windows_are_raised_after_a_workspace_switch() {
         "the untracked overlay is re-raised above the newly shown workspace"
     );
 }
+
+#[test]
+fn untracked_verdict_survives_reclassification_after_cache_loss() {
+    // The element cache evicts on stale elements, and the fallback
+    // discovery re-classifies from scratch — a float_apps window would
+    // read `Standard` again. The routing verdict lives in the store, so
+    // the raise funnel keeps treating the window as an overlay (ADR-0002)
+    // regardless of what the class rides say after the fact.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.set_float_apps_for_test(vec!["com.apple.custom.floater".into()]);
+    handle.inject_bundle_id(42, "com.apple.custom.floater".into());
+    sm.on_window_created(300, 42);
+    assert!(sm.store.is_untracked(300));
+    // Post-eviction re-classification: the cache now says Standard.
+    handle.inject_window_kind(300, crate::adapter::WindowClass::Standard);
+    sm.raise_untracked_windows(None);
+    assert!(
+        handle.raised().contains(&300),
+        "the store's verdict, not the re-classified cache, decides"
+    );
+}
+
+#[test]
+fn gate_tiled_untracked_window_gets_a_tiled_verdict() {
+    // With the level gate off, an untracked *only because of the level*
+    // window tiles again (ADR-0002 kill switch). The verdict records the
+    // routing decision — Tiled — so the raise funnel stops re-raising it:
+    // it is a plain tile now, not an overlay.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.set_float_level_overlays_for_test(false);
+    handle.inject_window_kind(300, crate::adapter::WindowClass::Untracked);
+    sm.on_window_created(300, 42);
+    assert!(sm.store.routing_verdict(300).is_some());
+    assert!(
+        !sm.store.is_untracked(300),
+        "a gate-tiled window is a tile, and tiling is what the store remembers"
+    );
+}

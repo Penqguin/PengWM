@@ -3,8 +3,9 @@ use std::time::Instant;
 use crate::adapter::WindowClass;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
+use pengwm_core::workspace::position_of_member;
 
-use super::store::ParkReason;
+use super::store::{ParkReason, RoutingVerdict};
 use super::StateManager;
 use crate::event_loop::DaemonEvent;
 
@@ -52,6 +53,10 @@ impl StateManager {
                 window_id,
                 pid
             );
+            // The verdict is the store's now: the class rode the evictable
+            // element cache, and the fallback re-classification reads a
+            // bare `Standard` for float-listed bundles on cache misses.
+            self.store.note_routed(window_id, RoutingVerdict::Untracked);
             self.publish_bar_state();
             return;
         }
@@ -61,6 +66,7 @@ impl StateManager {
                 window_id,
                 pid
             );
+            self.store.note_routed(window_id, RoutingVerdict::Untracked);
             self.publish_bar_state();
             return;
         }
@@ -72,6 +78,7 @@ impl StateManager {
                 class,
                 restricted
             );
+            self.store.note_routed(window_id, RoutingVerdict::Popup);
             self.add_popup_to_workspace(window_id);
             self.publish_bar_state();
             return;
@@ -82,7 +89,8 @@ impl StateManager {
             .displays
             .routed_workspace_idx(pid, &self.workspaces, &*self.os)
             .unwrap_or(active);
-        self.add_window_to_workspace(window_id, pid, preferred);
+        self.store.note_routed(window_id, RoutingVerdict::Tiled);
+        self.add_window_to_workspace(window_id, preferred);
         // Discovery-time fast path: a window discovered already fullscreen
         // (daemon restart, or created straight into fullscreen) tiles for
         // one instant, then its refused first write would catch it anyway —
@@ -159,7 +167,6 @@ impl StateManager {
     pub(super) fn add_window_to_workspace(
         &mut self,
         window_id: WindowId,
-        _pid: i32,
         preferred: usize,
     ) -> Option<usize> {
         if self.workspaces[preferred].find_window(window_id).is_some() {
@@ -310,7 +317,7 @@ impl StateManager {
                     .routed_workspace_idx(pid, &self.workspaces, &*self.os)
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
-        if self.add_window_to_workspace(window_id, pid, preferred).is_some() {
+        if self.add_window_to_workspace(window_id, preferred).is_some() {
             self.publish_bar_state();
         }
     }
@@ -426,9 +433,7 @@ impl StateManager {
     /// Workspace index holding `window_id` as a tree member *or* a popup.
     /// The membership-aware find: destroy/hide/show cleanup needs both.
     pub(super) fn find_workspace_of_any(&self, window_id: WindowId) -> Option<usize> {
-        self.workspaces
-            .iter()
-            .position(|ws| ws.find_window(window_id).is_some() || ws.is_popup(window_id))
+        position_of_member(&self.workspaces, window_id)
     }
 
     /// True when any workspace tracks `window_id` as a popup. Popups are
@@ -446,12 +451,14 @@ impl StateManager {
             log::debug!("on_window_moved: ignoring parked window {}", window_id);
             return;
         }
-        if self.is_popup_anywhere(window_id) || self.is_untracked(window_id) {
-            // Popups are free-drag after placement (placed once at creation
-            // and on wake); untracked windows are user-positioned overlays
-            // with no placement at all. Both: never displaced-noted
-            // (nothing re-centers them) and never a drag-swap participant.
-            return;
+        // Popups are free-drag after placement (placed once at creation and
+        // on wake); untracked windows are user-positioned overlays with no
+        // placement at all. Both: never displaced-noted (nothing re-centers
+        // them) and never a drag-swap participant. The verdict is the
+        // durable ask — one lookup, no per-workspace scan.
+        match self.store.routing_verdict(window_id) {
+            Some(RoutingVerdict::Popup) | Some(RoutingVerdict::Untracked) => return,
+            _ => {}
         }
         let now = Instant::now();
         // The event coords drive the drag gesture; displacement reads the OS

@@ -2,9 +2,27 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use pengwm_core::tree::WindowId;
-use pengwm_core::workspace::Workspace;
+use pengwm_core::workspace::{position_of_member, position_of_window, Workspace};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The routing decision for a tracked window, recorded once at routing
+/// (first-classification-wins) and owned by the store from then on. The
+/// alternative — re-reading `OsAdapter::window_kind` everywhere — fails
+/// exactly when it matters: the element cache evicts on stale elements and
+/// the fallback discovery re-classifies from scratch, so a `float_apps`
+/// window would silently read `Standard` again and start getting managed
+/// by the WM that promised never to touch it (ADR-0002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutingVerdict {
+    /// Tiled into a workspace tree (or waiting to tile at capacity).
+    Tiled,
+    /// Workspace-bound popup: dialogs, floating panels, restricted apps.
+    Popup,
+    /// Cross-workspace untracked overlay (level-gated or `float_apps`):
+    /// never tiled, never parked, always re-raised after visibility changes.
+    Untracked,
+}
 
 /// Why a window left the tiling tree while staying tracked. `Hide` is the
 /// minimize/app-hide path (cmd-H, dock) — it reveals through the normal
@@ -46,6 +64,9 @@ pub struct WindowStore {
     window_pids: HashMap<WindowId, i32>,
     pid_to_windows: HashMap<i32, Vec<WindowId>>,
     parked: HashMap<WindowId, ParkedEntry>,
+    /// The routing verdict per tracked window — the answer to "what is
+    /// this window to me", durable across element-cache eviction.
+    routed: HashMap<WindowId, RoutingVerdict>,
     last_reconcile: Instant,
 }
 
@@ -55,6 +76,7 @@ impl WindowStore {
             window_pids: HashMap::new(),
             pid_to_windows: HashMap::new(),
             parked: HashMap::new(),
+            routed: HashMap::new(),
             last_reconcile: Instant::now(),
         }
     }
@@ -65,6 +87,7 @@ impl WindowStore {
             window_pids: HashMap::new(),
             pid_to_windows: HashMap::new(),
             parked: HashMap::new(),
+            routed: HashMap::new(),
             last_reconcile: last,
         }
     }
@@ -77,11 +100,15 @@ impl WindowStore {
             self.pid_to_windows.entry(pid).or_default().push(window_id);
         }
         self.parked.remove(&window_id);
+        // A re-created window id re-classifies at its next routing —
+        // subtree state must never outlive the window that earned it.
+        self.routed.remove(&window_id);
     }
 
     pub fn unregister(&mut self, window_id: WindowId) -> Option<i32> {
         let pid = self.window_pids.remove(&window_id)?;
         self.parked.remove(&window_id);
+        self.routed.remove(&window_id);
         if let Some(v) = self.pid_to_windows.get_mut(&pid) {
             v.retain(|&w| w != window_id);
             if v.is_empty() {
@@ -91,23 +118,12 @@ impl WindowStore {
         Some(pid)
     }
 
-    pub fn remove_pid_tracking(&mut self, window_id: WindowId) {
-        if let Some(pid) = self.window_pids.remove(&window_id) {
-            if let Some(v) = self.pid_to_windows.get_mut(&pid) {
-                v.retain(|&w| w != window_id);
-                if v.is_empty() {
-                    self.pid_to_windows.remove(&pid);
-                }
-            }
-        }
-        self.parked.remove(&window_id);
-    }
-
     pub fn remove_pid(&mut self, pid: i32) -> Vec<WindowId> {
         let windows = self.pid_to_windows.remove(&pid).unwrap_or_default();
         for &wid in &windows {
             self.window_pids.remove(&wid);
             self.parked.remove(&wid);
+            self.routed.remove(&wid);
         }
         windows
     }
@@ -138,6 +154,31 @@ impl WindowStore {
 
     pub fn is_empty(&self) -> bool {
         self.window_pids.is_empty()
+    }
+
+    // -- parked state ----------------------------------------------------------
+
+    /// Record the routing verdict for a tracked window. First call wins:
+    /// routing runs once per window birth, and ADR-0002's first-
+    /// classification-wins applies to the verdict too. From here on every
+    /// consumer asks the store instead of re-deriving from the
+    /// (evictable) element cache, and a stopped-asking question is one
+    /// fewer place the float machinery can silently unbecome.
+    pub fn note_routed(&mut self, window_id: WindowId, verdict: RoutingVerdict) {
+        self.routed.entry(window_id).or_insert(verdict);
+    }
+
+    /// The recorded routing verdict, if the window was routed. `None` for
+    /// windows registered but never routed (excluded-at-routing or dropped
+    /// classes) — callers proceed exactly as before such windows existed.
+    pub fn routing_verdict(&self, window_id: WindowId) -> Option<RoutingVerdict> {
+        self.routed.get(&window_id).copied()
+    }
+
+    /// True when the window's routing verdict is Untracked. The durable
+    /// ask: survives element-cache eviction and fallback re-classification.
+    pub fn is_untracked(&self, window_id: WindowId) -> bool {
+        self.routing_verdict(window_id) == Some(RoutingVerdict::Untracked)
     }
 
     // -- parked state ----------------------------------------------------------
@@ -176,7 +217,7 @@ impl WindowStore {
         workspaces: &[Workspace],
         reason: ParkReason,
     ) -> Option<usize> {
-        let idx = find_workspace_for_window(workspaces, window_id)?;
+        let idx = position_of_window(workspaces, window_id)?;
         self.parked.insert(
             window_id,
             ParkedEntry {
@@ -314,8 +355,7 @@ impl WindowStore {
         let mut to_show = Vec::new();
         for &wid in self.window_pids.keys() {
             let hidden = is_hidden(wid);
-            let member = find_workspace_for_window(workspaces, wid).is_some()
-                || workspaces.iter().any(|ws| ws.is_popup(wid));
+            let member = position_of_member(workspaces, wid).is_some();
             if hidden && member {
                 to_hide.push(wid);
             } else if !hidden && self.is_hidden(wid) {
@@ -359,12 +399,6 @@ impl Default for WindowStore {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn find_workspace_for_window(workspaces: &[Workspace], window_id: WindowId) -> Option<usize> {
-    workspaces
-        .iter()
-        .position(|ws| ws.find_window(window_id).is_some())
 }
 
 #[cfg(test)]
@@ -515,7 +549,8 @@ mod tests {
         assert!(!t.is_fullscreen_parked(10));
         assert!(t.is_hidden(10));
         assert!(
-            t.reveal(10).is_some_and(|e| e.idx == 3 && e.reason == ParkReason::Hide),
+            t.reveal(10)
+                .is_some_and(|e| e.idx == 3 && e.reason == ParkReason::Hide),
             "idx survives the upgrade"
         );
     }
@@ -573,7 +608,10 @@ mod tests {
         let is_hidden = |_| false;
         let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, is_hidden);
         assert!(to_hide.is_empty());
-        assert!(to_show.is_empty(), "fullscreen exit is the probe's job, not the hidden reconcile");
+        assert!(
+            to_show.is_empty(),
+            "fullscreen exit is the probe's job, not the hidden reconcile"
+        );
     }
 
     #[test]
@@ -594,5 +632,26 @@ mod tests {
         assert!(!t.should_reconcile(now));
         assert!(t.should_reconcile(now + Duration::from_secs(2)));
         assert!(!t.should_reconcile(now + Duration::from_secs(2) + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn verdict_first_call_wins() {
+        let mut r = WindowStore::new();
+        r.note_routed(10, RoutingVerdict::Untracked);
+        r.note_routed(10, RoutingVerdict::Tiled);
+        assert_eq!(r.routing_verdict(10), Some(RoutingVerdict::Untracked));
+        assert!(r.is_untracked(10));
+    }
+
+    #[test]
+    fn verdict_clears_on_unregister_and_re_register() {
+        let mut r = WindowStore::new();
+        r.register(10, 42);
+        r.note_routed(10, RoutingVerdict::Popup);
+        r.unregister(10);
+        assert_eq!(r.routing_verdict(10), None, "dead windows forget");
+        // A re-created window id re-classifies: seeded entry must not leak.
+        r.register(10, 42);
+        assert_eq!(r.routing_verdict(10), None);
     }
 }

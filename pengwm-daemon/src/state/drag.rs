@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
-use pengwm_core::workspace::Workspace;
+use pengwm_core::workspace::{position_of_window, Workspace};
 
 const SWAP_HOLD_DURATION: Duration = Duration::from_secs(2);
 const DRAG_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -79,7 +79,7 @@ impl DragState {
         self.drag_window = Some(window_id);
         self.last_move = Some(now);
 
-        if find_workspace_for_window(workspaces, window_id).is_none() {
+        if position_of_window(workspaces, window_id).is_none() {
             return;
         }
 
@@ -120,7 +120,7 @@ impl DragState {
         if let (Some(drag), Some(target)) = (self.drag_window, self.overlap_target) {
             if let Some(start) = self.overlap_start {
                 if now.duration_since(start) >= SWAP_HOLD_DURATION {
-                    if let Some(ws_idx) = find_workspace_for_window(workspaces, drag) {
+                    if let Some(ws_idx) = position_of_window(workspaces, drag) {
                         let action = DragTickAction::Swap {
                             workspace_idx: ws_idx,
                             drag,
@@ -158,12 +158,6 @@ impl Default for DragState {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn find_workspace_for_window(workspaces: &[Workspace], window_id: WindowId) -> Option<usize> {
-    workspaces
-        .iter()
-        .position(|ws| ws.find_window(window_id).is_some())
 }
 
 #[cfg(test)]

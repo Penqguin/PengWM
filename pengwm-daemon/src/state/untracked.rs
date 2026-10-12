@@ -1,4 +1,4 @@
-use crate::adapter::{DisplayInfo, WindowClass};
+use crate::adapter::DisplayInfo;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
@@ -16,13 +16,17 @@ impl StateManager {
     /// the pass to the monitor whose visible workspace changed (the
     /// containing-rect resolution is the helper popups share); `None`
     /// raises on every monitor (wake resync: stacking is globally unset).
+    ///
+    /// Asks the store's routing verdict, not the element cache: the cache
+    /// evicts on stale elements and the fallback re-classifies — an
+    /// ADR-0002 untracked overlay must stay untracked regardless.
     pub(super) fn raise_untracked_windows(&mut self, monitor: Option<u32>) {
         let untracked: Vec<WindowId> = self
             .store
             .all_window_pids()
             .keys()
             .copied()
-            .filter(|&wid| self.os.window_kind(wid) == Some(WindowClass::Untracked))
+            .filter(|&wid| self.store.is_untracked(wid))
             .collect();
         if untracked.is_empty() {
             return;
@@ -40,12 +44,6 @@ impl StateManager {
             log::debug!("raising untracked window {} (visibility changed)", wid);
             self.os.raise_window(wid);
         }
-    }
-
-    /// True when the window is classified untracked (cached class from
-    /// discovery + routing).
-    pub(super) fn is_untracked(&self, window_id: WindowId) -> bool {
-        self.os.window_kind(window_id) == Some(WindowClass::Untracked)
     }
 }
 

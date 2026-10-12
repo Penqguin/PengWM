@@ -357,7 +357,7 @@ impl StateManager {
                     .routed_workspace_idx(pid, &self.workspaces, &*self.os)
                     .unwrap_or_else(|| self.active_workspace_idx())
             };
-            if self.add_window_to_workspace(wid, pid, preferred).is_some() {
+            if self.add_window_to_workspace(wid, preferred).is_some() {
                 retiled = true;
             }
         }
