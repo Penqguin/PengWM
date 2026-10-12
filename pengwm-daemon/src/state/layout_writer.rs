@@ -11,6 +11,13 @@ use pengwm_core::tree::WindowId;
 pub(super) enum AfterWrite {
     /// Nothing further: still tracked, retrying, or backed off.
     Keep,
+    /// The write refused or failed, and the window is still tracked: one
+    /// cheap AX read decides whether macOS owned its geometry — anything
+    /// reporting native fullscreen parks immediately instead of writing
+    /// into a storm. The writer answers *which* outcomes belong to this
+    /// arm (the caller never matches on `WriteOutcome` shapes); the
+    /// parking gate itself stays with `StateManager`.
+    ProbeFullscreen,
     /// The window stayed gone past the wake-scoped gone grace: untrack it
     /// via the normal destroyed path.
     Untrack,
@@ -269,7 +276,7 @@ impl LayoutWriteCache {
                         actual
                     );
                 }
-                AfterWrite::Keep
+                AfterWrite::ProbeFullscreen
             }
             // Gone: the writer already refreshed + re-discovered and still
             // missed, so no second poll here — just the grace timer.
@@ -306,7 +313,10 @@ impl LayoutWriteCache {
                 }
             }
             // Drift + transient contention: the write never landed.
-            // Throttled log, retry on the next layout.
+            // Throttled log, retry on the next layout. Both are refusal
+            // modes of a still-alive element — in the wild a fullscreen
+            // failure reports `kAXErrorFailure` per attempt — so both arm
+            // the fullscreen decision for the caller.
             WriteOutcome::Drift { target, actual } => {
                 // Same reasoning as Pinned: a drift report means the
                 // element answered a readback, so it is not gone.
@@ -318,11 +328,11 @@ impl LayoutWriteCache {
                         target, actual
                     ),
                 );
-                AfterWrite::Keep
+                AfterWrite::ProbeFullscreen
             }
             WriteOutcome::Transient(msg) => {
                 self.log_transient(window_id, &msg);
-                AfterWrite::Keep
+                AfterWrite::ProbeFullscreen
             }
         }
     }
@@ -642,7 +652,7 @@ mod tests {
                         actual: Rect::new(500.0, 500.0, 10.0, 10.0),
                     }
                 ),
-                AfterWrite::Keep
+                AfterWrite::ProbeFullscreen
             );
             assert_eq!(pinned(&cache), strike);
         }
@@ -792,7 +802,7 @@ mod tests {
                     actual: Rect::new(500.0, 500.0, 10.0, 10.0),
                 }
             ),
-            AfterWrite::Keep
+            AfterWrite::ProbeFullscreen
         );
         assert!(cache.should_write(7, t, None));
         assert!(cache.throttle_armed(7));
@@ -802,7 +812,7 @@ mod tests {
                 t,
                 WriteOutcome::Transient("kAXErrorFailure (live resize)".into())
             ),
-            AfterWrite::Keep
+            AfterWrite::ProbeFullscreen
         );
         assert!(cache.throttle_armed(7));
         // Success clears the episode.

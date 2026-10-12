@@ -94,10 +94,8 @@ impl StateManager {
         // Discovery-time fast path: a window discovered already fullscreen
         // (daemon restart, or created straight into fullscreen) tiles for
         // one instant, then its refused first write would catch it anyway —
-        // probing here parks it before the sibling reflow ever happens.
-        if self.fullscreen_parking_enabled() && self.os.window_is_fullscreen(window_id) {
-            self.try_park_fullscreen(window_id);
-        }
+        // parking decides with its own probe.
+        self.try_park_fullscreen(window_id);
         self.publish_bar_state();
     }
 
@@ -323,10 +321,13 @@ impl StateManager {
     }
 
     /// True when the window is native fullscreen but this StateManager is
-    /// still acting on it — the fast path from `on_window_focused` and from
-    /// refused (`Pinned`) layout writes. Anything fullscreen-parked or
-    /// exempt (popups) reports `false`; the strategy knob gates the whole
-    /// mechanism (`[windows] fullscreen = "tile"` = legacy behavior).
+    /// still acting on it — parked, removed from the tree, siblings
+    /// reflowed. The parking gate owns the `AXFullScreen` probe; callers
+    /// answer the after-write *decision* (`AfterWrite::ProbeFullscreen`)
+    /// or a focus event, and never decide fullscreen geometry themselves.
+    /// Anything fullscreen-parked or exempt (popups) reports `false`; the
+    /// strategy knob gates the whole mechanism (`[windows] fullscreen =
+    /// "tile"` = legacy behavior).
     pub(super) fn try_park_fullscreen(&mut self, window_id: WindowId) -> bool {
         if !self.fullscreen_parking_enabled() {
             return false;
@@ -336,6 +337,11 @@ impl StateManager {
         }
         // Popups never tile anyway; parking would be no-op overhead.
         if self.is_popup_anywhere(window_id) {
+            return false;
+        }
+        // The fullscreen probe is the gate: a merely pinned (zoomed / busy
+        // app) window answers false here and keeps its tree slot.
+        if !self.os.window_is_fullscreen(window_id) {
             return false;
         }
         let Some(idx) = self
@@ -389,12 +395,10 @@ impl StateManager {
             return;
         }
         // Fullscreen enter usually re-fires focused-window-changed — the
-        // cheap fast path into parking. Cheap even when idle: focused
-        // events are rare, and the probe answers "no" in one AX read.
-        if self.fullscreen_parking_enabled()
-            && self.os.window_is_fullscreen(window_id)
-            && self.try_park_fullscreen(window_id)
-        {
+        // cheap fast path into parking, which decides with its own probe.
+        // Cheap even when idle: focused events are rare, and the gate
+        // answers "no" in one AX read.
+        if self.try_park_fullscreen(window_id) {
             return;
         }
         for i in 0..self.workspaces.len() {
@@ -593,6 +597,9 @@ impl StateManager {
     pub fn on_app_terminated(&mut self, pid: i32) {
         log::info!("App terminated: pid={}", pid);
         self.os.detach_observer(pid);
+        // The label cache is pid-keyed and dies with the pid; lingering
+        // entries would mislabel a recycled pid forever.
+        self.app_labels.remove(&pid);
         let windows = self.store.remove_pid(pid);
         for window_id in windows {
             // Synchronous eviction: the queued WindowDestroyed dispatches

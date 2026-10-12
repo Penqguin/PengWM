@@ -68,6 +68,13 @@ pub struct StateManager {
     /// wins), so this affects windows discovered after the change.
     float_level_overlays: bool,
     last_layout_rects: HashMap<WindowId, Rect>,
+    /// pid → menubar app label, cached. Labels resolve over synchronous
+    /// AX reads (each one drawing against the 250 ms message budget), so
+    /// the bar snapshot's cost must not scale with window count ×
+    /// publishes. Only resolved answers are cached — an app the OS could
+    /// not name during an AX hiccup stays uncached and retries; entries
+    /// live until the pid dies (`on_app_terminated`).
+    app_labels: HashMap<i32, String>,
     /// Layout-write policy and the maps it reasons about (skip-if-unchanged,
     /// read-before-write, gone grace, pin backoff, hidden seeding). Owned by
     /// `LayoutWriteCache` — `StateManager` never touches the maps directly.
@@ -184,6 +191,7 @@ impl StateManager {
             float_apps: settings.windows.float_apps.clone(),
             float_level_overlays: settings.windows.float_level_overlays,
             last_layout_rects: HashMap::new(),
+            app_labels: HashMap::new(),
             layout_cache: LayoutWriteCache::new(),
             drag: DragState::new(),
             shutdown_requested: false,
@@ -452,26 +460,16 @@ impl StateManager {
         let mut dead = Vec::new();
         let mut pinned_fullscreen = Vec::new();
         // `record_failure` routes `Ok` to `record_success` itself, so every
-        // executed write commits through one call.
+        // executed write commits through one call — and answers the
+        // after-write decision (`ProbeFullscreen` / `Untrack`, the fullscreen
+        // self-heal included) instead of the caller re-branching on
+        // `WriteOutcome` shapes.
         for (window_id, target) in self.layout_cache.plan_writes(&rects, &actuals) {
             let outcome = self.os.set_window_rect(window_id, target);
-            // A refused (`Pinned`) or failing (`Transient`/`Drift`) write on
-            // an otherwise-tracked window is either the expected pinned
-            // state (zoomed / busy app) or native fullscreen — full-screen
-            // failure in the wild is `kAXErrorFailure` per attempt, not only
-            // a readback-flavored `Pinned`. Probe rather than waiting for
-            // pin strikes: one AX read per failed write, and a genuine
-            // fullscreen parks immediately instead of writing into a storm.
-            if !matches!(
-                outcome,
-                pengwm_core::layout::WriteOutcome::Ok | pengwm_core::layout::WriteOutcome::Gone
-            ) && self.fullscreen_parking_enabled()
-                && self.os.window_is_fullscreen(window_id)
-            {
-                pinned_fullscreen.push(window_id);
-            }
-            if self.layout_cache.record_failure(window_id, target, outcome) == AfterWrite::Untrack {
-                dead.push(window_id);
+            match self.layout_cache.record_failure(window_id, target, outcome) {
+                AfterWrite::Keep => {}
+                AfterWrite::ProbeFullscreen => pinned_fullscreen.push(window_id),
+                AfterWrite::Untrack => dead.push(window_id),
             }
         }
         for window_id in pinned_fullscreen {
@@ -491,6 +489,26 @@ impl StateManager {
         let active_idx = self.active_workspace_idx();
         let split_direction = self.workspaces[active_idx].focused_split_direction();
 
+        // One label resolution per pid, not per window × publish: the
+        // cache holds every pid represented in the bar (positive answers
+        // only; an unnamed pid falls back to "unknown" and retries next
+        // publish, same as before).
+        let mut pids: Vec<i32> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.all_windows())
+            .filter_map(|wid| self.store.pid_for(wid))
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        for pid in pids {
+            if !self.app_labels.contains_key(&pid) {
+                if let Some(label) = self.os.app_name(pid).or_else(|| self.os.app_bundle_id(pid)) {
+                    self.app_labels.insert(pid, label);
+                }
+            }
+        }
+
         let workspaces: Vec<BarWorkspace> = self
             .workspaces
             .iter()
@@ -502,9 +520,9 @@ impl StateManager {
                     .into_iter()
                     .filter_map(|wid| self.store.pid_for(wid))
                     .map(|pid| {
-                        self.os
-                            .app_name(pid)
-                            .or_else(|| self.os.app_bundle_id(pid))
+                        self.app_labels
+                            .get(&pid)
+                            .cloned()
                             .unwrap_or_else(|| "unknown".into())
                     })
                     .collect();
