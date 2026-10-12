@@ -258,8 +258,9 @@ impl StateManager {
             }
         }
         // Everything re-stacked after sleep; stacking is globally unset, so
-        // re-assert no monitor is left with untracked overlays buried.
-        self.raise_untracked_windows(None);
+        // restore it fully: popups of the visible workspaces and the
+        // untracked overlays (ADR-0002).
+        self.reveal_stack(None);
         self.publish_bar_state();
         true
     }

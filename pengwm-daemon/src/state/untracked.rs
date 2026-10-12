@@ -4,14 +4,39 @@ use pengwm_core::tree::WindowId;
 
 use super::StateManager;
 
-/// Owns the untracked-window raise funnel (ADR-0002). Untracked windows
+/// Owns the stacking-restoration funnel (ADR-0002). Untracked windows
 /// are store-tracked, tree-less overlays: macOS keeps a level ≠ 0 window
 /// above the normal layer on its own, but a level-0 `float_apps` window
 /// (System Settings) stacks against the newly shown tree after every
-/// workspace switch. One `AXRaise` per untracked window on the monitor
-/// whose visible workspace changed is the same mechanism popups use on
-/// switch-back reveal — macOS stacking after un-hide is unspecified.
+/// workspace switch. `reveal_stack` restores stacking at every visibility
+/// transition — explicit switches, focus-driven switches, `reveal_all`
+/// and the wake resync: the shown workspace's popups re-assert on top
+/// (the switch-back raise, Q9) and the untracked overlays follow, because
+/// macOS stacking after un-hide is unspecified.
 impl StateManager {
+    /// Restore stacking after a visibility change. `monitor` scopes the
+    /// pass to the monitor whose visible workspace changed (the
+    /// containing-rect resolution is the helper popups share); `None`
+    /// restores on every monitor (wake resync / reveal_all: stacking is
+    /// globally unset). Previously only the explicit-switch path raised
+    /// popups; the other transitions left them buried under the tree.
+    pub(super) fn reveal_stack(&mut self, monitor: Option<u32>) {
+        // Popups of the workspace(s) coming into view are raised first,
+        // then the untracked overlays — overlays end above popups, as the
+        // explicit switch path always stacked them.
+        let shown: Vec<usize> = match monitor {
+            Some(mon) => self.displays.visible_on(mon).into_iter().collect(),
+            None => self.displays.active().values().copied().collect(),
+        };
+        for idx in shown {
+            for wid in self.workspaces[idx].popup_ids() {
+                log::debug!("reveal_stack: popup {} re-raised", wid);
+                self.os.raise_window(wid);
+            }
+        }
+        self.raise_untracked_windows(monitor);
+    }
+
     /// Raise untracked windows after a visibility change. `monitor` scopes
     /// the pass to the monitor whose visible workspace changed (the
     /// containing-rect resolution is the helper popups share); `None`

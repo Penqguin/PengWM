@@ -371,9 +371,9 @@ impl StateManager {
             }
         }
         if retiled {
-            // Reveals re-stacked the monitor(s); untracked overlays must
-            // stay above the tree after a RevealAll too.
-            self.raise_untracked_windows(None);
+            // Reveals re-stacked the monitor(s); the same stacking
+            // restoration as a switch — popups included, not just overlays.
+            self.reveal_stack(None);
             self.publish_bar_state();
         }
     }

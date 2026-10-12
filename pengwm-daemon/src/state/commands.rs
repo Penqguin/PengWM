@@ -65,16 +65,10 @@ impl StateManager {
                                 if let Some(wid) = dec.focus {
                                     self.os.focus_window(wid);
                                 }
-                                // Popups of the shown workspace come back on
-                                // top after the reveal writes — macOS stacking
-                                // after un-hide is otherwise unspecified (Q9).
-                                for wid in self.workspaces[dec.show].popup_ids() {
-                                    self.os.raise_window(wid);
-                                }
-                                // Untracked overlays stay above the newly
-                                // shown tree: one raise per untracked window
-                                // on this monitor (ADR-0002).
-                                self.raise_untracked_windows(Some(
+                                // Stacking after the reveal: popups of the
+                                // shown workspace come back on top, then
+                                // the untracked overlays (ADR-0002).
+                                self.reveal_stack(Some(
                                     self.workspaces[dec.show].monitor_id,
                                 ));
                                 self.switch_debounce_until =

@@ -419,9 +419,9 @@ impl StateManager {
                     if prev_idx != i {
                         self.hide_workspace(prev_idx);
                         // Focus-driven switch: the incoming workspace is
-                        // already visible, so re-assert the untracked
-                        // overlays above it (ADR-0002).
-                        self.raise_untracked_windows(Some(mon_id));
+                        // already visible — same stacking restoration as
+                        // the explicit switch path.
+                        self.reveal_stack(Some(mon_id));
                     }
                 }
                 self.publish_bar_state();

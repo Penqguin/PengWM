@@ -97,6 +97,25 @@ fn popup_hides_with_workspace_and_returns_on_top() {
 }
 
 #[test]
+fn reveal_all_restores_popup_stacking() {
+    // RevealAll re-attaches popups but never re-raised them before — only
+    // the explicit-switch path did. macOS stacking after un-hide is
+    // unspecified, so the same reveal-stack funnel owns every path.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.workspaces[0].popup_ratio = 0.75;
+    handle.inject_window_kind(300, WindowClass::Floating);
+    handle.inject_rect(300, popup_rect_on_display1());
+    sm.on_window_created(300, 42);
+    sm.on_window_hidden(300);
+    assert!(handle.raised().is_empty());
+    sm.on_command(Command::RevealAll, None);
+    assert!(
+        handle.raised().contains(&300),
+        "a revealed popup is re-raised above the tree, like on a switch"
+    );
+}
+
+#[test]
 fn displaced_popup_is_not_snapped_back() {
     // Free-drag after placement: the misplaced sweep must leave popups
     // alone, unlike tree windows which are re-asserted.
