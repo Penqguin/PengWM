@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.2 — Ask-before-update & remembered skips (2026-10-12)
 
 - **`pengwm update` now asks before installing.** Once the release check
   finds a strictly newer release it prints what it found and asks
