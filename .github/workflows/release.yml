@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           # Flat tarball: the one install artifact (install.sh, formula).
           # -C dist/$TARGET + `.` keeps the archive root at the binaries,
-          # which is what install.sh and Formula/pengwm.rb unpack.
+          # which is what install.sh unpacks.
           tar czf "pengwm-${TAG}-${TARGET}.tar.gz" -C "dist/$TARGET" .
           shasum -a 256 "pengwm-${TAG}-${TARGET}.tar.gz" > "pengwm-${TAG}-${TARGET}.tar.gz.sha256"
           ls -la pengwm-*

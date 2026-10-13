@@ -1,9 +1,9 @@
-# Distribution (bare binaries + LaunchAgent + Homebrew)
+# Distribution (bare binaries + LaunchAgent)
 
 Prebuilt, checksummed artifacts: a **flat binary tarball** (primary — two
 executables installed to `~/.pengwm/bin`, `pengwm` CLI symlink on PATH,
 launchd LaunchAgent runs the daemon at login). No App Store, no
-auto-updater, no `.app` bundle.
+auto-updater, no `.app` bundle, no Homebrew (ADR-0004).
 
 > **Why no bundle:** the project is certificate-less, and under ad-hoc
 > signing a bundle buys nothing — TCC's designated requirement for an
@@ -39,8 +39,9 @@ $PREFIX/pengwm-menubar -> ...                   # (default $PREFIX /usr/local/bi
 `PENGWM_HOME` is the one layout seam: `install.sh --home DIR` installs to
 `DIR/bin` and persists `PENGWM_HOME=DIR` in the LaunchAgent's
 `EnvironmentVariables` so the daemon's one-copy policy (`location.rs`)
-resolves the same root. Homebrew Cellar pengwm paths are also blessed by
-the policy so a `brew install pengwm` copy needs no config.
+resolves the same root. Pre-existing Homebrew Cellar pengwm copies remain
+accepted by the policy (grandfathered from the dropped brew path), but
+they can no longer be *installed* — see ADR-0004.
 
 ## What CI produces
 
@@ -104,32 +105,14 @@ Support-burden note: migrating from the bundle layout costs **one
 Accessibility re-grant** (the TCC entry is bound per layout: bundle id vs
 binary path). Same grant count as a signing-identity change.
 
-## Homebrew
+## No Homebrew
 
-- **`Formula/pengwm.rb`** (Penqguin/homebrew-tap) — the blessed brew path:
-  `bin.install pengwm, pengwm-menubar`, with caveats covering the
-  Accessibility grant, the per-upgrade re-grant, and LaunchAgent setup.
-  `brew install penqguin/tap/pengwm`.
-- **`Casks/pengwm.rb`** (tap) — tombstoned by the bump workflow (first run
-  after the cask retired): `disable!` pointing at the formula.
-
-Formula version + sha256 bumps are automated; see the next section.
-
-## Homebrew bump automation
-
-`.github/workflows/homebrew-bump.yml` keeps the tap in sync after every
-release:
-
-1. Triggered by the release workflow after a `v*` release publishes.
-2. Clones the tap repo (`Penqguin/homebrew-tap`).
-3. Updates `Formula/pengwm.rb`: `version` and the per-arch `sha256` lines,
-   taken from the release's `.sha256` sidecars — no manual bumping.
-4. Tombstones `Casks/pengwm.rb` (once, idempotent — later bumps skip it).
-5. Opens a PR on the tap for a human to review and merge.
-
-Authentication uses a PAT secret named `HOMEBREW_TAP_TOKEN`. If the PR
-doesn't show up, check the workflow run on the release, re-run it, or do a
-one-off manual bump.
+Homebrew distribution was dropped on 2026-10-13 (ADR-0004): the tap and
+its bump automation are gone, and installs go through the curl one-liner
+or a checkout's `./install.sh`, with `pengwm update` (or re-running the
+installer) keeping an installed copy current. The tombstoned cask in the
+tap repo will simply never resolve again; pre-existing Cellar installs
+stay runnable and updatable in place via `pengwm update`.
 
 ## Migrating from the v0.5.x bundle / source builds
 

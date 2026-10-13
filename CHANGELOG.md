@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Homebrew distribution dropped (deferred).** The tap-bump workflow
+  (`.github/workflows/homebrew-bump.yml`) and the stale in-repo
+  `Formula/pengwm.rb` are gone; the decision is recorded in ADR-0004
+  because the bump automation had never once completed a cycle (the
+  tap stayed at v0.6.0 through v0.6.1 and v0.6.2, which shipped via the
+  curl installer). Installs are the curl one-liner / `./install.sh`,
+  kept current by `pengwm update`. Pre-existing Homebrew Cellar copies
+  are grandfathered: the one-copy policy still accepts them and they
+  update in place; nothing existing breaks. Re-adding brew later means
+  restoring the bump workflow, setting the PAT secret, and catching the
+  formula up in one PR — the ADR records how.
+
 ## v0.6.2 — Ask-before-update & remembered skips (2026-10-12)
 
 - **`pengwm update` now asks before installing.** Once the release check
