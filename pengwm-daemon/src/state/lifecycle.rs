@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use crate::adapter::WindowClass;
+use crate::adapter::WindowListing;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::position_of_member;
@@ -575,7 +576,7 @@ impl StateManager {
     /// no longer lists is untracked immediately — the fast close-detector
     /// for missed destroyed notifications (see `untrack_unlisted_windows`).
     pub(super) fn sync_untracked_windows(&mut self, pids: impl IntoIterator<Item = i32>) {
-        let mut listings: Vec<(i32, Vec<WindowId>)> = Vec::new();
+        let mut listings: Vec<(i32, WindowListing)> = Vec::new();
         for pid in pids {
             if self.excluded_pids.contains(&pid) {
                 continue;
@@ -585,8 +586,9 @@ impl StateManager {
         // Untrack dead members first, so the discovery layouts below
         // compute targets against a tree that no longer holds them.
         self.untrack_unlisted_windows(&listings);
-        for (pid, windows) in listings {
-            for window_id in windows {
+        for (pid, listing) in listings {
+            let listed = StateManager::listing_evidence(&listing).unwrap_or(&[]);
+            for window_id in listed.iter().copied() {
                 if !self.store.contains(window_id) {
                     log::info!(
                         "sync_untracked: discovered untracked window {} pid {}",
@@ -608,8 +610,13 @@ impl StateManager {
     /// layout, then the write-path grace added up to 10s more.
     ///
     /// Judgement rules that make the fast path safe outside wake:
-    /// - **Zero listing is no judgment.** An app whose poll returns
-    ///   nothing is the post-wake blackout signature, not a mass close.
+    /// - **A `NoAnswer` listing is no judgment.** An app AX could not
+    ///   answer for is the post-wake blackout signature, not a mass close.
+    /// - **An answered listing judges, empty included.** Closing the app's
+    ///   only window (a PDF in Preview, the 1Password vault) leaves the
+    ///   app running with *zero* windows — the app's own "I have none"
+    ///   verdict is the fast close-detector for exactly the case the
+    ///   destroyed notification is most likely to miss.
     /// - **Suppressed while a wake resync is pending** for the same
     ///   reason: during the blackout even live apps list nothing, and a
     ///   partial listing from a recovering app is ambiguous.
@@ -617,14 +624,15 @@ impl StateManager {
     /// Untracking runs the normal `on_window_destroyed` path (remove,
     /// retile, bar publish), so a closed window's siblings re-tile within
     /// one sweep cycle.
-    pub(super) fn untrack_unlisted_windows(&mut self, listings: &[(i32, Vec<WindowId>)]) {
+    pub(super) fn untrack_unlisted_windows(&mut self, listings: &[(i32, WindowListing)]) {
         if !self.may_judge("untrack_unlisted") {
             return;
         }
-        for (pid, listed) in listings {
-            if !StateManager::listing_is_evidence(listed) {
+        for (pid, listing) in listings {
+            let Some(listed) = StateManager::listing_evidence(listing) else {
+                // NoAnswer: the blackout signature, no judgment.
                 continue;
-            }
+            };
             let tracked = self
                 .store
                 .windows_for(*pid)
@@ -653,12 +661,12 @@ impl StateManager {
         if self.excluded_pids.contains(&pid) || !self.may_judge("unknown-destroyed probe") {
             return;
         }
-        let windows = self.os.poll_windows_for_pid(pid);
-        if !StateManager::listing_is_evidence(&windows) {
-            // Zero listing: no judgment (blackout signature).
+        let listing = self.os.poll_windows_for_pid(pid);
+        if StateManager::listing_evidence(&listing).is_none() {
+            // NoAnswer: no judgment (blackout signature).
             return;
         }
-        self.untrack_unlisted_windows(&[(pid, windows)]);
+        self.untrack_unlisted_windows(&[(pid, listing)]);
     }
     pub fn on_app_launched(&mut self, pid: i32) {
         log::info!("App launched: pid={}", pid);
@@ -667,11 +675,13 @@ impl StateManager {
             return;
         }
         self.os.attach_observer(pid);
-        for window_id in self.os.poll_windows_for_pid(pid) {
-            self.store.register(window_id, pid);
-            let _ = self
-                .event_tx
-                .try_send(DaemonEvent::WindowCreated(window_id, pid));
+        if let WindowListing::Answered(windows) = self.os.poll_windows_for_pid(pid) {
+            for window_id in windows {
+                self.store.register(window_id, pid);
+                let _ = self
+                    .event_tx
+                    .try_send(DaemonEvent::WindowCreated(window_id, pid));
+            }
         }
     }
 

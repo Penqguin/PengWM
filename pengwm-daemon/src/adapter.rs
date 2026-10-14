@@ -109,10 +109,26 @@ pub trait ObserverRegistry {
     fn refresh_aged_observers(&mut self, older_than: Duration);
 }
 
+/// An app's answer to the window poll. The distinction the poll seam once
+/// threw away: the app **answered** (possibly with zero windows — the
+/// closed-only-window signature) versus AX **could not answer** (the
+/// post-wake blackout signature). Both used to collapse into an empty
+/// `Vec`, forcing every judgment sweep to treat an empty answer as
+/// inadmissible — which stranded a closed-only-window app in the tree.
+pub enum WindowListing {
+    /// The app's AX element answered the `AXWindows` query successfully;
+    /// the contents (possibly empty) are the app's own verdict and
+    /// admissible death evidence for its tracked windows.
+    Answered(Vec<WindowId>),
+    /// AX errored / the app element would not answer. The blackout
+    /// signature: no structural judgment may run on this listing.
+    NoAnswer,
+}
+
 pub trait OsAdapter: ObserverRegistry {
     fn running_app_pids(&self) -> Vec<i32>;
     fn frontmost_pid(&self) -> Option<i32>;
-    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId>;
+    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing;
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;

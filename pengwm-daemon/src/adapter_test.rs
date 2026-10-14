@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter, WindowClass};
+use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter, WindowClass, WindowListing};
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
 
@@ -495,7 +495,7 @@ impl OsAdapter for SharedTestAdapter {
         self.0.frontmost_pid()
     }
 
-    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId> {
+    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing {
         self.0.poll_windows_for_pid(pid)
     }
 
@@ -599,9 +599,11 @@ impl OsAdapter for TestAdapter {
         self.frontmost
     }
 
-    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId> {
+    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing {
         if self.ax_blackout.get() {
-            return Vec::new();
+            // AX answering nothing: the blackout signature, not death
+            // evidence.
+            return WindowListing::NoAnswer;
         }
         let windows = self.windows.borrow().get(&pid).cloned().unwrap_or_default();
         // Prod's poll re-caches every listed element (fresh AXUIElementRef
@@ -612,7 +614,9 @@ impl OsAdapter for TestAdapter {
                 cached.insert(wid, pid);
             }
         }
-        windows
+        // Empty but answered: the closed-only-window signature (Preview /
+        // 1Password after their one window closed).
+        WindowListing::Answered(windows)
     }
 
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId> {

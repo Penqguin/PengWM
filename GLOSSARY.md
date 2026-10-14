@@ -27,9 +27,16 @@ comes from the design skill, not this file.
 - **LayoutWriter** — The module owning the layout-write policy maps
   (skip-if-unchanged, read-before-write, gone grace, pin backoff) behind
   `plan_writes` / `record_failure` → `AfterWrite`.
-- **AX blackout** — The post-wake window where AX answers nothing (zero
-  listings, unreadable attributes). No structural judgment may run during
-  a blackout; see the wake resync machinery.
+- **Listing** — An app's answer to the window poll (`WindowListing` at the
+  adapter seam): `Answered` (AX gave the app's window list, possibly
+  empty — a closed-only-window app's "zero windows" verdict) or
+  `NoAnswer` (AX could not answer at all). Judgment sweeps ask
+  `listing_evidence`: an answered listing is admissible death evidence,
+  `NoAnswer` is never judged on.
+- **AX blackout** — The post-wake window where AX answers nothing
+  (`NoAnswer` listings, unreadable attributes). No structural judgment
+  may run during a blackout; see the wake resync machinery. Distinct
+  from an answered-empty listing, which IS judgment evidence.
 - **Skip** — The menubar's persisted "Not now" verdict for one release
   tag, recorded in `$PENGWM_HOME/skip-update`. Silences the update ask
   for that tag only; a different, newer tag re-arms it. Explicit commands

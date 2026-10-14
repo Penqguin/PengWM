@@ -202,9 +202,36 @@ fn sweep_untracks_window_whose_destroyed_notification_was_missed() {
 }
 
 #[test]
-fn zero_listing_is_no_judgment_in_the_sweep() {
-    // An app whose poll returns nothing is the AX blackout signature, not
-    // a mass close — the sweep must not untrack on it.
+fn sweep_untracks_the_app_whose_only_window_closed() {
+    // A PDF closed in Preview, the 1Password vault closed: the destroyed
+    // notification is missed and the app stays running with *zero*
+    // windows. Its empty-but-answered listing is death evidence — the
+    // pre-Listing rule ("zero listing is no judgment") stranded the dead
+    // window in the tree forever, freezing the layout.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    assert_eq!(sm.workspaces[0].window_count(), 1);
+    // Preview keeps running: the empty answer IS the app's verdict.
+    handle.unlist_window(42, 100);
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.store.contains(100),
+        "an answered-but-empty listing untracks its app's tracked windows"
+    );
+    assert_eq!(
+        sm.workspaces[0].window_count(),
+        0,
+        "the dead window left the tree, retiling is free to shrink"
+    );
+}
+
+#[test]
+fn unanswered_listing_makes_no_judgment_in_the_sweep() {
+    // AX answering nothing (the blackout signature) is not a mass close —
+    // the sweep must not untrack on it. The app that *answers* with zero
+    // windows is a different fact, judged by
+    // `sweep_untracks_the_app_whose_only_window_closed`.
     let (mut sm, handle) = setup_with_handle(1);
     sm.on_window_created(100, 42);
     handle.set_ax_blackout(true);
@@ -212,7 +239,7 @@ fn zero_listing_is_no_judgment_in_the_sweep() {
     sm.on_tick();
     assert!(
         sm.store.contains(100),
-        "a zero listing must not count as evidence of death"
+        "a NoAnswer listing must not count as evidence of death"
     );
 }
 
@@ -236,10 +263,27 @@ fn unknown_destroyed_probe_untracks_the_dead_window() {
 }
 
 #[test]
-fn unknown_destroyed_probe_with_zero_listing_makes_no_judgment() {
+fn unknown_destroyed_probe_untracks_the_app_whose_only_window_closed() {
+    // The 1Password stale-ref close: a destroyed notification fired for
+    // an element we could not map, and the probe's poll answers "zero
+    // windows" — the app's own verdict after its only window closed. The
+    // empty answer judges; the dead window leaves immediately.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    handle.unlist_window(42, 100);
+    sm.on_unknown_window_destroyed(42);
+    assert!(
+        !sm.store.contains(100),
+        "an answered-empty probe untracks the closed-only-window app"
+    );
+}
+
+#[test]
+fn unknown_destroyed_probe_with_no_answer_makes_no_judgment() {
     // Event during a blackout (theoretically impossible — a dead AX can't
     // deliver notifications — but the probe must still be safe): the
-    // zero-listing pid is not judged.
+    // unanswered poll is not judged. An answered-empty poll is, by
+    // contrast — see `sweep_untracks_the_app_whose_only_window_closed`.
     let (mut sm, handle) = setup_with_handle(1);
     sm.on_window_created(100, 42);
     handle.set_ax_blackout(true);

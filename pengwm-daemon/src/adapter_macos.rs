@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 
 use crate::adapter::{
-    DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter, WindowClass,
+    DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter, WindowClass, WindowListing,
 };
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
@@ -46,8 +46,10 @@ impl MacOsAdapter {
     /// overwrite that used to leak one ref is fixed by construction.
     fn refresh_element(&self, window_id: WindowId, pid: i32) -> Option<CFRef<AXUIElementRef>> {
         let windows = unsafe { ax_element::windows_for_pid(pid) };
+        // No answer is the same as no match: the caller's stale-ref
+        // handling owns what happens next.
         let mut result = None;
-        for (elem, wid, _) in windows {
+        for (elem, wid, _) in windows.unwrap_or_default() {
             if wid == window_id {
                 // Reassignment drops any earlier duplicate match — and the
                 // reassignment itself is released by the next one.
@@ -151,7 +153,7 @@ impl MacOsAdapter {
         for pid in ns_workspace::running_app_pids() {
             let windows = unsafe { ax_element::windows_for_pid(pid) };
             let mut found: Option<CFRef<AXUIElementRef>> = None;
-            for (elem, wid, _) in windows {
+            for (elem, wid, _) in windows.unwrap_or_default() {
                 if wid == window_id {
                     found = Some(elem);
                 }
@@ -212,8 +214,11 @@ impl MacOsAdapter {
                             // the window is probably alive. The owned refs release
                             // as the vec drops — no hand-rolled release loop.
                             let listed = unsafe { ax_element::windows_for_pid(pid) };
-                            let ids: Vec<WindowId> =
-                                listed.iter().map(|(_, wid, _)| *wid).collect();
+                            let ids: Vec<WindowId> = listed
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|(_, wid, _)| *wid)
+                                .collect();
                             log::debug!(
                                 "write_diag win={} outcome=Gone target={:?}\n  refresh_element found no match\n  app: {:?} pid {}\n  app still lists {} window(s): {:?}",
                                 window_id,
@@ -298,8 +303,12 @@ impl OsAdapter for MacOsAdapter {
         ax_element::frontmost_pid()
     }
 
-    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId> {
-        let windows = unsafe { ax_element::windows_for_pid(pid) };
+    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing {
+        let Some(windows) = (unsafe { ax_element::windows_for_pid(pid) }) else {
+            // AX errored or the app element would not answer: the blackout
+            // signature, not death evidence.
+            return WindowListing::NoAnswer;
+        };
         let mut result = Vec::new();
         for (element, window_id, class) in windows {
             unsafe {
@@ -324,7 +333,7 @@ impl OsAdapter for MacOsAdapter {
             self.ctx.cache_insert(window_id, element, pid, class);
             result.push(window_id);
         }
-        result
+        WindowListing::Answered(result)
     }
 
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId> {

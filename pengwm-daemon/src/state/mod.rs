@@ -167,9 +167,11 @@ impl StateManager {
 
         for pid in os.running_app_pids() {
             os.attach_observer(pid);
-            for window_id in os.poll_windows_for_pid(pid) {
-                store.register(window_id, pid);
-                let _ = event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
+            if let crate::adapter::WindowListing::Answered(windows) = os.poll_windows_for_pid(pid) {
+                for window_id in windows {
+                    store.register(window_id, pid);
+                    let _ = event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));
+                }
             }
         }
 

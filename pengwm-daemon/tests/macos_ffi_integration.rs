@@ -41,7 +41,7 @@ fn macos_ffi_integration() {
     let front_pid = ax_element::frontmost_pid().expect("should have a frontmost application");
 
     // 4. Discover existing windows for the frontmost app
-    let windows = unsafe { ax_element::windows_for_pid(front_pid) };
+    let windows = unsafe { ax_element::windows_for_pid(front_pid) }.unwrap_or_default();
     // Don't assert on this - the app might not have windows
 
     // 5. If there are windows, try get_window_rect and set_window_rect
@@ -122,7 +122,7 @@ fn on_window_created_tracks_pid_and_applies_layout() {
     }
 
     let pid = ax_element::frontmost_pid().expect("should have a frontmost application");
-    let windows_before = unsafe { ax_element::windows_for_pid(pid) };
+    let windows_before = unsafe { ax_element::windows_for_pid(pid) }.unwrap_or_default();
 
     // Launch a new Finder window so the AXObserver fires a
     // WindowCreated notification.
@@ -144,7 +144,7 @@ fn on_window_created_tracks_pid_and_applies_layout() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let windows_after = unsafe { ax_element::windows_for_pid(pid) };
+    let windows_after = unsafe { ax_element::windows_for_pid(pid) }.unwrap_or_default();
 
     // The new window should be present in the window list.
     assert!(

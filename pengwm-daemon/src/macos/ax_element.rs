@@ -428,6 +428,15 @@ pub fn frontmost_pid() -> Option<i32> {
 /// id check fails are simply never retained — dropping the vector releases
 /// the survivors, and nothing owned is ever left behind.
 ///
+/// Poll an app's windows through AX. The buy side of the `WindowListing`
+/// seam: `None` is the no-answer case (the app element could not be
+/// created, or the `AXWindows` read errored — the blackout signature);
+/// `Some` is an actual answer, empty included (a closed-only-window app's
+/// legitimate "I have no windows").
+///
+/// Each listed window carries the element the poll copied, so the caller
+/// can cache it; the window id comes from the private `_AXUIElementGetWindow`
+///
 /// The class carries the ADR-0002 level gate: one CG snapshot covers the
 /// whole poll, and any candidate whose `kCGWindowLayer` is not the normal
 /// level classifies `Untracked` ahead of its subrole.
@@ -438,10 +447,8 @@ pub fn frontmost_pid() -> Option<i32> {
 /// the Accessibility API is called from a trusted process with the necessary permissions.
 pub unsafe fn windows_for_pid(
     pid: i32,
-) -> Vec<(CFRef<AXUIElementRef>, WindowId, crate::adapter::WindowClass)> {
-    let Some(app) = create_app_element(pid) else {
-        return Vec::new();
-    };
+) -> Option<Vec<(CFRef<AXUIElementRef>, WindowId, crate::adapter::WindowClass)>> {
+    let app = create_app_element(pid)?;
 
     let windows_attr = CFString::new(kAXWindowsAttribute);
     let mut windows_array: CFTypeRef = ptr::null();
@@ -452,11 +459,9 @@ pub unsafe fn windows_for_pid(
     );
     if err != kAXErrorSuccess {
         // `app` drops here; nothing else was created.
-        return Vec::new();
+        return None;
     }
-    let Some(windows_array) = CFRef::from_create(windows_array as CFArrayRef) else {
-        return Vec::new();
-    };
+    let windows_array = CFRef::from_create(windows_array as CFArrayRef)?;
 
     let count = CFArrayGetCount(windows_array.ptr());
     let mut result = Vec::new();
@@ -488,7 +493,7 @@ pub unsafe fn windows_for_pid(
         }
     }
 
-    result
+    Some(result)
 }
 
 /// # Safety

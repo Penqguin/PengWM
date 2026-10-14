@@ -1,10 +1,11 @@
 use std::time::{Duration, Instant};
 
+use crate::adapter::WindowListing;
 use pengwm_core::tree::WindowId;
 
 use super::{StateManager, WakeResync};
 
-/// One owner of the AX blackout: the wake resync lifecycle (arm → probe →
+/// one owner of the AX blackout: the wake resync lifecycle (arm → probe →
 /// commit) and the judgment rules that keep every sweep honest while AX is
 /// blacked out. Two rules, stated here once and asked everywhere:
 ///
@@ -15,9 +16,11 @@ use super::{StateManager, WakeResync};
 /// `6f92075` gone-grace regression. Every sweep asks `may_judge`
 /// instead of re-deriving the suppression.
 ///
-/// **Zero listing is no judgment.** An app whose poll returns nothing is
-/// the blackout signature, never mass-close evidence — every sweep injects
-/// its listings through `listing_is_evidence`.
+/// **`NoAnswer` is no judgment.** An app whose poll could not be answered
+/// by AX is the blackout signature, never mass-close evidence — every
+/// sweep asks `listing_evidence`, which hands the window list through for
+/// `Answered` listings (empty included: a closed-only-window app's
+/// "zero windows" verdict is admissible) and stops `NoAnswer` cold.
 ///
 /// The wake-pending bit the write-path grace reads is armed and cleared
 /// here, at the exact points the resync state changes — the twin bit and
@@ -148,12 +151,18 @@ impl StateManager {
         false
     }
 
-    /// "Zero listing is no judgment": an app whose poll returns nothing is
-    /// the post-wake blackout signature, not a mass close — an empty
-    /// answer is inadmissible death evidence for every sweep. The one
-    /// definition; previously restated as a comment in seven places.
-    pub(super) fn listing_is_evidence(listed: &[WindowId]) -> bool {
-        !listed.is_empty()
+    /// The one definition of admissible death evidence: an **answered**
+    /// listing (even empty — the closed-only-window signature) is the
+    /// app's own verdict on its windows; a `NoAnswer` is the blackout
+    /// signature and judges nothing. Previously an empty answer was
+    /// inadmissible in every case, which stranded an app whose only
+    /// window closed (Preview, 1Password): its "zero windows" verdict is
+    /// the fast close-detector and it never got to testify.
+    pub(super) fn listing_evidence(listing: &WindowListing) -> Option<&[WindowId]> {
+        match listing {
+            WindowListing::Answered(listed) => Some(listed),
+            WindowListing::NoAnswer => None,
+        }
     }
 
     /// One resync attempt. Re-attaches observers and re-polls every app —
@@ -185,17 +194,21 @@ impl StateManager {
         }
         // Poll every app first: this refreshes the element cache and tells
         // us whether AX is answering at all.
-        let polled: Vec<(i32, Vec<WindowId>)> = pids
+        let polled: Vec<(i32, WindowListing)> = pids
             .iter()
             .map(|&pid| (pid, self.os.poll_windows_for_pid(pid)))
             .collect();
         let any_windows = polled
             .iter()
-            .any(|(_, wins)| Self::listing_is_evidence(wins));
+            .any(|(_, listing)| {
+                StateManager::listing_evidence(listing)
+                    .is_some_and(|wins| !wins.is_empty())
+            });
         if !any_windows && !force {
-            // Every app reported zero windows. On a machine that was
-            // managing windows a moment ago that means AX is still dead,
-            // not that every window closed during sleep.
+            // No app listed any window. On a machine that was managing
+            // windows a moment ago that means AX is not answering yet,
+            // not that every window closed during sleep — wait for the
+            // next probe unless the deadline forces the commit.
             return false;
         }
 
@@ -231,8 +244,9 @@ impl StateManager {
         self.untrack_unlisted_windows(&polled);
         // Tile anything that appeared during sleep, reusing the poll above
         // instead of querying every app a second time.
-        for (pid, windows) in polled {
-            for window_id in windows {
+        for (pid, listing) in polled {
+            let listed = StateManager::listing_evidence(&listing).unwrap_or(&[]);
+            for window_id in listed.iter().copied() {
                 if !self.store.contains(window_id) {
                     log::info!(
                         "wake resync: discovered untracked window {} pid {}",
@@ -282,8 +296,10 @@ mod tests {
     }
 
     #[test]
-    fn zero_listing_is_never_evidence() {
-        assert!(!StateManager::listing_is_evidence(&[]));
-        assert!(StateManager::listing_is_evidence(&[10, 20]));
+    fn no_answer_is_never_evidence_but_an_answered_empty_listing_is() {
+        use crate::adapter::WindowListing;
+        assert!(StateManager::listing_evidence(&WindowListing::NoAnswer).is_none());
+        assert!(StateManager::listing_evidence(&WindowListing::Answered(vec![])).is_some());
+        assert!(StateManager::listing_evidence(&WindowListing::Answered(vec![10, 20])).is_some());
     }
 }
