@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Typed settings no longer kill the keybind table.** The keybind
+  scrape walks the whole config file; a typed value at the top level
+  (`gap_outer = 5`, `restricted_apps = [...]`) hard-errored the parse
+  and silently replaced every custom keybind with defaults behind a
+  misleading warning. Non-string values are skipped now — a real
+  keybind mistake (`alt-h = "bogus-action"`) still errors.
+
 - **Placement memory: manual workspace moves survive a WM restart.**
   Every tileable window's home is captured at quit as a durable record —
   bundle + title → workspace *name* (WindowId and pid are deliberately

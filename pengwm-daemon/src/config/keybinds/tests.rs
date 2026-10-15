@@ -284,6 +284,24 @@ cmd-1 = "workspace-1"
 }
 
 #[test]
+fn typed_settings_do_not_kill_the_keybind_table() {
+    // The scrape walks the whole config file; typed settings ride the
+    // same top level as keybind rows. A number or array value must be
+    // skipped, not vetoed — a hard error here silently replaced every
+    // custom keybind with defaults behind a misleading warning.
+    let toml_str = r#"
+gap_outer = 5
+restricted_apps = ["com.apple.systempreferences"]
+
+cmd-h = "focus-left"
+"#;
+    let value: toml::Value = toml::from_str(toml_str).unwrap();
+    let config = try_from_toml_value(&value).unwrap();
+    assert_eq!(config.bindings.len(), 1);
+    assert!(matches!(&config.bindings[0].action, Command::Focus { direction: Direction::Left }));
+}
+
+#[test]
 fn try_from_toml_rejects_unknown_action() {
     let toml_str = r#"
 cmd-h = "focus-left"

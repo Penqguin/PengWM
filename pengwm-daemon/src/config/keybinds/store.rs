@@ -86,9 +86,15 @@ pub fn try_from_toml_value(value: &toml::Value) -> Result<KeybindConfig, String>
         None => return Ok(KeybindConfig { bindings }),
     };
     for (key_str, action_val) in table {
+        // The keybind scrape sees the whole config file, settings included.
+        // A typed setting (`gap_outer = 5`, `restricted_apps = [...]`) is
+        // Settings' business — skip it, never veto the table: a hard error
+        // here fell every custom keybind back to defaults behind a
+        // misleading warning whenever the file carried any non-string key.
+        // A typo'd *action* (an actual keybind misformed) still errors.
         let action_str = match action_val.as_str() {
             Some(s) => s,
-            None => return Err(format!("keybind '{key_str}' value must be a string")),
+            None => continue,
         };
         let action = Command::parse_action(action_str)
             .ok_or_else(|| format!("unknown action '{action_str}' for keybind '{key_str}'"))?;
