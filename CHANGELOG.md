@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Keybindings: no arrow keys, resize on alt-ctrl-shift-hjkl.** All
+  default arrow-chord bindings are gone (`alt-arrows` focus,
+  `alt-ctrl-arrows` focus-display, `alt-ctrl-shift-arrows`
+  move-to-display, `alt-shift-arrows` resize): option-arrow is macOS text
+  editing (word/line jump) and the WM must not steal it. Resizing is
+  `alt-ctrl-shift-h/j/k/l`; focus-display moved to `alt-ctrl-h/j/k/l`;
+  move-window-to-display now rides `alt-cmd-h/j/k/l`. New regression test
+  asserts no arrow keycode is bound under any modifier combination.
+
 - **Homebrew distribution dropped (deferred).** The tap-bump workflow
   (`.github/workflows/homebrew-bump.yml`) and the stale in-repo
   `Formula/pengwm.rb` are gone; the decision is recorded in ADR-0004

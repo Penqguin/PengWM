@@ -11,7 +11,9 @@ use super::store::{
 impl Default for KeybindConfig {
     fn default() -> Self {
         let bindings = vec![
-            // Focus movement: alt-h/j/k/l (vim-style)
+            // Focus movement: alt-h/j/k/l (vim-style). Arrow keys are never
+            // bound: option-arrow is macOS text-editing (word jump / line
+            // jump) and the WM must not steal it.
             Keybind {
                 keycode: 0x04,
                 modifiers: MODIFIER_ALT,
@@ -35,35 +37,6 @@ impl Default for KeybindConfig {
             },
             Keybind {
                 keycode: 0x25,
-                modifiers: MODIFIER_ALT,
-                action: Command::Focus {
-                    direction: Direction::Right,
-                },
-            },
-            // Arrow keys as alternative
-            Keybind {
-                keycode: 0x7B,
-                modifiers: MODIFIER_ALT,
-                action: Command::Focus {
-                    direction: Direction::Left,
-                },
-            },
-            Keybind {
-                keycode: 0x7D,
-                modifiers: MODIFIER_ALT,
-                action: Command::Focus {
-                    direction: Direction::Down,
-                },
-            },
-            Keybind {
-                keycode: 0x7E,
-                modifiers: MODIFIER_ALT,
-                action: Command::Focus {
-                    direction: Direction::Up,
-                },
-            },
-            Keybind {
-                keycode: 0x7C,
                 modifiers: MODIFIER_ALT,
                 action: Command::Focus {
                     direction: Direction::Right,
@@ -207,89 +180,93 @@ impl Default for KeybindConfig {
                 modifiers: MODIFIER_CMD | MODIFIER_SHIFT,
                 action: Command::ReloadConfig,
             },
-            // Display focus: alt-ctrl arrows (move focus between monitors)
+            // Display focus: alt-ctrl-h/j/k/l (move focus between monitors;
+            // hjkl, not arrows — arrow keys are never bound)
             Keybind {
-                keycode: 0x7B,
+                keycode: 0x04,
                 modifiers: MODIFIER_ALT | MODIFIER_CTRL,
                 action: Command::FocusDisplay {
                     direction: Direction::Left,
                 },
             },
             Keybind {
-                keycode: 0x7C,
+                keycode: 0x25,
                 modifiers: MODIFIER_ALT | MODIFIER_CTRL,
                 action: Command::FocusDisplay {
                     direction: Direction::Right,
                 },
             },
             Keybind {
-                keycode: 0x7E,
+                keycode: 0x28,
                 modifiers: MODIFIER_ALT | MODIFIER_CTRL,
                 action: Command::FocusDisplay {
                     direction: Direction::Up,
                 },
             },
             Keybind {
-                keycode: 0x7D,
+                keycode: 0x26,
                 modifiers: MODIFIER_ALT | MODIFIER_CTRL,
                 action: Command::FocusDisplay {
                     direction: Direction::Down,
                 },
             },
-            // Move window to display: alt-ctrl-shift arrows
+            // Move window to display: alt-cmd-h/j/k/l. The alt-ctrl-shift
+            // chord belongs to resize.
             Keybind {
-                keycode: 0x7B,
-                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                keycode: 0x04,
+                modifiers: MODIFIER_ALT | MODIFIER_CMD,
                 action: Command::MoveWindowToDisplay {
                     direction: Direction::Left,
                 },
             },
             Keybind {
-                keycode: 0x7C,
-                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                keycode: 0x25,
+                modifiers: MODIFIER_ALT | MODIFIER_CMD,
                 action: Command::MoveWindowToDisplay {
                     direction: Direction::Right,
                 },
             },
             Keybind {
-                keycode: 0x7E,
-                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                keycode: 0x28,
+                modifiers: MODIFIER_ALT | MODIFIER_CMD,
                 action: Command::MoveWindowToDisplay {
                     direction: Direction::Up,
                 },
             },
             Keybind {
-                keycode: 0x7D,
-                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
+                keycode: 0x26,
+                modifiers: MODIFIER_ALT | MODIFIER_CMD,
                 action: Command::MoveWindowToDisplay {
                     direction: Direction::Down,
                 },
             },
-            // Resize pane: alt-shift-arrows (push divider, 5% steps)
+            // Resize pane: alt-ctrl-shift-h/j/k/l (push divider, 5% steps).
+            // vim-style, never arrow — option-arrow must stay free for
+            // text editing.
             Keybind {
-                keycode: 0x7B,
-                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
+                keycode: 0x04,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
                 action: Command::ResizePane {
                     direction: Direction::Left,
                 },
             },
             Keybind {
-                keycode: 0x7C,
-                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
+                keycode: 0x25,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
                 action: Command::ResizePane {
                     direction: Direction::Right,
                 },
             },
             Keybind {
-                keycode: 0x7E,
-                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
+                keycode: 0x28,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
                 action: Command::ResizePane {
                     direction: Direction::Up,
                 },
             },
             Keybind {
-                keycode: 0x7D,
-                modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
+                keycode: 0x26,
+                modifiers: MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT,
                 action: Command::ResizePane {
                     direction: Direction::Down,
                 },

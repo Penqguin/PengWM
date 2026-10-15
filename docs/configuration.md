@@ -257,8 +257,8 @@ Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 | ------------------------------------------------------------ | --------------------------------------------- |
 | `focus-left` / `focus-right` / `focus-up` / `focus-down`     | Move focus in direction                       |
 | `move-window-left` / `move-window-right` / `move-window-up` / `move-window-down` | Move focused window into the neighbor's space |
-| `focus-display-left` / `focus-display-right` / `focus-display-up` / `focus-display-down` | Move focus to the monitor in direction (defaults: `alt-ctrl-arrows`) |
-| `move-window-to-display-left` / `move-window-to-display-right` / `move-window-to-display-up` / `move-window-to-display-down` | Throw focused window to the monitor in direction (defaults: `alt-ctrl-shift-arrows`) |
+| `focus-display-left` / `focus-display-right` / `focus-display-up` / `focus-display-down` | Move focus to the monitor in direction (defaults: `alt-ctrl-h/j/k/l`) |
+| `move-window-to-display-left` / `move-window-to-display-right` / `move-window-to-display-up` / `move-window-to-display-down` | Throw focused window to the monitor in direction (defaults: `alt-cmd-h/j/k/l`) |
 | `workspace-1` .. `workspace-9`                               | Switch to workspace                           |
 | `move-window-to-workspace-1` .. `move-window-to-workspace-9` | Move window to workspace                      |
 | `split-horizontal` / `split-vertical`                        | Split the focused area                        |
@@ -282,12 +282,6 @@ alt-j = "focus-down"
 alt-k = "focus-up"
 alt-l = "focus-right"
 
-# Arrow key focus
-alt-left  = "focus-left"
-alt-right = "focus-right"
-alt-up    = "focus-up"
-alt-down  = "focus-down"
-
 # Window movement
 alt-shift-h = "move-window-left"
 alt-shift-j = "move-window-down"
@@ -309,15 +303,26 @@ alt-m = "toggle-magnify"
 cmd-shift-r = "reload-config"
 
 # tmux-style presets and resizing
-alt-shift-left  = "resize-pane-left"
-alt-shift-right = "resize-pane-right"
-alt-shift-up    = "resize-pane-up"
-alt-shift-down  = "resize-pane-down"
+alt-ctrl-shift-h = "resize-pane-left"
+alt-ctrl-shift-l = "resize-pane-right"
+alt-ctrl-shift-k = "resize-pane-up"
+alt-ctrl-shift-j = "resize-pane-down"
 alt-ctrl-1 = "select-layout-even-horizontal"
 alt-ctrl-2 = "select-layout-even-vertical"
 alt-ctrl-3 = "select-layout-main-horizontal"
 alt-ctrl-4 = "select-layout-main-vertical"
 alt-ctrl-5 = "select-layout-tiled"
+
+# Display movement
+alt-ctrl-h = "focus-display-left"
+alt-ctrl-l = "focus-display-right"
+alt-ctrl-k = "focus-display-up"
+alt-ctrl-j = "focus-display-down"
+alt-cmd-h = "move-window-to-display-left"
+alt-cmd-l = "move-window-to-display-right"
+
+# NOTE: arrow keys (option-arrow) are deliberately left unbound — macOS
+# text editing owns them.
 ```
 
 ### Prefix key

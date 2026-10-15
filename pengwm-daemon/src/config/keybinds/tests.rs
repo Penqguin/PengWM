@@ -196,20 +196,57 @@ fn parse_modifiers_full_names() {
 }
 
 #[test]
-fn default_has_resize_pane_on_alt_shift_arrows() {
+fn default_binds_no_arrow_keys_at_all() {
+    // Option-arrow is macOS text editing (word/line jump). The WM must not
+    // bind any arrow chord, at any modifier combination.
     let config = KeybindConfig::default();
-    let mods = MODIFIER_ALT | MODIFIER_SHIFT;
+    for keycode in [0x7Bu16, 0x7Cu16, 0x7Eu16, 0x7Du16] {
+        assert!(
+            !config.bindings.iter().any(|b| b.keycode == keycode),
+            "keycode {keycode:#X} must be unbound (arrow keys never bound)"
+        );
+    }
+}
+
+#[test]
+fn default_has_resize_pane_on_alt_ctrl_shift_hjkl() {
+    let config = KeybindConfig::default();
+    let mods = MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT;
     for (keycode, dir) in [
-        (0x7B, Direction::Left),
-        (0x7C, Direction::Right),
-        (0x7E, Direction::Up),
-        (0x7D, Direction::Down),
+        (0x04, Direction::Left),
+        (0x26, Direction::Down),
+        (0x28, Direction::Up),
+        (0x25, Direction::Right),
     ] {
         assert!(
             config.bindings.iter().any(|b| b.keycode == keycode
                 && b.modifiers == mods
                 && matches!(&b.action, Command::ResizePane { direction: d } if *d == dir)),
             "missing resize-pane binding for keycode {keycode:#X}"
+        );
+    }
+}
+
+#[test]
+fn default_has_display_movement_on_hjkl_chords() {
+    let config = KeybindConfig::default();
+    for (keycode, dir) in [
+        (0x04, Direction::Left),
+        (0x26, Direction::Down),
+        (0x28, Direction::Up),
+        (0x25, Direction::Right),
+    ] {
+        assert!(
+            config.bindings.iter().any(|b| b.keycode == keycode
+                && b.modifiers == MODIFIER_ALT | MODIFIER_CTRL
+                && matches!(&b.action, Command::FocusDisplay { direction: d } if *d == dir)),
+            "missing focus-display binding for keycode {keycode:#X}"
+        );
+        assert!(
+            config.bindings.iter().any(|b| b.keycode == keycode
+                && b.modifiers == MODIFIER_ALT | MODIFIER_CMD
+                && matches!(&b.action, Command::MoveWindowToDisplay { direction: d } if *d == dir)),
+            "missing move-window-to-display binding for keycode {keycode:#X}"
         );
     }
 }

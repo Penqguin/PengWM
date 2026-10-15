@@ -61,7 +61,7 @@ pengwm focus-display <left|right|up|down>
 ```
 
 Move focus to the workspace shown on the monitor in the given direction
-(default binds: `alt-ctrl-arrows`). Always succeeds — focusing an empty
+(default binds: `alt-ctrl-h/j/k/l`). Always succeeds — focusing an empty
 workspace just moves the focus there, so the next switch or move resolves
 on the newly focused monitor.
 
@@ -72,7 +72,7 @@ pengwm move-window-to-display <left|right|up|down>
 ```
 
 Throw the focused window onto the monitor in the given direction (default
-binds: `alt-ctrl-shift-arrows`). Always lands on that monitor's visible
+(default binds: `alt-cmd-h/j/k/l`). Always lands on that monitor's visible
 workspace, bypassing `max_tiles`; focus stays on the source monitor.
 
 ## Cycle Layout
