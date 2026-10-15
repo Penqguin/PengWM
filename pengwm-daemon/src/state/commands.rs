@@ -177,7 +177,6 @@ impl StateManager {
                     let sess = session::snapshot_from(
                         &self.workspaces,
                         self.displays.active(),
-                        self.displays.entries(),
                         self.gap_outer,
                         self.gap_inner,
                     );

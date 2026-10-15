@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::WorkspaceEntry;
 use pengwm_core::workspace::Workspace;
 
 mod string_key_map {
@@ -37,13 +36,19 @@ mod string_key_map {
 
 /// Versioned on-disk session snapshot. Stored at
 /// `~/.local/share/pengwm/state.toml` (or `$XDG_STATE_HOME/pengwm/state.toml`).
+///
+/// Deliberately carries no routing `entries`: routing is a config-owned
+/// birth decision (`Settings.workspaces`), and a snapshot that carried it
+/// became a second source of truth — a session saved by an older binary
+/// shadowed every later default/config change and re-saved itself on each
+/// quit (the stale-entries fork). The session owns dynamic state only:
+/// workspace topology, active seats, gaps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub version: u32,
     pub workspaces: Vec<Workspace>,
     #[serde(with = "string_key_map")]
     pub active: BTreeMap<u32, usize>,
-    pub entries: Vec<WorkspaceEntry>,
     pub gap_outer: f64,
     pub gap_inner: f64,
 }
@@ -52,7 +57,6 @@ impl Session {
     pub fn new(
         workspaces: Vec<Workspace>,
         active: BTreeMap<u32, usize>,
-        entries: Vec<WorkspaceEntry>,
         gap_outer: f64,
         gap_inner: f64,
     ) -> Self {
@@ -60,7 +64,6 @@ impl Session {
             version: 1,
             workspaces,
             active,
-            entries,
             gap_outer,
             gap_inner,
         }
@@ -101,22 +104,16 @@ pub fn sanitize_workspace(ws: &Workspace) -> Workspace {
 }
 
 /// Build a Session snapshot from the live `StateManager` fields, sanitizing
-/// workspaces so no WindowIds are persisted.
+/// workspaces so no WindowIds are persisted. Routing entries are config-owned
+/// and never ride the snapshot (see the `Session` docs).
 pub fn snapshot_from(
     workspaces: &[Workspace],
     active: &BTreeMap<u32, usize>,
-    entries: &[WorkspaceEntry],
     gap_outer: f64,
     gap_inner: f64,
 ) -> Session {
     let sanitized: Vec<Workspace> = workspaces.iter().map(sanitize_workspace).collect();
-    Session::new(
-        sanitized,
-        active.clone(),
-        entries.to_vec(),
-        gap_outer,
-        gap_inner,
-    )
+    Session::new(sanitized, active.clone(), gap_outer, gap_inner)
 }
 
 /// Atomically write the session to `path` (tmp+rename+fsync parent).
@@ -185,7 +182,6 @@ pub fn clear_default() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WorkspaceEntry;
     use pengwm_core::workspace::Workspace;
     use std::collections::BTreeMap;
 
@@ -203,18 +199,7 @@ mod tests {
         ws.toggle_magnify();
         assert_eq!(ws.window_count(), 2);
 
-        let sess = snapshot_from(
-            &[ws],
-            &BTreeMap::from([(1, 0)]),
-            &[WorkspaceEntry {
-                name: "Dev".into(),
-                apps: vec![],
-                monitor: None,
-                autostart: vec![],
-            }],
-            10.0,
-            5.0,
-        );
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(1, 0)]), 10.0, 5.0);
         assert_eq!(sess.workspaces.len(), 1);
         assert_eq!(sess.workspaces[0].window_count(), 0, "windows stripped");
         assert!(
@@ -238,11 +223,27 @@ mod tests {
     }
 
     #[test]
+    fn legacy_file_with_entries_still_loads() {
+        // Pre-candidate-1 state.toml files carry `[[entries]]` sections (the
+        // stale-entries fork). Unknown fields are ignored on deserialize, so
+        // an untouched state file loads and the fork is discarded.
+        let ws = Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080));
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(1, 0)]), 10.0, 5.0);
+        let mut toml_str = toml::to_string_pretty(&sess).unwrap();
+        toml_str.push_str("\n[[entries]]\nname = \"Stale\"\n");
+        let path = tmp_path("legacy.toml");
+        std::fs::write(&path, toml_str).unwrap();
+        let loaded = load_from(&path).expect("legacy session should load");
+        assert_eq!(loaded.workspaces[0].name, "Dev");
+        assert_eq!(loaded.gap_outer, 10.0);
+    }
+
+    #[test]
     fn orphan_remap_example() {
         // Simulate session saved with monitor 2, but only display 1 exists now.
         // The caller (StateManager) remaps, but we ensure sanitize keeps monitor_id.
         let ws = Workspace::new("Browsing".into(), 2, (1920, 0), (1920, 1080));
-        let sess = snapshot_from(&[ws], &BTreeMap::from([(2, 0)]), &[], 10.0, 5.0);
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(2, 0)]), 10.0, 5.0);
         assert_eq!(sess.workspaces[0].monitor_id, 2);
         assert_eq!(sess.active.get(&2), Some(&0));
     }

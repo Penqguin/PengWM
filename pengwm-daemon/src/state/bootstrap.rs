@@ -20,34 +20,23 @@ pub struct Assembled {
 }
 
 /// Pure assembly: from display infos + settings + optional session, produce
-/// the workspace vec, display set, gaps and the resolved entries. No `OsAdapter`
-/// needed beyond the display infos slice (already queried by caller).
-/// entries flows: Settings.workspaces -> DisplaySet.entries -> Session.entries
-/// (Candidate 6: intentional clone, not worth Arc — update all three on new field).
+/// the workspace vec, display set, and gaps. No `OsAdapter` needed beyond
+/// the display infos slice (already queried by caller). Entries always
+/// resolve from `Settings` — routing is a config-owned birth decision, so a
+/// session never shadows it (Config owns routing; the Session owns only
+/// dynamic state). Historically the session forked entries from here, and a
+/// state.toml written by an older binary pinned stale app routing forever.
 pub fn assemble(
     display_infos: &[DisplayInfo],
     primary_id: u32,
     settings: &Settings,
     maybe_session: Option<&Session>,
 ) -> Assembled {
-    let (entries, use_session) = if let Some(sess) = maybe_session {
-        if !sess.workspaces.is_empty() {
-            (sess.entries.clone(), true)
-        } else {
-            let e = if settings.workspaces.is_empty() {
-                default_workspaces()
-            } else {
-                settings.workspaces.clone()
-            };
-            (e, false)
-        }
+    let use_session = maybe_session.is_some_and(|sess| !sess.workspaces.is_empty());
+    let entries = if settings.workspaces.is_empty() {
+        default_workspaces()
     } else {
-        let e = if settings.workspaces.is_empty() {
-            default_workspaces()
-        } else {
-            settings.workspaces.clone()
-        };
-        (e, false)
+        settings.workspaces.clone()
     };
 
     let mut displays = DisplaySet::with_max_tiles(entries.clone(), settings.max_tiles);
@@ -195,7 +184,6 @@ mod tests {
         let sess = Session::new(
             vec![sess_ws],
             std::collections::BTreeMap::from([(1, 0)]),
-            crate::config::default_workspaces(),
             15.0,
             7.0,
         );
@@ -231,7 +219,6 @@ mod tests {
         let sess = Session::new(
             vec![ws0, ws1],
             std::collections::BTreeMap::from([(1, 0)]),
-            vec![],
             10.0,
             5.0,
         );
@@ -270,7 +257,6 @@ mod tests {
         let sess = Session::new(
             vec![ws0],
             std::collections::BTreeMap::from([(1, 0)]),
-            vec![],
             10.0,
             5.0,
         );
@@ -284,6 +270,42 @@ mod tests {
     }
 
     #[test]
+    fn assemble_session_never_shadows_config_entries() {
+        // The stale-entries fork (the workspace-walks-back-to-1 bug): a
+        // state.toml saved by an older binary used to pin its app routing
+        // forever — new default/config apps (Firefox Developer Edition)
+        // never reached routing, and the stale list re-saved itself on
+        // every quit. Config owns routing; the session carries only
+        // dynamic state and can never shadow it.
+        let displays = vec![disp(1, (0, 0))];
+        let ws = pengwm_core::workspace::Workspace::new("Browsing".into(), 1, (0, 0), (1920, 1080));
+        let sess = Session::new(
+            vec![ws],
+            std::collections::BTreeMap::from([(1, 0)]),
+            10.0,
+            5.0,
+        );
+        let settings = Settings {
+            workspaces: vec![WorkspaceEntry {
+                name: "Browsing".into(),
+                apps: vec!["org.mozilla.firefoxdeveloperedition".into()],
+                monitor: None,
+                autostart: vec![],
+            }],
+            ..Settings::default()
+        };
+        let a = assemble(&displays, 1, &settings, Some(&sess));
+        assert!(a.use_session);
+        assert_eq!(a.entries.len(), 1);
+        assert!(
+            a.entries[0]
+                .apps
+                .contains(&"org.mozilla.firefoxdeveloperedition".to_string()),
+            "session restore must not shadow config routing entries"
+        );
+    }
+
+    #[test]
     fn assemble_session_orphan_remapped() {
         let displays = vec![disp(1, (0, 0))];
         let ws =
@@ -291,7 +313,6 @@ mod tests {
         let sess = Session::new(
             vec![ws],
             std::collections::BTreeMap::from([(2, 0)]),
-            vec![],
             10.0,
             5.0,
         );
