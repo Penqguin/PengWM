@@ -343,8 +343,14 @@ install_binaries() {
   mkdir -p "$BIN_DIR"
   for bin in pengwm pengwm-menubar; do
     # cp, not ditto: loose binaries have no bundle to preserve; cp keeps
-    # the code signature (signature data lives inside the Mach-O).
-    cp -f "$source_dir/$bin" "$BIN_DIR/$bin"
+    # the code signature (signature data lives inside the Mach-O). To a
+    # temp file in the target dir, then mv: overwriting the live inode
+    # (`cp -f` truncates it) leaves the kernel's already-mapped pages
+    # fighting the new ones — exec dies with SIGKILL (Code Signature
+    # Invalid). A rename lands a fresh inode; the old path stays valid for
+    # any process still running it until it exits.
+    cp -f "$source_dir/$bin" "$BIN_DIR/$bin.tmp"
+    mv -f "$BIN_DIR/$bin.tmp" "$BIN_DIR/$bin"
     chmod 755 "$BIN_DIR/$bin"
   done
   echo "Installed binaries in $BIN_DIR"
