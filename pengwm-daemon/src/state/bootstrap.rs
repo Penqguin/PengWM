@@ -184,6 +184,7 @@ mod tests {
         let sess = Session::new(
             vec![sess_ws],
             std::collections::BTreeMap::from([(1, 0)]),
+            vec![],
             15.0,
             7.0,
         );
@@ -219,6 +220,7 @@ mod tests {
         let sess = Session::new(
             vec![ws0, ws1],
             std::collections::BTreeMap::from([(1, 0)]),
+            vec![],
             10.0,
             5.0,
         );
@@ -257,6 +259,7 @@ mod tests {
         let sess = Session::new(
             vec![ws0],
             std::collections::BTreeMap::from([(1, 0)]),
+            vec![],
             10.0,
             5.0,
         );
@@ -282,6 +285,7 @@ mod tests {
         let sess = Session::new(
             vec![ws],
             std::collections::BTreeMap::from([(1, 0)]),
+            vec![],
             10.0,
             5.0,
         );
@@ -313,6 +317,7 @@ mod tests {
         let sess = Session::new(
             vec![ws],
             std::collections::BTreeMap::from([(2, 0)]),
+            vec![],
             10.0,
             5.0,
         );

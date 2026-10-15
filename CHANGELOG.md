@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Placement memory: manual workspace moves survive a WM restart.**
+  Every tileable window's home is captured at quit as a durable record —
+  bundle + title → workspace *name* (WindowId and pid are deliberately
+  not part of the identity: both die with the process / are app-level).
+  Restore-time routing consults the record once per window, *before*
+  config routing — the record is what the user did, the config list is
+  what the app is — and a hit is consumed once so two identically-titled
+  windows don't inherit each other's home. Misses (retitle, rename,
+  unidentifiable window) fall through to config routing exactly as
+  before, so nothing loses more than it keeps. The new `window_title`
+  adapter seam backs the title half of the identity.
+
+- **Restack fix: a member of a hidden workspace is offscreen — at every
+  routing, not just the first switch.** The initial hide pass ran inside
+  `new()` while every tree was still empty, so windows routed after it
+  (bootstrap poll, sweep, new windows of routed apps, manual moves to a
+  hidden workspace) kept whatever position macOS had them in — floating
+  visibly over the active workspace until the next switch. Both add
+  funnels now take the same hide placement a switch would give them
+  (`hide_window_in_workspace`); reveal funnels are deliberately
+  untouched (a deminimized window must stay where the user is looking).
+
 - **Keybindings: no arrow keys, resize on alt-ctrl-shift-hjkl.** All
   default arrow-chord bindings are gone (`alt-arrows` focus,
   `alt-ctrl-arrows` focus-display, `alt-ctrl-shift-arrows`

@@ -10,6 +10,12 @@ comes from the design skill, not this file.
   `WindowStore` (`note_routed`, first-call-wins) so window identity
   survives the evictable element cache and its fallback
   re-classification. Ask the store, never re-derive from `window_kind`.
+- **Placement memory** — The session's durable "where did this window
+  live" record: bundle + title → workspace **name** (per window,
+  captured at quit, `state::placement`). Consumed through one ask at
+  routing, hit-once; it outranks config routing because it is what the
+  user *did*, not what the app *is*. Restore input only — membership
+  stays single-sourced in the trees (ADR-0003).
 - **Park** — A tracked window that left the tiling tree but waits to come
   back: `ParkReason::Hide` (minimize / app-hide) or `ParkReason::Fullscreen`
   (native fullscreen). One parking map, one reveal funnel.

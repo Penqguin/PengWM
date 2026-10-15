@@ -396,6 +396,11 @@ impl OsAdapter for MacOsAdapter {
         self.ctx.cache_get().get(&window_id).map(|(_, _, c)| *c)
     }
 
+    fn window_title(&self, window_id: WindowId) -> Option<String> {
+        let (element, _) = self.cache_get_element(window_id)?;
+        unsafe { ax_element::string_attribute(element.ptr(), kAXTitleAttribute) }
+    }
+
     fn raise_window(&self, window_id: WindowId) {
         if let Some((element, _pid)) = self.cache_get_element(window_id) {
             unsafe { ax_element::raise_window(element.ptr()) };

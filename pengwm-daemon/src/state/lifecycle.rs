@@ -96,10 +96,27 @@ impl StateManager {
             return;
         }
 
-        let active = self.active_workspace_idx();
-        let preferred = self.routed_workspace_for(pid).unwrap_or(active);
+        // Placement memory (restore-time) outranks config routing: the
+        // record is what the user *did* last session, the config list is
+        // what the app *is*. Then the config entry match. Then the active
+        // workspace — unassigned windows restore where the boot finds them.
+        let preferred = self
+            .remembered_workspace(window_id, pid)
+            .or_else(|| self.routed_workspace_for(pid))
+            .unwrap_or_else(|| self.active_workspace_idx());
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
-        self.add_window_to_workspace(window_id, preferred);
+        let placed_workspace =
+            self.add_window_to_workspace(window_id, preferred);
+        // Candidate 3: a member of a hidden workspace is offscreen. The
+        // initial hide pass ran inside `new()` while every tree was still
+        // empty — everything discovered after it (bootstrap poll, sweep,
+        // new windows) must take the same hide placement here, or it floats
+        // visibly over the active workspace until the next switch.
+        if let Some(idx) = placed_workspace {
+            if !self.displays.is_visible(idx, &self.workspaces) {
+                self.hide_window_in_workspace(window_id, idx);
+            }
+        }
         // Discovery-time fast path: a window discovered already fullscreen
         // (daemon restart, or created straight into fullscreen) tiles for
         // one instant, then its refused first write would catch it anyway —

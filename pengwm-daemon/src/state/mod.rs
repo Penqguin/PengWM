@@ -21,6 +21,7 @@ pub mod drag;
 pub mod layout_writer;
 pub mod lifecycle;
 pub mod monitors_wake;
+pub mod placement;
 pub mod reconcile;
 pub mod session;
 pub mod store;
@@ -104,6 +105,11 @@ pub struct StateManager {
     /// cannot run inline. See `state::blackout` — the one owner of the
     /// resync lifecycle and the no-judgment-while-blackout rules.
     wake_resync: Option<WakeResync>,
+    /// Placement memory from the last session: durable (bundle, title →
+    /// workspace name) records consumed through the one routing ask
+    /// (`state::placement::remembered_workspace`). Restore input, never a
+    /// live membership owner (ADR-0003).
+    placement_memory: Vec<session::WindowPlacement>,
 }
 
 /// A wake resync waiting for the AX subsystem to come back.
@@ -208,6 +214,9 @@ impl StateManager {
             // the startup second pass.
             last_window_sweep: Instant::now() - Duration::from_secs(5),
             wake_resync: None,
+            placement_memory: maybe_session
+                .map(|sess| sess.placements.clone())
+                .unwrap_or_default(),
         };
 
         // Hide every workspace that isn't the active one for its monitor.
@@ -295,12 +304,35 @@ impl StateManager {
     }
 
     fn hide_workspace(&mut self, workspace_idx: usize) {
-        let ws = &self.workspaces[workspace_idx];
-        let window_ids = ws.all_owned();
+        let window_ids = self.workspaces[workspace_idx].all_owned();
         if window_ids.is_empty() {
             return;
         }
-        let placement = match self.windows_hidden_strategy() {
+        let placement = self.hidden_placement_for_workspace(workspace_idx);
+        let placements: HashMap<WindowId, pengwm_core::layout::HidePlacement> =
+            window_ids.into_iter().map(|wid| (wid, placement)).collect();
+        log::debug!(
+            "hide_workspace idx={} mon={} strategy={:?} placement={:?} windows={:?}",
+            workspace_idx,
+            self.workspaces[workspace_idx].monitor_id,
+            self.windows_hidden_strategy(),
+            placement,
+            placements.keys()
+        );
+        self.os.hide_windows(&placements);
+        self.layout_cache
+            .seed_hidden(placement.rect(), placements.keys().copied());
+    }
+
+    /// The hide placement for tree windows of one workspace — the one
+    /// strategy read both hide funnels share (`hide_workspace` all at
+    /// once, `hide_window_in_workspace` a single post-routing member).
+    fn hidden_placement_for_workspace(
+        &self,
+        workspace_idx: usize,
+    ) -> pengwm_core::layout::HidePlacement {
+        let ws = &self.workspaces[workspace_idx];
+        match self.windows_hidden_strategy() {
             crate::config::HiddenStrategy::BottomEdge => {
                 pengwm_core::layout::HidePlacement::BottomEdge(pengwm_core::layout::hidden_rect(
                     ws.monitor_origin(),
@@ -310,20 +342,26 @@ impl StateManager {
             crate::config::HiddenStrategy::FarOffscreen => {
                 pengwm_core::layout::HidePlacement::FarOffscreen
             }
-        };
-        let placements: HashMap<WindowId, pengwm_core::layout::HidePlacement> =
-            window_ids.into_iter().map(|wid| (wid, placement)).collect();
-        log::debug!(
-            "hide_workspace idx={} mon={} strategy={:?} placement={:?} windows={:?}",
+        }
+    }
+
+    /// Hide one tree window at its workspace's placement: the routing tail
+    /// of the invariant "a member of a hidden workspace is offscreen".
+    /// Without it, a window routed into a hidden workspace (bootstrap
+    /// poll, sweep, a new window of a routed app) keeps whatever position
+    /// macOS gave it — floating visibly over the active workspace until
+    /// the next switch.
+    fn hide_window_in_workspace(&mut self, window_id: WindowId, workspace_idx: usize) {
+        let placement = self.hidden_placement_for_workspace(workspace_idx);
+        log::info!(
+            "hide_window_in_workspace win={} ws={} placement={:?}",
+            window_id,
             workspace_idx,
-            ws.monitor_id,
-            self.windows_hidden_strategy(),
-            placement,
-            placements.keys()
+            placement
         );
-        self.os.hide_windows(&placements);
-        self.layout_cache
-            .seed_hidden(placement.rect(), placements.keys().copied());
+        self.os
+            .hide_windows(&HashMap::from([(window_id, placement)]));
+        self.layout_cache.seed_hidden(placement.rect(), [window_id]);
     }
 
     fn windows_hidden_strategy(&self) -> crate::config::HiddenStrategy {

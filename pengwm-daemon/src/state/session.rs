@@ -42,21 +42,64 @@ mod string_key_map {
 /// became a second source of truth — a session saved by an older binary
 /// shadowed every later default/config change and re-saved itself on each
 /// quit (the stale-entries fork). The session owns dynamic state only:
-/// workspace topology, active seats, gaps.
+/// workspace topology, active seats, gaps, and the window placement
+/// memory (below) that re-homes windows after a WM restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub version: u32,
     pub workspaces: Vec<Workspace>,
     #[serde(with = "string_key_map")]
     pub active: BTreeMap<u32, usize>,
+    /// Where each window lived at save time, matched at restore by durable
+    /// identity (pid + bundle + title — `WindowPlacement::matches`), not by
+    /// the ephemeral `WindowId`. Empty on a fresh init; old files load with
+    /// an empty default. Consumed once per window, one ask at routing.
+    #[serde(default)]
+    pub placements: Vec<WindowPlacement>,
     pub gap_outer: f64,
     pub gap_inner: f64,
+}
+
+/// One window's remembered home: the workspace **name** (names are stable
+/// across restore; indices are not) plus the identity evidence the next
+/// boot can re-verify. `WindowId` is deliberately absent — it dies with the
+/// daemon process. Bundle and title survive it, across a WM restart *and*
+/// a reboot; the pid is deliberately absent too — it is app-level
+/// identity, so an app's next window could wrongly inherit it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowPlacement {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub workspace: String,
+}
+
+impl WindowPlacement {
+    /// Does this record describe the window behind (`bundle`, `title`)?
+    /// Every evidence pair both sides can supply must agree, and at least
+    /// one window-level dimension must positively match — a record with no
+    /// identity evidence is never a hit (it would match everything).
+    /// Evidence one side cannot read does not veto: the boot where the
+    /// bundle read times out still re-homes by title.
+    pub fn matches(&self, bundle: Option<&str>, title: Option<&str>) -> bool {
+        if self.title.is_some() && title.is_some() && self.title.as_deref() != title {
+            return false;
+        }
+        if self.bundle.is_some() && bundle.is_some() && self.bundle.as_deref() != bundle {
+            return false;
+        }
+        let title_hit = self.title.as_deref().is_some_and(|t| title == Some(t));
+        let bundle_hit = self.bundle.as_deref().is_some_and(|b| bundle == Some(b));
+        title_hit || bundle_hit
+    }
 }
 
 impl Session {
     pub fn new(
         workspaces: Vec<Workspace>,
         active: BTreeMap<u32, usize>,
+        placements: Vec<WindowPlacement>,
         gap_outer: f64,
         gap_inner: f64,
     ) -> Self {
@@ -64,6 +107,7 @@ impl Session {
             version: 1,
             workspaces,
             active,
+            placements,
             gap_outer,
             gap_inner,
         }
@@ -104,16 +148,18 @@ pub fn sanitize_workspace(ws: &Workspace) -> Workspace {
 }
 
 /// Build a Session snapshot from the live `StateManager` fields, sanitizing
-/// workspaces so no WindowIds are persisted. Routing entries are config-owned
-/// and never ride the snapshot (see the `Session` docs).
+/// workspaces so no WindowIds are persisted (they die with the process;
+/// `placements` carries the durable identity instead). Routing entries are
+/// config-owned and never ride the snapshot (see the `Session` docs).
 pub fn snapshot_from(
     workspaces: &[Workspace],
     active: &BTreeMap<u32, usize>,
+    placements: Vec<WindowPlacement>,
     gap_outer: f64,
     gap_inner: f64,
 ) -> Session {
     let sanitized: Vec<Workspace> = workspaces.iter().map(sanitize_workspace).collect();
-    Session::new(sanitized, active.clone(), gap_outer, gap_inner)
+    Session::new(sanitized, active.clone(), placements, gap_outer, gap_inner)
 }
 
 /// Atomically write the session to `path` (tmp+rename+fsync parent).
@@ -199,7 +245,7 @@ mod tests {
         ws.toggle_magnify();
         assert_eq!(ws.window_count(), 2);
 
-        let sess = snapshot_from(&[ws], &BTreeMap::from([(1, 0)]), 10.0, 5.0);
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(1, 0)]), vec![], 10.0, 5.0);
         assert_eq!(sess.workspaces.len(), 1);
         assert_eq!(sess.workspaces[0].window_count(), 0, "windows stripped");
         assert!(
@@ -228,7 +274,7 @@ mod tests {
         // stale-entries fork). Unknown fields are ignored on deserialize, so
         // an untouched state file loads and the fork is discarded.
         let ws = Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080));
-        let sess = snapshot_from(&[ws], &BTreeMap::from([(1, 0)]), 10.0, 5.0);
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(1, 0)]), vec![], 10.0, 5.0);
         let mut toml_str = toml::to_string_pretty(&sess).unwrap();
         toml_str.push_str("\n[[entries]]\nname = \"Stale\"\n");
         let path = tmp_path("legacy.toml");
@@ -243,8 +289,69 @@ mod tests {
         // Simulate session saved with monitor 2, but only display 1 exists now.
         // The caller (StateManager) remaps, but we ensure sanitize keeps monitor_id.
         let ws = Workspace::new("Browsing".into(), 2, (1920, 0), (1920, 1080));
-        let sess = snapshot_from(&[ws], &BTreeMap::from([(2, 0)]), 10.0, 5.0);
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(2, 0)]), vec![], 10.0, 5.0);
         assert_eq!(sess.workspaces[0].monitor_id, 2);
         assert_eq!(sess.active.get(&2), Some(&0));
+    }
+
+    #[test]
+    fn placement_matches_by_every_evidence_pair_both_sides_supply() {
+        let rec = WindowPlacement {
+            bundle: Some("org.mozilla.firefox".into()),
+            title: Some("PengWM — Development".into()),
+            workspace: "Browsing".into(),
+        };
+        assert!(rec.matches(Some("org.mozilla.firefox"), Some("PengWM — Development")));
+        // Different title: never a hit, even with an identical bundle.
+        assert!(!rec.matches(Some("org.mozilla.firefox"), Some("Untitled")));
+        // Different bundle: never a hit (two apps spawning identically-titled
+        // windows must not steal each other's record).
+        assert!(!rec.matches(Some("com.apple.Preview"), Some("PengWM — Development")));
+        // Different title AND different bundle: inadmissible (the window was
+        // recreated, its identity drifted).
+        assert!(!rec.matches(Some("com.apple.Preview"), Some("Untitled")));
+        // A record with no identity evidence matches nothing.
+        let bare = WindowPlacement {
+            bundle: None,
+            title: None,
+            workspace: "Browsing".into(),
+        };
+        assert!(!bare.matches(Some("org.mozilla.firefox"), Some("Something")));
+        assert!(!bare.matches(None, None));
+    }
+
+    #[test]
+    fn placement_holds_when_one_side_cannot_read() {
+        // Evidence one side can't read must not veto: the boot where the
+        // bundle read times out still re-homes by title.
+        let rec = WindowPlacement {
+            bundle: Some("org.mozilla.firefox".into()),
+            title: Some("Untitled".into()),
+            workspace: "Browsing".into(),
+        };
+        assert!(rec.matches(None, Some("Untitled")));
+        // ... and by bundle when the title went away (retitled windows keep
+        // their home; re-bundled ones don't deserve it).
+        assert!(rec.matches(Some("org.mozilla.firefox"), None));
+    }
+
+    #[test]
+    fn roundtrip_persists_placements() {
+        let ws = Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080));
+        let placements = vec![WindowPlacement {
+            bundle: Some("org.mozilla.firefox".into()),
+            title: Some("PengWM — Development".into()),
+            workspace: "Browsing".into(),
+        }];
+        let sess = snapshot_from(&[ws], &BTreeMap::from([(1, 0)]), placements, 10.0, 5.0);
+        let path = tmp_path("placements-roundtrip.toml");
+        save_to(&sess, &path).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.placements.len(), 1);
+        assert_eq!(loaded.placements[0].workspace, "Browsing");
+        assert_eq!(
+            loaded.placements[0].bundle.as_deref(),
+            Some("org.mozilla.firefox")
+        );
     }
 }

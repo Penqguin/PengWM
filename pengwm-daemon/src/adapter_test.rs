@@ -61,6 +61,9 @@ pub struct TestAdapter {
     /// `None`, which routing reads as a standard tiled window — matching
     /// how the old binary gate treated every evented window.
     pub window_classes: RefCell<HashMap<WindowId, WindowClass>>,
+    /// Injected per-window `AXTitle` — placement memory's window-identity
+    /// evidence. Uninjected windows read as untitled.
+    pub window_titles: RefCell<HashMap<WindowId, String>>,
     /// `raise_window` calls in order, so tests can assert the switch-back
     /// "popup comes back on top" invariant.
     pub raised: RefCell<Vec<WindowId>>,
@@ -101,6 +104,7 @@ impl Default for TestAdapter {
             set_rect_calls: Cell::new(0),
             ax_blackout: Cell::new(false),
             window_classes: RefCell::new(HashMap::new()),
+            window_titles: RefCell::new(HashMap::new()),
             raised: RefCell::new(Vec::new()),
             forgotten: RefCell::new(Vec::new()),
             forgotten_pids: RefCell::new(Vec::new()),
@@ -316,6 +320,11 @@ impl TestAdapter {
         self.window_classes.borrow_mut().insert(window_id, class);
     }
 
+    /// Inject a window's `AXTitle` (the fake's title cell).
+    pub fn inject_title(&self, window_id: WindowId, title: String) {
+        self.window_titles.borrow_mut().insert(window_id, title);
+    }
+
     /// `raise_window` calls in order, so tests can assert on-top behavior.
     pub fn raised(&self) -> Vec<WindowId> {
         self.raised.borrow().clone()
@@ -416,6 +425,10 @@ impl TestHandle {
 
     pub fn inject_window_kind(&self, window_id: WindowId, class: WindowClass) {
         self.0.inject_window_kind(window_id, class)
+    }
+
+    pub fn inject_title(&self, window_id: WindowId, title: String) {
+        self.0.inject_title(window_id, title)
     }
 
     pub fn raised(&self) -> Vec<WindowId> {
@@ -521,6 +534,10 @@ impl OsAdapter for SharedTestAdapter {
 
     fn window_kind(&self, window_id: WindowId) -> Option<WindowClass> {
         self.0.window_kind(window_id)
+    }
+
+    fn window_title(&self, window_id: WindowId) -> Option<String> {
+        self.0.window_title(window_id)
     }
 
     fn raise_window(&self, window_id: WindowId) {
@@ -677,6 +694,10 @@ impl OsAdapter for TestAdapter {
 
     fn window_kind(&self, window_id: WindowId) -> Option<WindowClass> {
         self.window_classes.borrow().get(&window_id).copied()
+    }
+
+    fn window_title(&self, window_id: WindowId) -> Option<String> {
+        self.window_titles.borrow().get(&window_id).cloned()
     }
 
     fn raise_window(&self, window_id: WindowId) {

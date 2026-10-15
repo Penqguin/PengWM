@@ -339,3 +339,207 @@ fn per_monitor_workspace_entries_respected() {
     assert_eq!(wss[1].name, "Browse");
     assert_eq!(wss[1].monitor_id, 2);
 }
+
+// -----------------------------------------------------------------------
+// Placement memory (state::placement)
+// -----------------------------------------------------------------------
+
+use crate::state::session::WindowPlacement;
+
+#[test]
+fn placement_memory_rehomes_before_config_routing() {
+    // The record is what the user *did* last session (a manual move), so it
+    // outranks the config list (what the app *is*).
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
+    handle.inject_title(778, "MDN — tree shaking".to_string());
+    sm.seed_placement_memory_for_test(vec![WindowPlacement {
+        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
+        title: Some("MDN — tree shaking".into()),
+        workspace: "Notes".into(),
+    }]);
+
+    sm.on_window_created(778, 78);
+
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(778).is_some())
+        .expect("routed window should be tracked");
+    assert_eq!(sm.workspaces[idx].name, "Notes");
+    assert_eq!(sm.placement_memory_len_for_test(), 0, "hit consumed once");
+}
+
+#[test]
+fn placement_memory_miss_falls_through_to_config_with_record_intact() {
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
+    handle.inject_title(778, "MDN — tree shaking".to_string());
+    sm.seed_placement_memory_for_test(vec![WindowPlacement {
+        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
+        title: Some("Some other title".into()),
+        workspace: "Notes".into(),
+    }]);
+
+    sm.on_window_created(778, 78);
+
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(778).is_some())
+        .expect("routed window should be tracked");
+    assert_eq!(sm.workspaces[idx].name, "Browsing", "config routing owns the miss");
+    assert_eq!(
+        sm.placement_memory_len_for_test(),
+        1,
+        "a miss must not consume the record"
+    );
+}
+
+#[test]
+fn placement_memory_hit_is_consumed_once_for_identical_windows() {
+    // Two identically-titled windows of one bundle (two "New Tab" tabs):
+    // only the first re-homes; the second routes normally instead of
+    // stealing the record again.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(77, "org.mozilla.firefox".into());
+    handle.inject_title(777, "New Tab".to_string());
+    handle.inject_title(888, "New Tab".to_string());
+    sm.seed_placement_memory_for_test(vec![WindowPlacement {
+        bundle: Some("org.mozilla.firefox".into()),
+        title: Some("New Tab".into()),
+        workspace: "Notes".into(),
+    }]);
+
+    sm.on_window_created(777, 77);
+    sm.on_window_created(888, 77);
+
+    let first = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(777).is_some())
+        .expect("first window tracked");
+    let second = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(888).is_some())
+        .expect("second window tracked");
+    assert_eq!(sm.workspaces[first].name, "Notes");
+    assert_eq!(sm.workspaces[second].name, "Browsing", "config routing, record spent");
+}
+
+#[test]
+fn placement_memory_rehomes_across_reboot_pid_drift() {
+    // A reboot changes pids. The record matches bundle+title, so the
+    // window still re-homes — and the record's owning pid difference does
+    // not veto.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(9102, "org.mozilla.firefoxdeveloperedition".into());
+    handle.inject_title(9103, "MDN — tree shaking".to_string());
+    sm.seed_placement_memory_for_test(vec![WindowPlacement {
+        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
+        title: Some("MDN — tree shaking".into()),
+        workspace: "Messaging".into(),
+    }]);
+
+    sm.on_window_created(9103, 9102);
+
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(9103).is_some())
+        .expect("routed window should be tracked");
+    assert_eq!(sm.workspaces[idx].name, "Messaging");
+}
+
+#[test]
+fn placement_memory_record_for_missing_workspace_name_misses() {
+    // The workspace was renamed between save and restore: a stale name is
+    // a miss, not a panic or a fallback-to-index.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
+    handle.inject_title(778, "MDN — tree shaking".to_string());
+    sm.seed_placement_memory_for_test(vec![WindowPlacement {
+        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
+        title: Some("MDN — tree shaking".into()),
+        workspace: "Gaming".into(),
+    }]);
+
+    sm.on_window_created(778, 78);
+
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(778).is_some())
+        .expect("routed window should be tracked");
+    assert_eq!(sm.workspaces[idx].name, "Browsing");
+}
+
+#[test]
+fn placement_memory_captures_tileable_windows_with_evidence() {
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(77, "org.mozilla.firefox".into());
+    handle.inject_title(777, "New Tab".to_string());
+    sm.on_window_created(777, 77); // → Browsing
+
+    let records = sm.capture_placements();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].workspace, "Browsing");
+    assert_eq!(records[0].bundle.as_deref(), Some("org.mozilla.firefox"));
+    assert_eq!(records[0].title.as_deref(), Some("New Tab"));
+}
+
+// -----------------------------------------------------------------------
+// Routing restack (candidate 3): a member of a hidden workspace is offscreen
+// -----------------------------------------------------------------------
+
+#[test]
+fn window_routed_into_hidden_workspace_takes_the_hide_placement() {
+    // The initial hide pass ran inside `new()` while the trees were empty;
+    // Firefox routes to Browsing (hidden — display 1 shows Development).
+    // Without the routing tail it would float visibly over Development
+    // until the next switch.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(77, "org.mozilla.firefox".into());
+    handle.inject_title(777, "New Tab".to_string());
+
+    sm.on_window_created(777, 77);
+
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(777).is_some())
+        .expect("routed window should be tracked");
+    assert!(!sm.displays.is_visible(idx, &sm.workspaces));
+    let rect = handle.rect(777).expect("routed window has an OS rect");
+    // BottomEdge default: bottom-right 1×1 (the dark title-bar strip).
+    assert!(
+        rect.width == 1.0 && rect.height == 1.0 && rect.y >= 1079.0 && rect.x >= 1919.0,
+        "routed-into-hidden window should sit at the hide placement, got {rect:?}"
+    );
+}
+
+#[test]
+fn window_routed_into_visible_workspace_is_not_hidden_offscreen() {
+    let (mut sm, handle) = setup_with_handle(1);
+    // Unassigned app: routes to the active workspace (Development, visible).
+    handle.inject_bundle_id(99, "com.example.unassigned".into());
+    handle.inject_title(999, "Local note".to_string());
+    handle.inject_rect(999, pengwm_core::layout::Rect::new(100.0, 100.0, 800.0, 600.0));
+
+    sm.on_window_created(999, 99);
+
+    let idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.find_window(999).is_some())
+        .expect("routed window should be tracked");
+    assert!(sm.displays.is_visible(idx, &sm.workspaces));
+    let rect = handle.rect(999).unwrap();
+    // Tiled into the visible workspace (layout applied on route), therefore
+    // on-screen — a hide placement would be the bottom-right 1×1 strip.
+    assert!(
+        rect.y < 1080.0 && rect.x < 1920.0 && rect.width > 1.0,
+        "visible-workspace routing must not hide, got {rect:?}"
+    );
+}

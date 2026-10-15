@@ -177,6 +177,7 @@ impl StateManager {
                     let sess = session::snapshot_from(
                         &self.workspaces,
                         self.displays.active(),
+                        self.capture_placements(),
                         self.gap_outer,
                         self.gap_inner,
                     );
@@ -241,7 +242,11 @@ impl StateManager {
     }
 
     /// Move `wid` from workspace `from` to `to`, re-laying-out visible ends.
-    /// Shared by workspace moves and cross-display moves.
+    /// Shared by workspace moves and cross-display moves. A member of a
+    /// hidden workspace is offscreen: a window thrown at a hidden
+    /// workspace takes the same hide placement a routed one does
+    /// (`hide_window_in_workspace`), or it would float over the source
+    /// screen until the next switch.
     fn move_window_between(&mut self, from: usize, to: usize, wid: WindowId) {
         self.workspaces[from].remove_window(wid);
         if self.displays.is_visible(from, &self.workspaces) {
@@ -250,6 +255,8 @@ impl StateManager {
         self.workspaces[to].add_window(wid, None);
         if self.displays.is_visible(to, &self.workspaces) {
             self.apply_layout(to);
+        } else {
+            self.hide_window_in_workspace(wid, to);
         }
     }
 

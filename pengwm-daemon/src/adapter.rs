@@ -141,6 +141,10 @@ pub trait OsAdapter: ObserverRegistry {
     /// once at creation: `Standard` tiles, popup classes overlay, and the
     /// rest never reached the daemon anyway.
     fn window_kind(&self, window_id: WindowId) -> Option<WindowClass>;
+    /// The window's title (`AXTitle`), or `None` when unreadable / not
+    /// cached. Part of the identity evidence placement memory matches on
+    /// (pid + bundle + title — see `state::placement`).
+    fn window_title(&self, window_id: WindowId) -> Option<String>;
     /// Bring the window to the front of the stacking order (`AXRaise`).
     /// Popups re-assert it on switch-back reveal so overlays return on top.
     fn raise_window(&self, window_id: WindowId);
