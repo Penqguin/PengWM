@@ -37,8 +37,12 @@ comes from the design skill, not this file.
   adapter seam): `Answered` (AX gave the app's window list, possibly
   empty — a closed-only-window app's "zero windows" verdict) or
   `NoAnswer` (AX could not answer at all). Judgment sweeps ask
-  `listing_evidence`: an answered listing is admissible death evidence,
-  `NoAnswer` is never judged on.
+  `listing_evidence`: an answered listing is admissible death evidence
+  **only for windows whose element no longer answers** — macOS Space
+  transitions make apps answer without their off-Space windows (live
+  tiled members included), so a live element outranks the omission; a
+  dead one (unreadable rect) is judged dead on it. `NoAnswer` is never
+  judged on.
 - **AX blackout** — The post-wake window where AX answers nothing
   (`NoAnswer` listings, unreadable attributes). No structural judgment
   may run during a blackout; see the wake resync machinery. Distinct

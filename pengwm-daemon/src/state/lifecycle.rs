@@ -634,6 +634,14 @@ impl StateManager {
     /// Judgement rules that make the fast path safe outside wake:
     /// - **A `NoAnswer` listing is no judgment.** An app AX could not
     ///   answer for is the post-wake blackout signature, not a mass close.
+    /// - **A live element outranks the omission.** An answered listing
+    ///   that omits a window whose element still answers is a listing
+    ///   artifact, not death: macOS Space transitions make apps answer
+    ///   without their off-Space windows (visible tiled members
+    ///   included), so the omission is judged only after the element
+    ///   read says the window no longer exists. The fast close-detector
+    ///   is unchanged — a closed window's element is dead, the read
+    ///   fails, the untrack proceeds.
     /// - **An answered listing judges, empty included.** Closing the app's
     ///   only window (a PDF in Preview, the 1Password vault) leaves the
     ///   app running with *zero* windows — the app's own "I have none"
@@ -662,29 +670,26 @@ impl StateManager {
                 .unwrap_or_default();
             for window_id in tracked {
                 if !listed.contains(&window_id) {
-                    // A fullscreen-parked window is never judged by the
-                    // listing diff *while it still answers fullscreen*: it
-                    // lives in its own macOS Space, and while that Space is
-                    // inactive the app's listing can omit it — a Space
-                    // boundary, not a death. Judging it here destroyed the
-                    // park entry and the remembered workspace with it, so
-                    // the next sweep rediscovered the window fresh and
-                    // re-routed it onto the active workspace (the "window
-                    // moves to whatever workspace is active after
-                    // switching Spaces" repro). The probe read is the
+                    // An answered listing that omits a window whose
+                    // element still answers is a listing artifact, not a
+                    // death. macOS Space transitions make apps answer
+                    // `kAXWindows` without their off-Space windows —
+                    // visible tiled members included — so judging the
+                    // omission untracked the whole desktop on every
+                    // Space round-trip, and rediscovery re-routed each
+                    // window (config-routed apps back to their entry;
+                    // manually-moved windows onto the active workspace —
+                    // the user's repro). The element read is the
                     // discriminator: a genuinely closed window's element
-                    // is dead, the attribute read fails, and the untrack
-                    // proceeds exactly as before. The park map owns a
-                    // fullscreen-parked window's membership until its
-                    // reveal funnel says otherwise; its death arrives via
-                    // the destroyed notification, the exit probe, app
-                    // termination, or the dead-pid sweep — all of which
-                    // still run.
-                    if self.store.is_fullscreen_parked(window_id)
-                        && self.os.window_is_fullscreen(window_id)
-                    {
+                    // is dead, the read fails, and the untrack proceeds
+                    // exactly as before. Destroyed notifications, app
+                    // termination and the dead-pid sweep still own real
+                    // deaths; the fullscreen-parked Space guard is
+                    // subsumed by the same rule (a parked window's
+                    // element answers while its Space is inactive).
+                    if self.os.window_rect(window_id).is_some() {
                         log::debug!(
-                            "untrack_unlisted: window {} pid {} unlisted but still fullscreen — a Space boundary, not a death",
+                            "untrack_unlisted: window {} pid {} unlisted but its element still answers — listing artifact, not a death",
                             window_id,
                             pid
                         );

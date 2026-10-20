@@ -20,6 +20,51 @@ fn seed_tiles(sm: &mut StateManager) {
 }
 
 #[test]
+fn a_live_element_outranks_a_transient_listing_omission() {
+    // The live trace: during a macOS Space round-trip the apps answer
+    // `kAXWindows` without their off-Space windows — visible tiled
+    // members included. The listing diff must not judge that a death,
+    // or every Space switch untracks the whole desktop and rediscovery
+    // re-routes manually-moved windows onto the active workspace
+    // (Firefox ws1→ws2, DrRacket ws3→ws1). The element read is the
+    // discriminator: alive ⇒ artifact, dead ⇒ the untrack proceeds.
+    let (mut sm, handle) = setup_with_handle(1);
+    seed_tiles(&mut sm);
+    assert!(sm.workspaces[0].find_window(100).is_some());
+
+    // The away period: the app answers, but omits both windows — while
+    // their elements keep answering (the fake models the live element by
+    // re-seeding the rect `unlist_window` drops).
+    handle.unlist_window(42, 100);
+    handle.unlist_window(42, 200);
+    handle.inject_rect(100, Rect::new(5.0, 44.0, 900.0, 1000.0));
+    handle.inject_rect(200, Rect::new(910.0, 44.0, 900.0, 1000.0));
+    let pids: Vec<i32> = sm.store.all_window_pids().values().copied().collect();
+    sm.sync_untracked_windows(pids);
+
+    assert!(
+        sm.store.contains(100) && sm.store.contains(200),
+        "live elements were judged dead by a Space-transition listing omission"
+    );
+    assert!(
+        sm.workspaces[0].find_window(100).is_some(),
+        "the untrack destroyed the membership; rediscovery would re-route"
+    );
+
+    // A genuinely closed window is unlisted AND its element no longer
+    // answers — the fast close-detector still fires. The fake models
+    // the dead element: `unlist_window` drops the rect with the listing.
+    handle.inject_window(42, 300);
+    handle.unlist_window(42, 300);
+    let pids: Vec<i32> = sm.store.all_window_pids().values().copied().collect();
+    sm.sync_untracked_windows(pids);
+    assert!(
+        !sm.store.contains(300),
+        "a dead element must still be judged dead on the omission"
+    );
+}
+
+#[test]
 fn fullscreen_parked_window_survives_a_transient_listing_miss_across_spaces() {
     // The user's repro: a window goes native fullscreen (its own macOS
     // Space), the user switches to another Space and back, and the window
@@ -49,8 +94,11 @@ fn fullscreen_parked_window_survives_a_transient_listing_miss_across_spaces() {
     );
 
     // The Space switch: while 100's Space is inactive the app's listing
-    // omits it. The 2s sweep runs its listing diff against that answer.
+    // omits it, but its element still answers. The 2s sweep runs its
+    // listing diff against that answer. (The fake models the live
+    // element by re-seeding the rect `unlist_window` drops.)
     handle.unlist_window(42, 100);
+    handle.inject_rect(100, Rect::new(5.0, 44.0, 1790.0, 1120.0));
     let pids: Vec<i32> = sm.store.all_window_pids().values().copied().collect();
     sm.sync_untracked_windows(pids);
 
