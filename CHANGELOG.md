@@ -1,6 +1,44 @@
 # Changelog
 
-## Unreleased
+## v0.6.4 — One read per owner (2026-10-20)
+
+- **Drag detection restored for sweep-discovered windows; the AX
+  registration dedupe is per (window, notification).** The registration
+  bookkeeping deduped on window id alone with one set shared across
+  notification types: the poll registered destroyed and then silently
+  skipped moved — so `kAXWindowMovedNotification` was never registered
+  by the poll path for any window, and drag detection (swap-on-hold,
+  snap-back) for windows discovered by the 2s sweep with no
+  `WindowCreated` notification (Firefox tear-offs, incognito) never
+  fired. Keying per (window id, notification) registers both, each
+  exactly once per observer lifetime. The `WindowCreated` callback's
+  direct registrations stay direct, deliberately: it is a free C
+  callback holding only the ObserverContext, and the element it fires
+  on is the freshest evidence of the live element — the duplicate the
+  next poll makes is tolerated by AX and bounded by the age refresh.
+
+- **A client that never EOFs can no longer wedge the IPC pool.** The
+  command server read until EOF with no timeout, so a client that
+  wrote a command and never shut down its write side parked a pool
+  thread in `read` forever; 32 wedged threads was "ipc thread pool
+  full" and every CLI command failing until restart. Each read now
+  carries a 5s timeout that fires as `WouldBlock` — the loop's
+  existing end-of-payload path — so a stalled client frees its thread,
+  and a partially-sent payload gets the same Invalid-JSON error a
+  garbage payload gets.
+
+- **Window creation pays one identity resolution per pid, not five
+  NSWorkspace scans per window.** One routing pass re-read the app's
+  bundle id four times and its name once — each a linear walk of
+  `runningApplications` — so an app launching ten windows did ~50
+  scans. The pass resolves bundle + name once and threads them down
+  through the existing funnel; the burst discovery loop routes every
+  window of an app against the same answer. Every check now also
+  matches the same resolution instead of consecutive live scans.
+  Precedence (CG level → restricted → float → tile) and placement
+  memory's hit-once consumption are untouched.
+
+## v0.6.3 — The sweep owns its reads (2026-10-20)
 
 - **Install replaces binaries via temp file + rename, never truncating
   the live inode.** The previous in-place write left a window where
