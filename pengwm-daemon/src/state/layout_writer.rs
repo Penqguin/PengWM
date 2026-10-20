@@ -185,12 +185,33 @@ impl LayoutWriteCache {
         })
     }
 
-    /// The one planning funnel for a layout pass: given tiled targets and one
-    /// cheap AX read per window, return the writes to execute. Runs every
+    /// The windows whose `plan_writes` verdict can depend on their actual
+    /// rect: exactly the windows with no applied entry. `actual`'s only
+    /// consumer is the read-before-write claim — an existing entry either
+    /// matches the target and skips without consulting the read, or
+    /// mismatches it and writes regardless of it. The caller reads only
+    /// these; on a no-op relayout (every entry fresh and matching) that
+    /// is zero AX reads. Drift detection is deliberately *not* served by
+    /// this read — it never was: external drift is the misplaced sweep's
+    /// evidence (`sweep_displaced` / `note_displaced`).
+    pub(super) fn windows_needing_actual(
+        &self,
+        targets: &HashMap<WindowId, Rect>,
+    ) -> Vec<WindowId> {
+        targets
+            .keys()
+            .copied()
+            .filter(|w| !self.applied_rects.contains_key(w))
+            .collect()
+    }
+
+    /// The one planning funnel for a layout pass: given tiled targets and
+    /// the caller's actual reads, return the writes to execute. Runs every
     /// target through `should_write`, so skip-if-unchanged, read-before-write
     /// claiming, and pin backoff all apply in one place. Windows absent from
     /// `actuals` read as unreadable and fall through to the write, which is
-    /// what refreshes a stale element.
+    /// what refreshes a stale element. The caller scopes the reads with
+    /// `windows_needing_actual` — only no-entry windows consume them.
     pub(super) fn plan_writes(
         &mut self,
         targets: &HashMap<WindowId, Rect>,

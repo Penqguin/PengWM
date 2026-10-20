@@ -550,8 +550,16 @@ impl StateManager {
             );
         }
 
-        let actuals: HashMap<WindowId, Option<Rect>> = rects
-            .keys()
+        // The actual read is `plan_writes`' claim input, consumed only
+        // for windows with no applied entry — an existing entry either
+        // matches its target (skip, read never consulted) or mismatches
+        // it (write, read ignored either way). The gone-grace path is
+        // unchanged: no read → no actual → the write attempt observes
+        // `Gone` exactly as a `None` read did.
+        let actuals: HashMap<WindowId, Option<Rect>> = self
+            .layout_cache
+            .windows_needing_actual(&rects)
+            .iter()
             .map(|&window_id| (window_id, self.os.window_rect(window_id)))
             .collect();
         let mut dead = Vec::new();
