@@ -64,7 +64,7 @@ pub trait OsAdapter: ObserverRegistry {
     fn raise_window(&self, window_id: WindowId);
     fn close_window(&self, window_id: WindowId);
     fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>);
-    fn window_is_hidden(&self, window_id: WindowId) -> bool;
+    fn windows_are_hidden(&self, window_ids: &[WindowId]) -> HashMap<WindowId, bool>;
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
     fn app_name(&self, pid: i32) -> Option<String>;
 }

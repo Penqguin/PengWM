@@ -150,9 +150,12 @@ impl StateManager {
     /// ones that became visible again. Uses predicate injection so tests don't
     /// need `as_any_mut` downcast.
     fn reconcile_hidden_windows(&mut self) {
-        let (to_hide, to_show) = self
-            .store
-            .pending_for_reconcile(&self.workspaces, |wid| self.os.window_is_hidden(wid));
+        // One batched read for the whole sweep: the adapter resolves each
+        // app element once per pid, so the app-hidden answer is paid per
+        // app, not per window.
+        let ids = self.store.tracked_window_ids();
+        let hidden = self.os.windows_are_hidden(&ids);
+        let (to_hide, to_show) = self.store.pending_for_reconcile(&self.workspaces, &hidden);
         // Hide first, then show — order doesn't matter but hide frees capacity.
         for wid in to_hide {
             // Only hide if still a member (pending set already checked, but

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 use crate::adapter::{
@@ -446,24 +447,42 @@ impl OsAdapter for MacOsAdapter {
         }
     }
 
-    fn window_is_hidden(&self, window_id: WindowId) -> bool {
-        let (element, pid) = match self.cache_get_element(window_id) {
-            Some(v) => v,
-            None => return false,
-        };
-        unsafe {
-            // Per-window state: minimized to the Dock or hidden in place.
-            if ax_element::bool_attribute(element.ptr(), kAXMinimizedAttribute)
-                || ax_element::bool_attribute(element.ptr(), kAXHiddenAttribute)
-            {
-                return true;
-            }
-            // The whole app hidden (Cmd-H) hides the window too.
-            let Some(app) = ax_element::create_app_element(pid) else {
-                return false;
+    fn windows_are_hidden(&self, window_ids: &[WindowId]) -> HashMap<WindowId, bool> {
+        let mut result: HashMap<WindowId, bool> = HashMap::with_capacity(window_ids.len());
+        // Windows whose own attributes say visible, keyed by pid, awaiting
+        // the app-hidden verdict.
+        let mut app_check: HashMap<i32, Vec<WindowId>> = HashMap::new();
+        for &window_id in window_ids {
+            let Some((element, pid)) = self.cache_get_element(window_id) else {
+                // Same answer the per-window probe gave: no element, no
+                // hidden verdict.
+                result.insert(window_id, false);
+                continue;
             };
-            ax_element::bool_attribute(app.ptr(), kAXHiddenAttribute)
+            unsafe {
+                // Per-window state: minimized to the Dock or hidden in place.
+                if ax_element::bool_attribute(element.ptr(), kAXMinimizedAttribute)
+                    || ax_element::bool_attribute(element.ptr(), kAXHiddenAttribute)
+                {
+                    result.insert(window_id, true);
+                    continue;
+                }
+            }
+            app_check.entry(pid).or_default().push(window_id);
         }
+        // The whole app hidden (Cmd-H) hides every window too — one app
+        // element and one `kAXHidden` read per pid covers all of them.
+        // An app element that would not build reads as not hidden.
+        for (pid, ids) in app_check {
+            let app_hidden = unsafe {
+                ax_element::create_app_element(pid)
+                    .is_some_and(|app| ax_element::bool_attribute(app.ptr(), kAXHiddenAttribute))
+            };
+            for window_id in ids {
+                result.insert(window_id, app_hidden);
+            }
+        }
+        result
     }
 
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool {

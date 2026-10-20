@@ -335,35 +335,38 @@ impl WindowStore {
         }
     }
 
+    /// Every tracked window id — the hidden reconcile's read set.
+    pub fn tracked_window_ids(&self) -> Vec<WindowId> {
+        self.window_pids.keys().copied().collect()
+    }
+
     /// Compute the two reconcile sets without mutating anything. The caller is
     /// responsible for iterating the returned vectors and calling `hide` /
     /// `add_window_to_workspace` (tree) or `hide_popup` / `add_popup`.
     ///
     /// Membership counts a window that is tiled *or* a workspace-bound popup,
     /// so missed app-hide events on popups reconcile like tree windows.
-    /// `is_hidden` is the `OsAdapter::window_is_hidden` predicate in prod
-    /// (`|wid| os.window_is_hidden(wid)`); tests pass a closure over a hash set.
-    pub fn pending_for_reconcile<F>(
+    /// `hidden` is the batched `OsAdapter::windows_are_hidden` verdict map in
+    /// prod (one sweep-scoped read; per-pid app-hidden resolved by the
+    /// adapter); tests pass a hand-built map. A window absent from the map
+    /// reads as visible.
+    pub fn pending_for_reconcile(
         &self,
         workspaces: &[Workspace],
-        is_hidden: F,
-    ) -> (Vec<WindowId>, Vec<WindowId>)
-    where
-        F: Fn(WindowId) -> bool,
-    {
+        hidden: &HashMap<WindowId, bool>,
+    ) -> (Vec<WindowId>, Vec<WindowId>) {
         let mut to_hide = Vec::new();
         let mut to_show = Vec::new();
         for &wid in self.window_pids.keys() {
-            let hidden = is_hidden(wid);
+            let hidden_now = hidden.get(&wid).copied().unwrap_or(false);
             let member = position_of_member(workspaces, wid).is_some();
-            if hidden && member {
+            if hidden_now && member {
                 to_hide.push(wid);
-            } else if !hidden && self.is_hidden(wid) {
+            } else if !hidden_now && self.is_hidden(wid) {
                 // Hide-parked only: fullscreen-parked windows leave this
                 // reconcile — their reveal is owned by the fullscreen exit
                 // probe (`reconcile_fullscreen_windows`), which must not be
-                // shortcut by the `window_is_hidden` predicate saying "not
-                // hidden".
+                // shortcut by the hidden-verdict map saying "not hidden".
                 to_show.push(wid);
             }
         }
@@ -481,7 +484,8 @@ mod tests {
         let mut r = WindowStore::new();
         r.register(1, 42);
         r.register(2, 42);
-        let (to_hide, to_show) = r.pending_for_reconcile(&wss, |wid| wid == 1);
+        let hidden = HashMap::from([(1, true)]);
+        let (to_hide, to_show) = r.pending_for_reconcile(&wss, &hidden);
         assert_eq!(to_hide, vec![1]);
         assert!(to_show.is_empty());
     }
@@ -580,8 +584,8 @@ mod tests {
         let mut pids = WindowStore::new();
         pids.register(1, 42);
         pids.register(2, 42);
-        let is_hidden = |wid| wid == 1;
-        let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, is_hidden);
+        let is_hidden = HashMap::from([(1, true)]);
+        let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, &is_hidden);
         assert_eq!(to_hide, vec![1]);
         assert!(to_show.is_empty());
     }
@@ -593,8 +597,8 @@ mod tests {
         pids.register(1, 42);
         pids.register(2, 42);
         pids.park_insert(1, 0);
-        let is_hidden = |_| false;
-        let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, is_hidden);
+        let is_hidden = HashMap::new();
+        let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, &is_hidden);
         assert!(to_hide.is_empty());
         assert_eq!(to_show, vec![1]);
     }
@@ -605,8 +609,8 @@ mod tests {
         let mut pids = WindowStore::new();
         pids.register(1, 42);
         pids.fullscreen_park_insert(1, 0);
-        let is_hidden = |_| false;
-        let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, is_hidden);
+        let is_hidden = HashMap::new();
+        let (to_hide, to_show) = pids.pending_for_reconcile(&workspaces, &is_hidden);
         assert!(to_hide.is_empty());
         assert!(
             to_show.is_empty(),
@@ -620,8 +624,8 @@ mod tests {
         let mut pids = WindowStore::new();
         pids.register(10, 42);
         pids.register(20, 42);
-        let is_hidden = |_| true;
-        let (to_hide, _) = pids.pending_for_reconcile(&workspaces, is_hidden);
+        let is_hidden = HashMap::from([(10, true), (20, true)]);
+        let (to_hide, _) = pids.pending_for_reconcile(&workspaces, &is_hidden);
         assert_eq!(to_hide.len(), 2);
     }
 

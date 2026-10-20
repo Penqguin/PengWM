@@ -50,7 +50,7 @@ pub trait OsAdapter: ObserverRegistry {
     fn raise_window(&self, window_id: WindowId);  // AXRaise; popups come back on top on switch-back reveal
     fn close_window(&self, window_id: WindowId);
     fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>); // HidePlacement::BottomEdge vs FarOffscreen; no magic threshold; position-only, never resizes (no Firefox reflow)
-    fn window_is_hidden(&self, window_id: WindowId) -> bool;  // kAXMinimized/kAXHidden; drives reconcile
+    fn windows_are_hidden(&self, window_ids: &[WindowId]) -> HashMap<WindowId, bool>;  // batched kAXMinimized/kAXHidden + per-pid app-hidden; drives reconcile
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool;  // "AXFullScreen" attribute; drives fullscreen parking
     fn forget_window(&self, window_id: WindowId);   // per-window eviction funnel (destroyed/sweep/gone paths)
     fn forget_pid(&self, pid: i32) -> usize;        // eviction for cached-but-untracked members of a dying pid

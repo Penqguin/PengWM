@@ -334,6 +334,16 @@ impl TestAdapter {
     pub fn forgotten(&self) -> Vec<WindowId> {
         self.forgotten.borrow().clone()
     }
+
+    /// The per-window hidden verdict the batched trait method maps over.
+    fn window_is_hidden(&self, window_id: WindowId) -> bool {
+        self.hidden_windows.borrow().contains(&window_id)
+            || self
+                .window_pids
+                .borrow()
+                .get(&window_id)
+                .is_some_and(|pid| self.hidden_apps.borrow().contains(pid))
+    }
 }
 
 /// Shared handle to a `TestAdapter` boxed into a `StateManager`. Tests hold
@@ -556,8 +566,8 @@ impl OsAdapter for SharedTestAdapter {
         self.0.hide_windows(placements)
     }
 
-    fn window_is_hidden(&self, window_id: WindowId) -> bool {
-        self.0.window_is_hidden(window_id)
+    fn windows_are_hidden(&self, window_ids: &[WindowId]) -> HashMap<WindowId, bool> {
+        self.0.windows_are_hidden(window_ids)
     }
 
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool {
@@ -735,13 +745,12 @@ impl OsAdapter for TestAdapter {
         }
     }
 
-    fn window_is_hidden(&self, window_id: WindowId) -> bool {
-        self.hidden_windows.borrow().contains(&window_id)
-            || self
-                .window_pids
-                .borrow()
-                .get(&window_id)
-                .is_some_and(|pid| self.hidden_apps.borrow().contains(pid))
+    fn windows_are_hidden(&self, window_ids: &[WindowId]) -> HashMap<WindowId, bool> {
+        window_ids
+            .iter()
+            .copied()
+            .map(|wid| (wid, self.window_is_hidden(wid)))
+            .collect()
     }
 
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool {

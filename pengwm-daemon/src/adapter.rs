@@ -156,10 +156,14 @@ pub trait OsAdapter: ObserverRegistry {
     /// `StateManager` computes placements so the adapter stays display-agnostic
     /// and `pengwm-core` stays pure.
     fn hide_windows(&self, placements: &HashMap<WindowId, HidePlacement>);
-    /// True when the window is minimized or hidden (per-window `AXHidden`,
-    /// `AXMinimized`, or its app is hidden). Used by the periodic reconcile so
-    /// hidden windows stop being tiled even when AX notifications are missed.
-    fn window_is_hidden(&self, window_id: WindowId) -> bool;
+    /// Hidden verdicts for a batch of tracked windows: minimized, hidden
+    /// in place, or whose app is hidden (Cmd-H). Used by the periodic
+    /// reconcile so hidden windows stop being tiled even when AX
+    /// notifications are missed. The batch is the unit: the adapter
+    /// resolves the app element once per pid, so the app-hidden read is
+    /// paid per app, not per window. Windows with no cached element read
+    /// as not hidden.
+    fn windows_are_hidden(&self, window_ids: &[WindowId]) -> HashMap<WindowId, bool>;
     /// True when the window is in native fullscreen (the `AXFullScreen`
     /// attribute). Drives full-screen parking: a fullscreened tree window
     /// leaves the tree and reveals back through the normal funnel on exit.
