@@ -56,7 +56,7 @@ fn transient_resize_failure_stays_tracked_and_retries() {
     // Force a rewrite attempt (mirrors the displaced path).
     sm.layout_cache
         .age_applied_for_test(100, Duration::from_secs(5));
-    sm.on_window_moved(100, 500.0, 500.0);
+    sm.on_window_moved(100, handle.rect(100).unwrap());
     sm.apply_layout(sm.active_workspace_idx());
     assert!(
         sm.store.contains(100),
@@ -75,7 +75,7 @@ fn transient_resize_failure_stays_tracked_and_retries() {
     // throttle entry unchanged (repeat logs at debug, no spam).
     sm.layout_cache
         .age_applied_for_test(100, Duration::from_secs(5));
-    sm.on_window_moved(100, 500.0, 500.0);
+    sm.on_window_moved(100, handle.rect(100).unwrap());
     sm.apply_layout(sm.active_workspace_idx());
     assert!(sm.store.contains(100));
     assert!(sm.layout_cache.throttle_armed(100));
@@ -84,7 +84,7 @@ fn transient_resize_failure_stays_tracked_and_retries() {
     handle.clear_fault(100);
     sm.layout_cache
         .age_applied_for_test(100, Duration::from_secs(5));
-    sm.on_window_moved(100, 500.0, 500.0);
+    sm.on_window_moved(100, handle.rect(100).unwrap());
     sm.apply_layout(sm.active_workspace_idx());
     assert!(
         !sm.layout_cache.throttle_armed(100),
@@ -110,7 +110,7 @@ fn drift_failure_stays_tracked_and_retries_without_poisoning_cache() {
     // Force a rewrite attempt (mirrors the displaced path).
     sm.layout_cache
         .age_applied_for_test(100, Duration::from_secs(5));
-    sm.on_window_moved(100, 500.0, 500.0);
+    sm.on_window_moved(100, handle.rect(100).unwrap());
     sm.apply_layout(sm.active_workspace_idx());
     assert!(sm.store.contains(100), "drift must not untrack the window");
     assert!(
@@ -126,7 +126,7 @@ fn drift_failure_stays_tracked_and_retries_without_poisoning_cache() {
     handle.clear_fault(100);
     sm.layout_cache
         .age_applied_for_test(100, Duration::from_secs(5));
-    sm.on_window_moved(100, 500.0, 500.0);
+    sm.on_window_moved(100, handle.rect(100).unwrap());
     sm.apply_layout(sm.active_workspace_idx());
     assert!(
         !sm.layout_cache.throttle_armed(100),

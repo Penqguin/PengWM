@@ -668,7 +668,11 @@ unsafe extern "C" fn observer_callback(
         }
         kAXWindowMovedNotification => {
             if let Some(rect) = unsafe { crate::macos::ax_element::get_window_rect(element) } {
-                ctx.call_event(DaemonEvent::WindowMoved(window_id, rect.x, rect.y));
+                // The full rect travels with the event: the drag gesture
+                // wants position, the displacement note wants size drift
+                // too — one read serves both, and the handler does not
+                // re-read the same rect through the cache.
+                ctx.call_event(DaemonEvent::WindowMoved(window_id, rect));
             }
         }
         kAXWindowMiniaturizedNotification => {

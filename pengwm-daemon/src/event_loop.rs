@@ -19,7 +19,11 @@ pub enum DaemonEvent {
     /// listed; see `lifecycle::on_unknown_window_destroyed`.
     UnknownWindowDestroyed(i32),
     WindowFocused(pengwm_core::tree::WindowId),
-    WindowMoved(pengwm_core::tree::WindowId, f64, f64),
+    /// The full OS rect the notification callback read on its own element
+    /// — the event only fires when that read succeeded, so the coords are
+    /// a fresh read, not notification params (coalescing affects
+    /// notification *frequency*, never these values).
+    WindowMoved(pengwm_core::tree::WindowId, pengwm_core::layout::Rect),
     WindowHidden(pengwm_core::tree::WindowId),
     WindowShown(pengwm_core::tree::WindowId),
 
@@ -130,7 +134,7 @@ impl EventLoop {
             DaemonEvent::WindowDestroyed(id) => self.state.on_window_destroyed(id),
             DaemonEvent::UnknownWindowDestroyed(pid) => self.state.on_unknown_window_destroyed(pid),
             DaemonEvent::WindowFocused(id) => self.state.on_window_focused(id),
-            DaemonEvent::WindowMoved(id, x, y) => self.state.on_window_moved(id, x, y),
+            DaemonEvent::WindowMoved(id, rect) => self.state.on_window_moved(id, rect),
             DaemonEvent::WindowHidden(id) => self.state.on_window_hidden(id),
             DaemonEvent::WindowShown(id) => self.state.on_window_shown(id),
             DaemonEvent::AppLaunched(pid) => self.state.on_app_launched(pid),

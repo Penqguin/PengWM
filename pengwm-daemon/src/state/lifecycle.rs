@@ -546,7 +546,7 @@ impl StateManager {
         }
     }
 
-    pub fn on_window_moved(&mut self, window_id: WindowId, x: f64, y: f64) {
+    pub fn on_window_moved(&mut self, window_id: WindowId, rect: Rect) {
         if self.store.is_parked(window_id) {
             // Hidden parks (bottom-edge rects) and fullscreen parks (macOS
             // owns the geometry) both stop the layout machinery here —
@@ -564,15 +564,18 @@ impl StateManager {
             _ => {}
         }
         let now = Instant::now();
-        // The event coords drive the drag gesture; displacement reads the OS
-        // rect (cheap, no reflow) so the note shares the sweep's full-rect
-        // predicate instead of trusting possibly-coalesced event coords.
-        let actual = self.os.window_rect(window_id);
-        self.layout_cache.note_displaced(window_id, actual);
+        // The event's rect IS the OS read — the notification callback read
+        // the full rect on its own element moments ago, on this same
+        // thread, and only fired the event because that read succeeded.
+        // A re-read here would buy the same values a second time (the
+        // coalescing the old comment feared affects notification
+        // frequency, never these coords) at two more AX round-trips per
+        // move event — dozens per second during a drag.
+        self.layout_cache.note_displaced(window_id, Some(rect));
         self.drag.on_moved(
             window_id,
-            x,
-            y,
+            rect.x,
+            rect.y,
             &self.workspaces,
             &self.last_layout_rects,
             now,

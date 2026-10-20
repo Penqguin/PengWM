@@ -1,6 +1,7 @@
 use super::common::*;
 use crate::state::store::RoutingVerdict;
 use pengwm_core::command::Command;
+use pengwm_core::layout::Rect;
 use tokio::sync::mpsc;
 
 #[test]
@@ -135,8 +136,9 @@ fn hidden_focus_and_move_ignored() {
     let before = sm.displays.active().get(&1).copied();
     sm.on_window_focused(100);
     assert_eq!(sm.displays.active().get(&1).copied(), before);
-    // Move from hidden should not affect drag
-    sm.on_window_moved(100, 1919.0, 1079.0);
+    // Move from hidden should not affect drag (parked windows return
+    // before any rect is touched — a placeholder rect proves the guard).
+    sm.on_window_moved(100, Rect::new(1919.0, 1079.0, 0.0, 0.0));
     // No panic, still hidden
     assert!(sm.store.is_hidden(100));
 }

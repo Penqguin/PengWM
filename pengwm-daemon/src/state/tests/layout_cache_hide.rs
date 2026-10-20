@@ -113,7 +113,7 @@ fn moved_window_is_reasserted_on_next_layout() {
     sm.layout_cache
         .age_applied_for_test(100, Duration::from_secs(5));
     handle.displace(100, 500.0, 500.0);
-    sm.on_window_moved(100, 500.0, 500.0);
+    sm.on_window_moved(100, handle.rect(100).unwrap());
     sm.apply_layout(sm.active_workspace_idx());
     assert!(
         handle.writes() > writes_after_tile,
@@ -128,7 +128,7 @@ fn move_within_grace_window_stays_skipped() {
     let (mut sm, handle) = setup_with_handle(1);
     sm.on_window_created(100, 42);
     let writes_after_tile = handle.writes();
-    sm.on_window_moved(100, 500.0, 500.0);
+    sm.on_window_moved(100, handle.rect(100).unwrap());
     sm.apply_layout(sm.active_workspace_idx());
     assert_eq!(
         handle.writes(),
@@ -173,7 +173,11 @@ fn apply_layout_untracks_window_gone_from_os() {
     // path; avoids depending on workspace capacity).
     sm.layout_cache
         .age_applied_for_test(100, Duration::from_secs(5));
-    sm.on_window_moved(100, 500.0, 500.0);
+    // The old on_window_moved lever here rode its rect re-read returning
+    // None (the fake closed the window) to invalidate the skip entry; the
+    // carried-rect event can never fire for a closed window, so the test
+    // states the intent directly — the note invalidates on unreadable.
+    sm.layout_cache.note_displaced(100, None);
     sm.apply_layout(sm.active_workspace_idx());
     assert!(
         sm.store.contains(100),
