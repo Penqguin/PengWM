@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Install replaces binaries via temp file + rename, never truncating
+  the live inode.** The previous in-place write left a window where
+  `pengwm` was a half-written file — a daemon crash, a restart, or
+  `pengwm update` running while the binary was executing could leave a
+  truncated or busy binary. The new binary is written to a sibling
+  temp file and renamed over the old one (atomic on the same
+  filesystem), so the running inode is never touched mid-write.
+
+- **Idle AX traffic roughly halved: the sweeps own their reads.** Every
+  recurring sweep used to re-derive shared answers once per item — the
+  1s hidden reconcile rebuilt the app element and re-read app-hidden
+  for *every* window (N windows on one app = N reads/second, forever),
+  the 2s window sweep took one `CGWindowListCopyWindowInfo` snapshot
+  *per app* and re-read role/subrole for windows already in the element
+  cache, and an app the OS could not name re-issued two linear
+  NSWorkspace scans on every bar publish. Each shared answer is now
+  resolved once at its natural owner and shared: app-hidden once per
+  pid (`windows_are_hidden` batch), the level snapshot once per poll
+  batch, classification exactly once per window id (the element cache
+  keeps the class it first won — first-classification-wins now has a
+  single enforcing point), and a failed label resolution is a
+  timestamped verdict retried after 30s instead of every publish. No
+  behavioral rule changed: Listing judgment, the AX blackout, level
+  gating at birth and every park/funnel are untouched — on an idle
+  8-app desktop the sweeps go from ~40–80 AX mach RPCs/s plus 8 CG
+  snapshots per 2s to roughly half the RPCs and one snapshot, and a
+  wedged app's 250ms-timeout stalls hit fewer reads per tick.
+
 - **Typed settings no longer kill the keybind table.** The keybind
   scrape walks the whole config file; a typed value at the top level
   (`gap_outer = 5`, `restricted_apps = [...]`) hard-errored the parse
