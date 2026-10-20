@@ -194,10 +194,7 @@ impl StateManager {
         }
         // Poll every app first: this refreshes the element cache and tells
         // us whether AX is answering at all.
-        let polled: Vec<(i32, WindowListing)> = pids
-            .iter()
-            .map(|&pid| (pid, self.os.poll_windows_for_pid(pid)))
-            .collect();
+        let polled = self.os.poll_windows_for_pids(&pids);
         let any_windows = polled
             .iter()
             .any(|(_, listing)| {

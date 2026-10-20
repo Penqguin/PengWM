@@ -291,20 +291,11 @@ fn log_write_diagnostics(
     }
 }
 
-impl OsAdapter for MacOsAdapter {
-    fn running_app_pids(&self) -> Vec<i32> {
-        ns_workspace::running_app_pids()
-    }
-
-    fn running_pids_any_policy(&self) -> Vec<i32> {
-        ns_workspace::running_pids_any_policy()
-    }
-
-    fn frontmost_pid(&self) -> Option<i32> {
-        ax_element::frontmost_pid()
-    }
-
-    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing {
+impl MacOsAdapter {
+    /// The per-pid poll body, shared by the batched sweep. Commit-scoped:
+    /// the sweep-level CG snapshot and classification ownership land with
+    /// `poll_windows_for_pids`'s next change.
+    fn poll_one_pid(&self, pid: i32) -> WindowListing {
         let Some(windows) = (unsafe { ax_element::windows_for_pid(pid) }) else {
             // AX errored or the app element would not answer: the blackout
             // signature, not death evidence.
@@ -335,6 +326,26 @@ impl OsAdapter for MacOsAdapter {
             result.push(window_id);
         }
         WindowListing::Answered(result)
+    }
+}
+
+impl OsAdapter for MacOsAdapter {
+    fn running_app_pids(&self) -> Vec<i32> {
+        ns_workspace::running_app_pids()
+    }
+
+    fn running_pids_any_policy(&self) -> Vec<i32> {
+        ns_workspace::running_pids_any_policy()
+    }
+
+    fn frontmost_pid(&self) -> Option<i32> {
+        ax_element::frontmost_pid()
+    }
+
+    fn poll_windows_for_pids(&self, pids: &[i32]) -> Vec<(i32, WindowListing)> {
+        pids.iter()
+            .map(|&pid| (pid, self.poll_one_pid(pid)))
+            .collect()
     }
 
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId> {

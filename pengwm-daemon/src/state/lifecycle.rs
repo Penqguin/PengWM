@@ -593,13 +593,11 @@ impl StateManager {
     /// no longer lists is untracked immediately — the fast close-detector
     /// for missed destroyed notifications (see `untrack_unlisted_windows`).
     pub(super) fn sync_untracked_windows(&mut self, pids: impl IntoIterator<Item = i32>) {
-        let mut listings: Vec<(i32, WindowListing)> = Vec::new();
-        for pid in pids {
-            if self.excluded_pids.contains(&pid) {
-                continue;
-            }
-            listings.push((pid, self.os.poll_windows_for_pid(pid)));
-        }
+        let pids: Vec<i32> = pids
+            .into_iter()
+            .filter(|pid| !self.excluded_pids.contains(pid))
+            .collect();
+        let listings = self.os.poll_windows_for_pids(&pids);
         // Untrack dead members first, so the discovery layouts below
         // compute targets against a tree that no longer holds them.
         self.untrack_unlisted_windows(&listings);

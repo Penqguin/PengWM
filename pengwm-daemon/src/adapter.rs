@@ -128,7 +128,22 @@ pub enum WindowListing {
 pub trait OsAdapter: ObserverRegistry {
     fn running_app_pids(&self) -> Vec<i32>;
     fn frontmost_pid(&self) -> Option<i32>;
-    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing;
+    /// Poll each pid's windows through AX — the buy side of the
+    /// `WindowListing` seam, batched. One call per sweep: the adapter
+    /// scopes sweep-wide costs (the CG level snapshot) across the whole
+    /// poll instead of paying them per app. Returns one listing per pid,
+    /// in order. Single-pid callers use `poll_windows_for_pid`.
+    fn poll_windows_for_pids(&self, pids: &[i32]) -> Vec<(i32, WindowListing)>;
+    /// Poll one pid's windows — the single-pid shape of
+    /// `poll_windows_for_pids` (the activate fast path, the
+    /// unknown-destroyed probe, app launch).
+    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing {
+        self.poll_windows_for_pids(std::slice::from_ref(&pid))
+            .into_iter()
+            .next()
+            .map(|(_, listing)| listing)
+            .expect("one pid polled, one listing returned")
+    }
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;

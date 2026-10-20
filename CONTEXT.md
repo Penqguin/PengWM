@@ -40,7 +40,7 @@ pub trait OsAdapter: ObserverRegistry {
     fn running_app_pids(&self) -> Vec<i32>;
     fn running_pids_any_policy(&self) -> Vec<i32>;  // liveness for the dead-pid sweep (accessory apps own windows)
     fn frontmost_pid(&self) -> Option<i32>;
-    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId>;  // &self interior mut (cache insert); was &mut
+    fn poll_windows_for_pid(&self, pid: i32) -> Vec<WindowId>;  // &self interior mut (cache insert); was &mut — batched: poll_windows_for_pids, one call per sweep
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;

@@ -190,9 +190,13 @@ impl StateManager {
 
         let frontmost_pid = os.frontmost_pid();
 
+        let mut boot_pids = Vec::new();
         for pid in os.running_app_pids() {
             os.attach_observer(pid);
-            if let crate::adapter::WindowListing::Answered(windows) = os.poll_windows_for_pid(pid) {
+            boot_pids.push(pid);
+        }
+        for (pid, listing) in os.poll_windows_for_pids(&boot_pids) {
+            if let crate::adapter::WindowListing::Answered(windows) = listing {
                 for window_id in windows {
                     store.register(window_id, pid);
                     let _ = event_tx.try_send(DaemonEvent::WindowCreated(window_id, pid));

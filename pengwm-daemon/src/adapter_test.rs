@@ -518,8 +518,8 @@ impl OsAdapter for SharedTestAdapter {
         self.0.frontmost_pid()
     }
 
-    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing {
-        self.0.poll_windows_for_pid(pid)
+    fn poll_windows_for_pids(&self, pids: &[i32]) -> Vec<(i32, WindowListing)> {
+        self.0.poll_windows_for_pids(pids)
     }
 
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId> {
@@ -626,24 +626,28 @@ impl OsAdapter for TestAdapter {
         self.frontmost
     }
 
-    fn poll_windows_for_pid(&self, pid: i32) -> WindowListing {
-        if self.ax_blackout.get() {
-            // AX answering nothing: the blackout signature, not death
-            // evidence.
-            return WindowListing::NoAnswer;
-        }
-        let windows = self.windows.borrow().get(&pid).cloned().unwrap_or_default();
-        // Prod's poll re-caches every listed element (fresh AXUIElementRef
-        // per window); the fake mirrors that so prune semantics match.
-        {
-            let mut cached = self.cached_elements.borrow_mut();
-            for &wid in &windows {
-                cached.insert(wid, pid);
-            }
-        }
-        // Empty but answered: the closed-only-window signature (Preview /
-        // 1Password after their one window closed).
-        WindowListing::Answered(windows)
+    fn poll_windows_for_pids(&self, pids: &[i32]) -> Vec<(i32, WindowListing)> {
+        pids.iter()
+            .map(|&pid| {
+                if self.ax_blackout.get() {
+                    // AX answering nothing: the blackout signature, not death
+                    // evidence.
+                    return (pid, WindowListing::NoAnswer);
+                }
+                let windows = self.windows.borrow().get(&pid).cloned().unwrap_or_default();
+                // Prod's poll re-caches every listed element (fresh AXUIElementRef
+                // per window); the fake mirrors that so prune semantics match.
+                {
+                    let mut cached = self.cached_elements.borrow_mut();
+                    for &wid in &windows {
+                        cached.insert(wid, pid);
+                    }
+                }
+                // Empty but answered: the closed-only-window signature (Preview /
+                // 1Password after their one window closed).
+                (pid, WindowListing::Answered(windows))
+            })
+            .collect()
     }
 
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId> {
