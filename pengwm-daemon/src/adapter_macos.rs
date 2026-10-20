@@ -321,10 +321,16 @@ impl MacOsAdapter {
                 }
             };
             unsafe {
-                // Once per (observer, window): repeated registrations on
-                // every sweep allocate AX-side records with no removal
-                // call — the churn that grows the daemon at idle. The
-                // age-bounded observer refresh resets the bookkeeping.
+                // Once per (observer, window id, notification): repeated
+                // registrations on every sweep allocate AX-side records with
+                // no removal call — the churn that grows the daemon at
+                // idle. The age-bounded observer refresh resets the
+                // bookkeeping. (The WindowCreated callback also registers
+                // destroyed/moved directly and does not record here — it
+                // holds only the ObserverContext, not this registry — so
+                // the first poll after a callback registration adds each
+                // notification once more; AX tolerates the duplicate with
+                // AlreadyRegistered and the age refresh bounds the records.)
                 self.observer_registry.register_window_destroyed(
                     pid,
                     window_id,

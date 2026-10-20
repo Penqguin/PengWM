@@ -156,15 +156,19 @@ pub struct RegisteredObserver {
     /// lifetime and there is no per-notification removal, so a long-lived
     /// observer grows its records with window churn. See `refresh_aged`.
     attached_at: Instant,
-    /// Per-window registration bookkeeping, keyed by window id. AX
+    /// Per-window, per-notification registration bookkeeping. AX
     /// accumulates per-registration records for the lifetime of the
     /// observer and there is no per-notification removal in AX, so the
-    /// daemons re-registers nothing: a window is registered once against
-    /// the observer it lives under. Records die with the observer —
+    /// daemon re-registers nothing: a window is registered once per
+    /// notification against the observer it lives under. (The key is the
+    /// (window id, notification) pair — a window id shared across
+    /// notification types once made the moved registration a silent
+    /// no-op behind the destroyed one, losing drag detection for
+    /// sweep-discovered windows.) Records die with the observer —
     /// `attach` replaces the whole observer on re-attach intent (the wake
     /// resync), which is what gives its first-following poll a clean
     /// slate without any per-tick churn.
-    registered: std::cell::RefCell<std::collections::HashSet<WindowId>>,
+    registered: std::cell::RefCell<std::collections::HashSet<(WindowId, &'static str)>>,
     // The `CFRef` fields release themselves — no manual Drop, so the old
     // balance-prone `impl Drop { CFRelease; CFRelease }` is gone.
 }
@@ -315,9 +319,9 @@ impl ObserverRegistry {
     }
 
     /// Register a kAXWindowMovedNotification on a specific window element,
-    /// once per (observer, window id): repeats are skipped — both because
-    /// the poll path runs every 2s per tracked window and because AX
-    /// accumulates per-registration records with no removal call.
+    /// once per (observer, window id, notification): repeats are skipped —
+    /// both because the poll path runs every 2s per tracked window and
+    /// because AX accumulates per-registration records with no removal call.
     /// # Safety
     /// `window` must be a valid `AXUIElementRef` and `refcon` a valid pointer.
     pub unsafe fn register_window_moved(
@@ -406,7 +410,7 @@ impl ObserverRegistry {
         window_id: WindowId,
         window: AXUIElementRef,
         refcon: *mut c_void,
-        notification: &str,
+        notification: &'static str,
         force: bool,
     ) {
         let Some(registered) = self.observers.get(&pid) else {
@@ -414,10 +418,10 @@ impl ObserverRegistry {
         };
         {
             let mut seen = registered.registered.borrow_mut();
-            if !force && seen.contains(&window_id) {
+            if !force && seen.contains(&(window_id, notification)) {
                 return;
             }
-            seen.insert(window_id);
+            seen.insert((window_id, notification));
         }
         let name = CFString::new(notification);
         let err = AXObserverAddNotification(
@@ -581,9 +585,18 @@ unsafe extern "C" fn observer_callback(
                 ctx.cache_insert(window_id, owned, pid, class);
             }
 
-            // Register per-window destroyed notification so we detect when
-            // this window closes (the app-level registration does NOT fire
-            // for child windows).
+            // Register per-window notifications directly, NOT through the
+            // registry's dedupe set: this C callback holds only the
+            // ObserverContext, not the registry, and the element it fired
+            // on is the freshest possible evidence of the live element —
+            // adding unconditionally here is what keeps a window whose id
+            // the poll has already recorded (a late-created, a re-created,
+            // or a refreshed element) covered. AX tolerates the duplicate
+            // the next poll makes (AlreadyRegistered); the age-bounded
+            // observer refresh bounds the accumulated records.
+            //
+            // Destroyed, so we detect when this window closes (the
+            // app-level registration does NOT fire for child windows):
             let destroyed_name = CFString::new(kAXUIElementDestroyedNotification);
             let add_err = AXObserverAddNotification(
                 observer,
@@ -599,8 +612,7 @@ unsafe extern "C" fn observer_callback(
                 );
             }
 
-            // Register per-window moved notification so we detect drags
-            // for swap-on-hold and snap-back.
+            // Moved, so we detect drags for swap-on-hold and snap-back:
             let moved_name = CFString::new(kAXWindowMovedNotification);
             let moved_err = AXObserverAddNotification(
                 observer,
@@ -616,9 +628,8 @@ unsafe extern "C" fn observer_callback(
                 );
             }
 
-            // Register per-window minimize/restore notifications so a
-            // miniaturized window stops occupying tiled space and is retiled
-            // on deminiaturize.
+            // Miniaturize/restore, so a miniaturized window stops occupying
+            // tiled space and is retiled on deminiaturize:
             let mini_name = CFString::new(kAXWindowMiniaturizedNotification);
             let mini_err = AXObserverAddNotification(
                 observer,
