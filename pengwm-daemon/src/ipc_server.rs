@@ -7,6 +7,16 @@ use tokio::sync::{mpsc, Semaphore};
 use crate::event_loop::DaemonEvent;
 use crate::socket_guard::{bind_first, SocketGuard};
 
+/// How long a handler thread waits on a single `read` from a client
+/// before giving up. Legitimate clients are request/response over a
+/// local socket — connect, write, shutdown(Write), done in
+/// milliseconds. The timeout exists for clients that connect and then
+/// stall: without it, a client that never EOFs parks a pool thread in
+/// `read` forever, and 32 wedged threads is every CLI command failing
+/// until restart. Firing surfaces as `WouldBlock`, which the read loop
+/// already treats as end-of-payload.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The accept loop polls instead of blocking on `accept`, so the per-tick
 /// socket-identity check (`SocketGuard::tick`) can run and a rebound
 /// listener can be swapped in. Worst-case added accept latency is one
@@ -62,8 +72,11 @@ pub fn start_ipc_server_with_path(event_tx: mpsc::Sender<DaemonEvent>, socket_pa
         match listener.accept() {
             Ok((stream, _)) => {
                 // Accepted sockets inherit O_NONBLOCK on some platforms
-                // (Linux); handle_client does blocking reads — normalize.
+                // (Linux); handle_client does blocking reads — normalize,
+                // and bound each read so a client that never EOFs cannot
+                // park a pool thread forever.
                 let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
                 let tx = event_tx.clone();
                 let path = socket_path.to_owned();
                 let sem = Arc::clone(&sem);
