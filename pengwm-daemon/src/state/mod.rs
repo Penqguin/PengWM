@@ -72,10 +72,13 @@ pub struct StateManager {
     /// pid → menubar app label, cached. Labels resolve over synchronous
     /// AX reads (each one drawing against the 250 ms message budget), so
     /// the bar snapshot's cost must not scale with window count ×
-    /// publishes. Only resolved answers are cached — an app the OS could
-    /// not name during an AX hiccup stays uncached and retries; entries
-    /// live until the pid dies (`on_app_terminated`).
-    app_labels: HashMap<i32, String>,
+    /// publishes. Resolved answers are cached positively; an app the OS
+    /// could not name is cached *negatively* for `LABEL_NEG_TTL` — a
+    /// hiccup still retries (after the TTL), but a pid that never resolves
+    /// costs at most one lookup per TTL instead of two O(apps) NSWorkspace
+    /// scans on every publish. Entries live until the pid dies
+    /// (`on_app_terminated`).
+    app_labels: HashMap<i32, AppLabel>,
     /// Layout-write policy and the maps it reasons about (skip-if-unchanged,
     /// read-before-write, gone grace, pin backoff, hidden seeding). Owned by
     /// `LayoutWriteCache` — `StateManager` never touches the maps directly.
@@ -127,6 +130,22 @@ pub(crate) struct WakeResync {
     /// When the last probe ran, so retries are paced.
     pub(crate) last_probe: Instant,
 }
+
+/// A menubar app label: a resolved name, or a timestamped "could not
+/// resolve" verdict. The negative side bounds the retry cost of a pid the
+/// OS refuses to name without giving up on it — after `LABEL_NEG_TTL` the
+/// pid is asked again, so an app that names itself late still gets its
+/// real label.
+#[derive(Debug, Clone)]
+enum AppLabel {
+    Pos(String),
+    Neg(Instant),
+}
+
+/// How long a failed label resolution silences retries. Long enough to
+/// absorb an AX hiccup spanning many publishes, short enough that a
+/// late-naming app is relabeled within a bar refresh or two.
+const LABEL_NEG_TTL: Duration = Duration::from_secs(30);
 
 impl StateManager {
     pub fn new(
@@ -199,7 +218,7 @@ impl StateManager {
             float_apps: settings.windows.float_apps.clone(),
             float_level_overlays: settings.windows.float_level_overlays,
             last_layout_rects: HashMap::new(),
-            app_labels: HashMap::new(),
+            app_labels: HashMap::new(), // pid → AppLabel (positive or timestamped negative)
             layout_cache: LayoutWriteCache::new(),
             drag: DragState::new(),
             shutdown_requested: false,
@@ -541,9 +560,9 @@ impl StateManager {
         let split_direction = self.workspaces[active_idx].focused_split_direction();
 
         // One label resolution per pid, not per window × publish: the
-        // cache holds every pid represented in the bar (positive answers
-        // only; an unnamed pid falls back to "unknown" and retries next
-        // publish, same as before).
+        // cache holds every pid represented in the bar (positive answers,
+        // plus negative verdicts for LABEL_NEG_TTL — an unnamed pid falls
+        // back to "unknown" and retries after the TTL, not next publish).
         let mut pids: Vec<i32> = self
             .workspaces
             .iter()
@@ -553,9 +572,18 @@ impl StateManager {
         pids.sort_unstable();
         pids.dedup();
         for pid in pids {
-            if !self.app_labels.contains_key(&pid) {
-                if let Some(label) = self.os.app_name(pid).or_else(|| self.os.app_bundle_id(pid)) {
-                    self.app_labels.insert(pid, label);
+            match self.app_labels.get(&pid) {
+                // Resolved, or negatively cached and still fresh: no lookups.
+                Some(AppLabel::Pos(_)) => {}
+                Some(AppLabel::Neg(when)) if when.elapsed() < LABEL_NEG_TTL => {}
+                _ => {
+                    if let Some(label) =
+                        self.os.app_name(pid).or_else(|| self.os.app_bundle_id(pid))
+                    {
+                        self.app_labels.insert(pid, AppLabel::Pos(label));
+                    } else {
+                        self.app_labels.insert(pid, AppLabel::Neg(Instant::now()));
+                    }
                 }
             }
         }
@@ -570,11 +598,11 @@ impl StateManager {
                     .all_windows()
                     .into_iter()
                     .filter_map(|wid| self.store.pid_for(wid))
-                    .map(|pid| {
-                        self.app_labels
-                            .get(&pid)
-                            .cloned()
-                            .unwrap_or_else(|| "unknown".into())
+                    .map(|pid| match self.app_labels.get(&pid) {
+                        Some(AppLabel::Pos(label)) => label.clone(),
+                        // Unresolved (or awaiting retry): the bar shows the
+                        // placeholder either way.
+                        Some(AppLabel::Neg(_)) | None => "unknown".into(),
                     })
                     .collect();
                 BarWorkspace {
