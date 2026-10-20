@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.6.5 — A live element outranks a listing omission (2026-10-20)
+
+- **Fixed: Space switches no longer lose windows' workspaces.** A
+  window that went native fullscreen (its own macOS Space) came back
+  routed onto whatever workspace was *active* after the user switched
+  Spaces and returned — Firefox ws1→ws2, DrRacket ws3→ws1. The chain:
+  while a window's Space is inactive, its app answers `kAXWindows`
+  without it — visible tiled members included — and the listed-set
+  sweep judged that answered omission a death, untracking the window
+  outright (routing verdict, pid map, park entry and remembered
+  workspace all destroyed). The next sweep rediscovered the window
+  fresh, re-routed it onto the active workspace, and the refused first
+  write parked it there. The listing diff now checks the window's
+  element before judging: a live element (its rect still readable)
+  outranks the omission — a listing artifact, not a death — while a
+  genuinely closed window's dead element is judged dead exactly as
+  before, so the fast close-detector keeps its speed. Real deaths stay
+  owned by the destroyed notification, app termination, and the
+  dead-pid sweep. The GLOSSARY's Listing entry records the sharpened
+  judgment rule; two state-loop tests replay the full symptom chain
+  (parked-window and visible-member faces).
+
 ## v0.6.4 — One read per owner (2026-10-20)
 
 - **Drag detection restored for sweep-discovered windows; the AX
