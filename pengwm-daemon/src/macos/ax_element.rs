@@ -420,13 +420,14 @@ pub fn frontmost_pid() -> Option<i32> {
     }
 }
 
-/// Returns owned element refs (`CFRef`, +1 each) with their window id and
-/// typed `WindowClass`. Sheets and unknowns are dropped here (same fate as
-/// the old binary gate); popups and untracked overlays survive so discovery,
-/// routing, dispatch and plumbing can share the class list.
-/// Borrowed candidates whose classification or window
-/// id check fails are simply never retained — dropping the vector releases
-/// the survivors, and nothing owned is ever left behind.
+/// Returns owned element refs (`CFRef`, +1 each) with their window id.
+/// Classification is the *caller's* job — the element cache's owner
+/// classifies (and level-gates) exactly once per window id, at
+/// first sight, and reuses the cached class for ids it already knows;
+/// sheets and unknowns are the caller's filter, same fate as the old
+/// binary gate. Borrowed candidates whose window id check fails are
+/// simply never retained — dropping the vector releases the survivors,
+/// and nothing owned is ever left behind.
 ///
 /// Poll an app's windows through AX. The buy side of the `WindowListing`
 /// seam: `None` is the no-answer case (the app element could not be
@@ -437,17 +438,11 @@ pub fn frontmost_pid() -> Option<i32> {
 /// Each listed window carries the element the poll copied, so the caller
 /// can cache it; the window id comes from the private `_AXUIElementGetWindow`
 ///
-/// The class carries the ADR-0002 level gate: one CG snapshot covers the
-/// whole poll, and any candidate whose `kCGWindowLayer` is not the normal
-/// level classifies `Untracked` ahead of its subrole.
-///
 /// # Safety
 ///
 /// The caller must ensure that `pid` references a valid running process and that
 /// the Accessibility API is called from a trusted process with the necessary permissions.
-pub unsafe fn windows_for_pid(
-    pid: i32,
-) -> Option<Vec<(CFRef<AXUIElementRef>, WindowId, crate::adapter::WindowClass)>> {
+pub unsafe fn windows_for_pid(pid: i32) -> Option<Vec<(CFRef<AXUIElementRef>, WindowId)>> {
     let app = create_app_element(pid)?;
 
     let windows_attr = CFString::new(kAXWindowsAttribute);
@@ -465,16 +460,9 @@ pub unsafe fn windows_for_pid(
 
     let count = CFArrayGetCount(windows_array.ptr());
     let mut result = Vec::new();
-    // One CG snapshot covers the whole poll: level per on-screen window.
-    let levels = crate::macos::cg_window_level::window_levels();
-
     for i in 0..count {
         let elem = CFArrayGetValueAtIndex(windows_array.ptr(), i) as AXUIElementRef;
         if elem.is_null() {
-            continue;
-        }
-        let class = classify(elem);
-        if !class.is_manageable() {
             continue;
         }
         if let Some(window_id) = ax_window_id_from_element(elem) {
@@ -485,11 +473,7 @@ pub unsafe fn windows_for_pid(
             // Window elements are separate AXUIElementRefs from the app
             // element, so they need the timeout applied in their own right.
             apply_messaging_timeout(elem.ptr());
-            let class = crate::adapter::WindowClass::apply_level_gate(
-                class,
-                levels.get(&window_id).copied(),
-            );
-            result.push((elem, window_id, class));
+            result.push((elem, window_id));
         }
     }
 

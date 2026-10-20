@@ -50,7 +50,7 @@ impl MacOsAdapter {
         // No answer is the same as no match: the caller's stale-ref
         // handling owns what happens next.
         let mut result = None;
-        for (elem, wid, _) in windows.unwrap_or_default() {
+        for (elem, wid) in windows.unwrap_or_default() {
             if wid == window_id {
                 // Reassignment drops any earlier duplicate match — and the
                 // reassignment itself is released by the next one.
@@ -154,7 +154,7 @@ impl MacOsAdapter {
         for pid in ns_workspace::running_app_pids() {
             let windows = unsafe { ax_element::windows_for_pid(pid) };
             let mut found: Option<CFRef<AXUIElementRef>> = None;
-            for (elem, wid, _) in windows.unwrap_or_default() {
+            for (elem, wid) in windows.unwrap_or_default() {
                 if wid == window_id {
                     found = Some(elem);
                 }
@@ -218,7 +218,7 @@ impl MacOsAdapter {
                             let ids: Vec<WindowId> = listed
                                 .unwrap_or_default()
                                 .iter()
-                                .map(|(_, wid, _)| *wid)
+                                .map(|(_, wid)| *wid)
                                 .collect();
                             log::debug!(
                                 "write_diag win={} outcome=Gone target={:?}\n  refresh_element found no match\n  app: {:?} pid {}\n  app still lists {} window(s): {:?}",
@@ -292,17 +292,34 @@ fn log_write_diagnostics(
 }
 
 impl MacOsAdapter {
-    /// The per-pid poll body, shared by the batched sweep. Commit-scoped:
-    /// the sweep-level CG snapshot and classification ownership land with
-    /// `poll_windows_for_pids`'s next change.
-    fn poll_one_pid(&self, pid: i32) -> WindowListing {
+    /// The per-pid poll body, batched under the sweep's one CG snapshot.
+    /// Classification is owned here, at the element cache: an id already
+    /// cached keeps its class (first-classification-wins — the sweep
+    /// never re-reads role/subrole for it); a fresh id classifies now,
+    /// through the ADR-0002 level gate fed from the sweep's snapshot.
+    /// Unmanageable classes (sheets, unknowns) are filtered exactly where
+    /// the FFI used to filter them — never cached, never listed.
+    fn poll_one_pid(&self, pid: i32, levels: &HashMap<WindowId, i32>) -> WindowListing {
         let Some(windows) = (unsafe { ax_element::windows_for_pid(pid) }) else {
             // AX errored or the app element would not answer: the blackout
             // signature, not death evidence.
             return WindowListing::NoAnswer;
         };
         let mut result = Vec::new();
-        for (element, window_id, class) in windows {
+        for (element, window_id) in windows {
+            let class = match self.cached_class(window_id) {
+                Some(cached) => cached,
+                None => {
+                    let classified = WindowClass::apply_level_gate(
+                        unsafe { ax_element::classify(element.ptr()) },
+                        levels.get(&window_id).copied(),
+                    );
+                    if !classified.is_manageable() {
+                        continue;
+                    }
+                    classified
+                }
+            };
             unsafe {
                 // Once per (observer, window): repeated registrations on
                 // every sweep allocate AX-side records with no removal
@@ -327,6 +344,15 @@ impl MacOsAdapter {
         }
         WindowListing::Answered(result)
     }
+
+    /// The class the cache already holds for `window_id`, if any — the
+    /// first classification that wins and is never re-derived.
+    fn cached_class(&self, window_id: WindowId) -> Option<WindowClass> {
+        self.ctx
+            .cache_get()
+            .get(&window_id)
+            .map(|(_, _, class)| *class)
+    }
 }
 
 impl OsAdapter for MacOsAdapter {
@@ -343,8 +369,12 @@ impl OsAdapter for MacOsAdapter {
     }
 
     fn poll_windows_for_pids(&self, pids: &[i32]) -> Vec<(i32, WindowListing)> {
+        // One CG snapshot covers the whole sweep: level per on-screen
+        // window, consumed only by windows being classified for the first
+        // time. Cached ids never touch it.
+        let levels = cg_window_level::window_levels();
         pids.iter()
-            .map(|&pid| (pid, self.poll_one_pid(pid)))
+            .map(|&pid| (pid, self.poll_one_pid(pid, &levels)))
             .collect()
     }
 
