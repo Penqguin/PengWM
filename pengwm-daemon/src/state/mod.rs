@@ -131,6 +131,17 @@ pub(crate) struct WakeResync {
     pub(crate) last_probe: Instant,
 }
 
+/// The NSWorkspace identity reads for one pid's routing pass: bundle id
+/// and display name. Each costs a linear scan of `runningApplications`,
+/// so a pass resolves them once per pid and threads them down — an app
+/// launching N windows pays two scans, not ~5 × N. Resolution is also
+/// the consistency point: every check in one routing pass matches the
+/// same answer, not consecutive live scans.
+pub(super) struct AppIdentity {
+    pub(super) bundle: Option<String>,
+    pub(super) name: Option<String>,
+}
+
 /// A menubar app label: a resolved name, or a timestamped "could not
 /// resolve" verdict. The negative side bounds the retry cost of a pid the
 /// OS refuses to name without giving up on it — after `LABEL_NEG_TTL` the
@@ -264,14 +275,25 @@ impl StateManager {
         )
     }
 
+    /// The identity reads for one pid's routing pass (see `AppIdentity`).
+    pub(super) fn app_identity(&self, pid: i32) -> AppIdentity {
+        AppIdentity {
+            bundle: self.os.app_bundle_id(pid),
+            name: self.os.app_name(pid),
+        }
+    }
+
     /// Global workspace a window of `pid` routes to per the app routing
     /// config — the one ask with the `OsAdapter` identity reads; the
     /// planner stays pure over the already-fetched bundle/name options.
-    pub(super) fn routed_workspace_for(&self, pid: i32) -> Option<usize> {
-        let bundle = self.os.app_bundle_id(pid);
-        let app_name = self.os.app_name(pid);
-        self.displays
-            .routed_workspace_idx(&self.workspaces, bundle.as_deref(), app_name.as_deref())
+    /// The options come from the caller's `AppIdentity` so a pass pays
+    /// the NSWorkspace scans once per pid, not once per window.
+    pub(super) fn routed_workspace_for(&self, identity: &AppIdentity) -> Option<usize> {
+        self.displays.routed_workspace_idx(
+            &self.workspaces,
+            identity.bundle.as_deref(),
+            identity.name.as_deref(),
+        )
     }
 
     /// True once `Command::Quit` has been handled; the event loop polls this
@@ -436,7 +458,8 @@ impl StateManager {
             let preferred = if entry.idx < self.workspaces.len() {
                 entry.idx
             } else {
-                self.routed_workspace_for(pid)
+                let identity = self.app_identity(pid);
+                self.routed_workspace_for(&identity)
                     .unwrap_or_else(|| self.active_workspace_idx())
             };
             if self.add_window_to_workspace(wid, preferred).is_some() {

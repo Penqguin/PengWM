@@ -7,7 +7,7 @@ use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::position_of_member;
 
 use super::store::{ParkReason, RoutingVerdict};
-use super::StateManager;
+use super::{AppIdentity, StateManager};
 use crate::event_loop::DaemonEvent;
 
 /// Owns the window/app lifecycle: creation, destruction, hide/show, focus,
@@ -17,14 +17,17 @@ use crate::event_loop::DaemonEvent;
 /// `reconcile.rs` keeps calling the same interface.
 impl StateManager {
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
-        self.route_window_created(window_id, pid);
+        let identity = self.app_identity(pid);
+        self.route_window_created(window_id, pid, &identity);
         #[cfg(test)]
         self.assert_identity_invariant();
     }
 
     /// The routing body of `on_window_created` (ADR-0003): classify at
     /// discovery, decide once, note the verdict, place the window.
-    fn route_window_created(&mut self, window_id: WindowId, pid: i32) {
+    /// `identity` is the pass's per-pid NSWorkspace resolution — see
+    /// `AppIdentity`; the burst discovery loop passes one per pid.
+    fn route_window_created(&mut self, window_id: WindowId, pid: i32, identity: &AppIdentity) {
         if self.excluded_pids.contains(&pid) {
             log::debug!("Ignoring window {} from excluded pid {}", window_id, pid);
             return;
@@ -50,12 +53,12 @@ impl StateManager {
             );
             return;
         }
-        let restricted = self.app_is_restricted(pid);
+        let restricted = self.app_is_restricted(identity.bundle.as_deref());
         // Untracked floats when (a) discovery's CG-level gate said so and
         // the gate isn't disabled, or (b) the bundle is in `float_apps`.
         // Popups are decided before the float list: the subrole answer is
         // the more specific signal.
-        let float_app = self.app_is_float_app(pid);
+        let float_app = self.app_is_float_app(identity.bundle.as_deref());
         if class == WindowClass::Untracked && self.float_level_overlays && !restricted {
             log::info!(
                 "WindowCreated untracked overlay: {} pid={} — left out of the tree",
@@ -101,8 +104,8 @@ impl StateManager {
         // what the app *is*. Then the config entry match. Then the active
         // workspace — unassigned windows restore where the boot finds them.
         let preferred = self
-            .remembered_workspace(window_id, pid)
-            .or_else(|| self.routed_workspace_for(pid))
+            .remembered_workspace(window_id, identity.bundle.as_deref())
+            .or_else(|| self.routed_workspace_for(identity))
             .unwrap_or_else(|| self.active_workspace_idx());
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
         let placed_workspace =
@@ -162,26 +165,22 @@ impl StateManager {
 
     /// `restricted_apps` semantics: every manageable window of these bundles
     /// becomes a workspace-bound popup — never tiled. Bundle id matched
-    /// case-insensitively, like the workspace `apps` routing.
-    pub(super) fn app_is_restricted(&self, pid: i32) -> bool {
-        let bundle = self.os.app_bundle_id(pid);
+    /// case-insensitively, like the workspace `apps` routing. The bundle
+    /// comes from the pass's `AppIdentity` — see that type for why it is
+    /// not re-read here.
+    pub(super) fn app_is_restricted(&self, bundle: Option<&str>) -> bool {
         self.restricted_apps.iter().any(|app| {
-            bundle
-                .as_deref()
-                .is_some_and(|b| b.eq_ignore_ascii_case(app))
+            bundle.is_some_and(|b| b.eq_ignore_ascii_case(app))
         })
     }
 
     /// `float_apps` semantics (ADR-0002): every window of these bundles is
     /// untracked — never tiled, on top across workspace switches until
-    /// closed. Same case-insensitive bundle-or-name match as
-    /// `restricted_apps`.
-    pub(super) fn app_is_float_app(&self, pid: i32) -> bool {
-        let bundle = self.os.app_bundle_id(pid);
+    /// closed. Same case-insensitive bundle match as `restricted_apps`,
+    /// same `AppIdentity` threading.
+    pub(super) fn app_is_float_app(&self, bundle: Option<&str>) -> bool {
         self.float_apps.iter().any(|app| {
-            bundle
-                .as_deref()
-                .is_some_and(|b| b.eq_ignore_ascii_case(app))
+            bundle.is_some_and(|b| b.eq_ignore_ascii_case(app))
         })
     }
 
@@ -348,7 +347,8 @@ impl StateManager {
         let preferred = remembered
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
-                self.routed_workspace_for(pid)
+                let identity = self.app_identity(pid);
+                self.routed_workspace_for(&identity)
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
         if self.add_window_to_workspace(window_id, preferred).is_some() {
@@ -602,6 +602,10 @@ impl StateManager {
         // compute targets against a tree that no longer holds them.
         self.untrack_unlisted_windows(&listings);
         for (pid, listing) in listings {
+            // One identity resolution per pid, not per window: the pass's
+            // NSWorkspace scans are paid once and every window of the app
+            // routes against the same answer.
+            let identity = self.app_identity(pid);
             let listed = StateManager::listing_evidence(&listing).unwrap_or(&[]);
             for window_id in listed.iter().copied() {
                 if !self.store.contains(window_id) {
@@ -610,7 +614,7 @@ impl StateManager {
                         window_id,
                         pid
                     );
-                    self.on_window_created(window_id, pid);
+                    self.route_window_created(window_id, pid, &identity);
                 }
             }
         }

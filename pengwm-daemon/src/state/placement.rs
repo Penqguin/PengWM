@@ -16,11 +16,14 @@ impl StateManager {
     /// one bundle must not inherit each other's home. `None` (no hit) is
     /// not an error: routing falls through to config, then the active
     /// workspace.
-    pub(super) fn remembered_workspace(&mut self, window_id: WindowId, pid: i32) -> Option<usize> {
-        let bundle = self.os.app_bundle_id(pid);
+    pub(super) fn remembered_workspace(
+        &mut self,
+        window_id: WindowId,
+        bundle: Option<&str>,
+    ) -> Option<usize> {
         let title = self.os.window_title(window_id);
         let pos = self.placement_memory.iter().position(|rec| {
-            rec.matches(bundle.as_deref(), title.as_deref())
+            rec.matches(bundle, title.as_deref())
         })?;
         let rec = self.placement_memory.remove(pos);
         let idx = self
@@ -28,9 +31,8 @@ impl StateManager {
             .iter()
             .position(|ws| ws.name == rec.workspace)?;
         log::info!(
-            "Placement memory: window {} (pid {}, bundle {:?}, title {:?}) re-homed to {} ({})",
+            "Placement memory: window {} (bundle {:?}, title {:?}) re-homed to {} ({})",
             window_id,
-            pid,
             bundle,
             title,
             rec.workspace,
