@@ -662,6 +662,34 @@ impl StateManager {
                 .unwrap_or_default();
             for window_id in tracked {
                 if !listed.contains(&window_id) {
+                    // A fullscreen-parked window is never judged by the
+                    // listing diff *while it still answers fullscreen*: it
+                    // lives in its own macOS Space, and while that Space is
+                    // inactive the app's listing can omit it — a Space
+                    // boundary, not a death. Judging it here destroyed the
+                    // park entry and the remembered workspace with it, so
+                    // the next sweep rediscovered the window fresh and
+                    // re-routed it onto the active workspace (the "window
+                    // moves to whatever workspace is active after
+                    // switching Spaces" repro). The probe read is the
+                    // discriminator: a genuinely closed window's element
+                    // is dead, the attribute read fails, and the untrack
+                    // proceeds exactly as before. The park map owns a
+                    // fullscreen-parked window's membership until its
+                    // reveal funnel says otherwise; its death arrives via
+                    // the destroyed notification, the exit probe, app
+                    // termination, or the dead-pid sweep — all of which
+                    // still run.
+                    if self.store.is_fullscreen_parked(window_id)
+                        && self.os.window_is_fullscreen(window_id)
+                    {
+                        log::debug!(
+                            "untrack_unlisted: window {} pid {} unlisted but still fullscreen — a Space boundary, not a death",
+                            window_id,
+                            pid
+                        );
+                        continue;
+                    }
                     log::info!(
                         "untrack_unlisted: window {} pid {} no longer listed by its app, untracking",
                         window_id,

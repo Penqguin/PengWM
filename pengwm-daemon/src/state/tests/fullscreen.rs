@@ -8,6 +8,7 @@ use super::common::*;
 use crate::adapter::WindowClass;
 use crate::adapter_test::Fault;
 use crate::config::FullscreenStrategy;
+use crate::state::store::RoutingVerdict;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 
@@ -16,6 +17,80 @@ use pengwm_core::tree::WindowId;
 fn seed_tiles(sm: &mut StateManager) {
     sm.on_window_created(100, 42);
     sm.on_window_created(200, 42);
+}
+
+#[test]
+fn fullscreen_parked_window_survives_a_transient_listing_miss_across_spaces() {
+    // The user's repro: a window goes native fullscreen (its own macOS
+    // Space), the user switches to another Space and back, and the window
+    // comes back routed to whatever workspace is *active* — its old
+    // membership gone. The suspected chain: while the window's Space is
+    // inactive, its app's `kAXWindows` answers without it; the listed-set
+    // sweep judged that a death and untracked the parked window
+    // (verdict, pid map, everything), and the next sweep rediscovered it
+    // fresh — routing to the active workspace, where the refused first
+    // write parked it (the `FullscreenEnter: parking window (workspace
+    // <active>)` log line).
+    let (mut sm, handle) = setup_with_handle(1);
+    seed_tiles(&mut sm);
+    assert!(sm.workspaces[0].find_window(100).is_some());
+
+    // Native fullscreen: parked on its workspace.
+    handle.inject_fullscreen_window(100);
+    sm.on_window_focused(100);
+    assert!(
+        sm.store.is_parked(100) && !sm.store.is_hidden(100),
+        "precondition: 100 is fullscreen-parked on its own workspace"
+    );
+    assert_eq!(
+        sm.store.routing_verdict(100),
+        Some(RoutingVerdict::Tiled),
+        "precondition: the verdict outlives the tree slot"
+    );
+
+    // The Space switch: while 100's Space is inactive the app's listing
+    // omits it. The 2s sweep runs its listing diff against that answer.
+    handle.unlist_window(42, 100);
+    let pids: Vec<i32> = sm.store.all_window_pids().values().copied().collect();
+    sm.sync_untracked_windows(pids);
+
+    // A Space boundary is not a death: the park map owns this window's
+    // membership until its reveal funnel (fullscreen exit probe or shown
+    // event) says otherwise. Its death arrives via the destroyed
+    // notification, app termination, or the dead-pid sweep.
+    assert!(
+        sm.store.contains(100),
+        "a transient listing miss untracked a fullscreen-parked window"
+    );
+    assert!(
+        sm.store.is_parked(100),
+        "the untrack destroyed the park entry, losing the remembered workspace"
+    );
+
+    // And the Space switch back: the app lists the window again. With the
+    // membership intact the sweep has nothing to rediscover — the window
+    // is still parked where it was, not freshly routed onto the active
+    // workspace.
+    handle.inject_window(42, 100);
+    let pids: Vec<i32> = sm.store.all_window_pids().values().copied().collect();
+    sm.sync_untracked_windows(pids);
+    assert!(
+        sm.store.is_parked(100),
+        "the rediscovery re-routed the window onto the active workspace"
+    );
+    assert_eq!(
+        sm.store.routing_verdict(100),
+        Some(RoutingVerdict::Tiled),
+        "the rediscovery reset the routing verdict"
+    );
+
+    // Fullscreen exits: the probe reveals through the normal funnel.
+    handle.clear_fullscreen_window(100);
+    sm.on_fullscreen_exit(100);
+    assert!(
+        sm.workspaces[0].find_window(100).is_some(),
+        "the window must reveal into the workspace it parked on"
+    );
 }
 
 #[test]
@@ -323,9 +398,12 @@ fn closed_while_fullscreen_parked_untracks_normally() {
     sm.on_window_focused(100);
     assert!(sm.store.is_fullscreen_parked(100));
 
-    // The app closes it: listing diff untracks through the normal
-    // destroyed path; the parked entry drains with it.
+    // The app closes it. A real close kills the element, so the
+    // fullscreen attribute stops answering — clear the mark too (the
+    // listing diff's probe reads that attribute to tell a dead window
+    // from one parked in an inactive Space).
     handle.unlist_window(42, 100);
+    handle.clear_fullscreen_window(100);
     sm.force_window_sweep_for_test();
     sm.on_tick();
 
