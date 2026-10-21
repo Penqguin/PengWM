@@ -113,6 +113,12 @@ pub struct StateManager {
     /// (`state::placement::remembered_workspace`). Restore input, never a
     /// live membership owner (ADR-0003).
     placement_memory: Vec<session::WindowPlacement>,
+    /// When the wake resync committed. It commits on any answered
+    /// listing while window-element reads can still be blacked out, so
+    /// the listing diff distrusts unreadable elements until the settle
+    /// window (`LayoutWriteCache::WAKE_GONE_GRACE` — the same patience
+    /// the write path uses) has passed; the sweep re-judges after it.
+    wake_committed_at: Option<Instant>,
 }
 
 /// A wake resync waiting for the AX subsystem to come back.
@@ -251,6 +257,7 @@ impl StateManager {
             placement_memory: maybe_session
                 .map(|sess| sess.placements.clone())
                 .unwrap_or_default(),
+            wake_committed_at: None,
         };
 
         // Hide every workspace that isn't the active one for its monitor.

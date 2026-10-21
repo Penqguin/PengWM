@@ -695,6 +695,21 @@ impl StateManager {
                         );
                         continue;
                     }
+                    // Unreadable element: death only once AX is healthy.
+                    // The resync commits on any answered listing while
+                    // element reads can still be blacked out (its own
+                    // commit pass runs inside the settle window it just
+                    // opened) — an unreadable element there is the
+                    // blackout's signature, not a death. The sweep
+                    // re-judges once the settle window passes.
+                    if self.in_wake_settle() {
+                        log::debug!(
+                            "untrack_unlisted: window {} pid {} unlisted and unreadable inside the wake settle window — blackout signature, not a death",
+                            window_id,
+                            pid
+                        );
+                        continue;
+                    }
                     log::info!(
                         "untrack_unlisted: window {} pid {} no longer listed by its app, untracking",
                         window_id,

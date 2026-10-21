@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crate::adapter::WindowListing;
 use pengwm_core::tree::WindowId;
 
+use super::layout_writer::LayoutWriteCache;
 use super::{StateManager, WakeResync};
 
 /// one owner of the AX blackout: the wake resync lifecycle (arm → probe →
@@ -74,10 +75,22 @@ impl StateManager {
 
     /// The commit point — clears the resync state and the wake-pending
     /// grace bit together, so the protection never outlives the resync
-    /// (deadline-force path included).
+    /// (deadline-force path included). Opens the post-commit settle
+    /// window: listings may answer before window elements do, so the
+    /// listing diff distrusts unreadable elements until it passes.
     fn commit_wake_resync(&mut self) {
         self.wake_resync = None;
         self.layout_cache.note_wake_pending(false);
+        self.wake_committed_at = Some(Instant::now());
+    }
+
+    /// True within the post-commit settle window: the resync committed on
+    /// any answered listing while window-element reads can still be blacked
+    /// out, so an unreadable element there is still the blackout's
+    /// signature, not death. The sweep re-judges once it passes.
+    pub(super) fn in_wake_settle(&self) -> bool {
+        self.wake_committed_at
+            .is_some_and(|t| t.elapsed() < LayoutWriteCache::WAKE_GONE_GRACE)
     }
 
     /// Tick hook: retry the pending wake resync until AX answers, then
@@ -133,6 +146,15 @@ impl StateManager {
         }
     }
 
+    /// Age the post-commit settle clock past its window (mirrors
+    /// `LayoutWriteCache::WAKE_GONE_GRACE` of wall clock passing).
+    #[cfg(test)]
+    pub(super) fn age_wake_committed_for_test(&mut self) {
+        self.wake_committed_at = Some(
+            Instant::now() - LayoutWriteCache::WAKE_GONE_GRACE - Duration::from_millis(1),
+        );
+    }
+
     /// True while a wake resync is still waiting on AX.
     #[cfg(test)]
     pub(super) fn wake_resync_pending(&self) -> bool {
@@ -176,10 +198,12 @@ impl StateManager {
     /// elements. `force` commits regardless, for the deadline.
     ///
     /// The commit point clears the resync state and the wake-pending grace
-    /// bit, so the committed polls can be diffed against the tracked set:
-    /// windows that closed during sleep are untracked right there (AX is
-    /// answering, so "not listed by its app" is real evidence), before the
-    /// re-tile computes capacity against them.
+    /// bit, so the committed polls can be diffed against the tracked set by
+    /// the sweep — but the commit itself opens the settle window (listings
+    /// answer before window elements do after wake), so the diff inside it
+    /// judges nothing: windows that closed during sleep are untracked by
+    /// the sweep once the settle window passes and their dead elements are
+    /// readable-as-absent under healthy AX.
     ///
     /// Returns whether the resync committed.
     fn try_wake_resync(&mut self, force: bool) -> bool {
@@ -209,10 +233,11 @@ impl StateManager {
             return false;
         }
 
-        // Commit point. Drop the pending resync first: the unlisted-untrack
-        // below must not be suppressed by its own pending-guard, and the
-        // fast grace resumes — on the deadline-force path too, per the
-        // "nothing outlives the resync" boundary.
+        // Commit point. Drop the pending resync first so the fast grace
+        // resumes — on the deadline-force path too, per the "nothing
+        // outlives the resync" boundary — and open the settle window: the
+        // listing diff inside the commit pass judges nothing (element
+        // reads can still be blacked out); the sweep re-judges after it.
         self.commit_wake_resync();
 
         log::info!("System woke — resyncing windows and displays");
@@ -234,13 +259,12 @@ impl StateManager {
         // Force the background sweep on next tick for windows created mid-sleep.
         self.last_window_sweep = Instant::now() - Duration::from_secs(5);
         self.frontmost_pid = self.os.frontmost_pid();
-        // Untrack windows that closed during sleep first: AX is answering
-        // now, so a tracked window missing from its app's listing is
-        // genuinely dead — and the re-tile below must compute capacity
-        // against a tree that no longer holds them.
-        self.untrack_unlisted_windows(&polled);
         // Tile anything that appeared during sleep, reusing the poll above
-        // instead of querying every app a second time.
+        // instead of querying every app a second time. Windows that closed
+        // during sleep stay in the tree for this pass — the settle window
+        // suspends the listing diff's element probe — and drain via the
+        // sweep's diff or the write path's gone grace within the settle
+        // window; both own their cleanup under healthy AX.
         for (pid, listing) in polled {
             let listed = StateManager::listing_evidence(&listing).unwrap_or(&[]);
             for window_id in listed.iter().copied() {
@@ -273,7 +297,55 @@ impl StateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter_test::Fault;
     use crate::state::tests::common::setup_with_handle;
+
+    #[test]
+    fn an_unreadable_element_inside_the_wake_settle_window_is_not_a_death() {
+        // The regression: the resync commits on any answered listing, but
+        // window-element reads can still be blacked out when it does — the
+        // listing diff's element probe read None for a live window and
+        // untracked it, and tiling after sleep broke. Inside the settle
+        // window an unreadable element is the blackout's signature, not a
+        // death; the sweep re-judges once AX is healthy.
+        let (mut sm, handle) = setup_with_handle(1);
+        sm.on_window_created(100, 42);
+        sm.on_window_created(200, 42);
+
+        // Sleep + wake: the deadline forces the commit.
+        sm.on_system_woke();
+        sm.age_wake_deadline_for_test();
+        sm.age_wake_probe_for_test();
+        sm.drive_wake_resync(Instant::now());
+        assert!(
+            !sm.wake_resync_pending(),
+            "precondition: the resync committed"
+        );
+
+        // The artifact shape: the app answers without the window AND the
+        // element read fails — the fake models both with one unlist. The
+        // window is also genuinely dead here, so its writes fail Gone
+        // (the fake would otherwise resurrect the rect on the commit
+        // pass's re-tile write).
+        handle.set_fault(100, Fault::Gone);
+        handle.unlist_window(42, 100);
+        sm.force_window_sweep_for_test();
+        sm.on_tick();
+        assert!(
+            sm.store.contains(100),
+            "an unreadable element inside the wake settle window was judged dead"
+        );
+
+        // Outside the settle window the same shape is genuinely dead —
+        // the fast close-detector must still fire.
+        sm.age_wake_committed_for_test();
+        sm.force_window_sweep_for_test();
+        sm.on_tick();
+        assert!(
+            !sm.store.contains(100),
+            "outside the settle window the untrack must proceed"
+        );
+    }
 
     #[test]
     fn may_judge_gates_on_the_resync_state() {

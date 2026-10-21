@@ -329,14 +329,26 @@ fn sweep_untrack_is_suppressed_while_wake_resync_pending() {
         "the sweep must not untrack while the resync is pending"
     );
 
-    // AX answers: commit untracks the closed window and retiles around it.
+    // AX answers: the resync commits. The commit pass runs inside the
+    // settle window it just opens — element reads can still be blacked
+    // out right after wake — so it judges nothing. 100 is genuinely
+    // dead (its writes fail Gone, as a dead window's do); the sweep
+    // untracks it once the settle window passes.
+    handle.set_fault(100, Fault::Gone);
     handle.set_ax_blackout(false);
     sm.age_wake_probe_for_test();
     sm.on_tick();
     assert!(!sm.wake_resync_pending(), "resync commits once AX answers");
     assert!(
+        sm.store.contains(100),
+        "the commit pass judges nothing inside its own settle window"
+    );
+    sm.age_wake_committed_for_test();
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
         !sm.store.contains(100),
-        "the committed resync untracks the window that closed during sleep"
+        "the sweep untracks the window that closed during sleep, post-settle"
     );
     assert!(sm.workspaces[0].find_window(100).is_none());
     assert!(

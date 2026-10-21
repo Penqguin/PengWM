@@ -87,7 +87,10 @@ impl LayoutWriteCache {
     /// empty for live apps right after `NSWorkspaceDidWake`), so untracking
     /// on a 250ms timer there destroys the desktop. Patient again, exactly
     /// as long as the resync: armed and disarmed by `monitors_wake.rs`.
-    const WAKE_GONE_GRACE: Duration = Duration::from_secs(10);
+    /// Also the listing-diff's post-commit settle window — the resync
+    /// commits on any answered listing while element reads can still be
+    /// blacked out, so unreadable elements are death only after this long.
+    pub(super) const WAKE_GONE_GRACE: Duration = Duration::from_secs(10);
     /// Consecutive Pinned reports before writes back off. Three strikes is
     /// ~3–6s of futility evidence: fast enough to matter, slow enough to
     /// ride out transient contention without throttling a window that is
