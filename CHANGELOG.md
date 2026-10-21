@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.6.6 — The wake settle window (2026-10-21)
+
+- **Fixed: tiling after sleep.** The Space-switch fix's element probe
+  was too eager at wake: the resync commits on any answered listing
+  while window-element reads can still be blacked out, so the probe
+  read a live window's element as unreadable, judged it dead, and
+  untracked it in the same pass — and tiling broke after every sleep.
+  The probe now inherits the wake patience the write path already
+  had: the resync's commit opens a settle window (10s, the same
+  "post-wake AX is still settling" grace the write path uses), inside
+  which an unreadable element is the blackout's signature, not a
+  death; the sweep re-judges once it passes, and genuinely closed
+  windows' dead elements still testify against them then. The
+  commit pass's own untrack was removed (it could judge nothing
+  inside the window it had just opened). Two wake tests cover the
+  regression face and the re-timed cleanup.
+
 ## v0.6.5 — A live element outranks a listing omission (2026-10-20)
 
 - **Fixed: Space switches no longer lose windows' workspaces.** A
