@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.6.7 — Windows come home (2026-10-22)
+
+- **Fixed: windows jumping workspaces after sleep.** A window parked on
+  a hidden workspace (moved there, then sleep) woke up on whatever
+  workspace was open at wake. Root cause chain: the wake resync only
+  re-polls *listed* windows, so a hidden member's element ref went
+  stale; macOS omits off-Space windows from its listings; and once the
+  settle window passed, the listing diff's element probe misread the
+  live window as dead, untracked it, and rediscovery re-homed it onto
+  the active workspace. Two fixes: the listing diff now **never judges
+  a hidden-workspace member** (tree membership is the evidence it is
+  alive; a genuinely closed one drains through the write path's gone
+  grace when its workspace is next revealed), and the new
+  **placement seatbelt** (`state::placement::where_should`) re-homes
+  any rediscovered window to where it last lived instead of the
+  active-workspace fallback. Two wake tests pin the repro.
+- **Placement is continuously maintained and persisted.** The
+  seatbelt's identity (bundle + title) is captured at the moment a
+  window's placement changes — including park time, so minimized
+  windows keep their home — and the session snapshot is a projection
+  of it: no quit-time identity read storm, and a throttled periodic
+  save (≤10s stale) means a crash no longer costs the session's
+  arrangement. The quit funnel lost its `cfg!(test)` guard (the I/O
+  seam is the path argument) and the dead `session::clear_default` is
+  gone.
+- **`state::placement` is now one deep module**: one ask
+  (`where_should` — seatbelt, then durable memory) and one write
+  (`note_where`) behind a small interface; the reveal funnel gained
+  the placement ask it was missing, and `DisplaySet::index_of_name` is
+  the one name→index conversion.
+
 ## v0.6.6 — The wake settle window (2026-10-21)
 
 - **Fixed: tiling after sleep.** The Space-switch fix's element probe
