@@ -324,6 +324,15 @@ impl DisplaySet {
             .map(|e| e.name.as_str())
     }
 
+    /// Flat workspace index by **name** — the one name→index conversion.
+    /// First match wins: duplicate names are a config mistake this
+    /// resolves deterministically (and the placement ask and config
+    /// routing both resolve through here, so a rename orphaning a saved
+    /// record fails in exactly one way).
+    pub fn index_of_name(&self, workspaces: &[Workspace], name: &str) -> Option<usize> {
+        workspaces.iter().position(|ws| ws.name == name)
+    }
+
     /// Flat workspace index a new window should land in: the global
     /// workspace matching the app's configured name (#1/Q5), wherever it
     /// currently lives. No auto-pull: the window lands there even when it
@@ -337,7 +346,7 @@ impl DisplaySet {
         app_name: Option<&str>,
     ) -> Option<usize> {
         let name = self.configured_workspace_name(bundle, app_name)?;
-        workspaces.iter().position(|ws| ws.name == name)
+        self.index_of_name(workspaces, name)
     }
 
     /// Closest display in `direction` from `from`, by center-to-center vector,

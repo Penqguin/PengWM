@@ -217,14 +217,6 @@ pub fn load_default() -> Option<Session> {
     load_from(&session_file_path())
 }
 
-pub fn clear_default() -> anyhow::Result<()> {
-    let p = session_file_path();
-    if p.exists() {
-        std::fs::remove_file(&p)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

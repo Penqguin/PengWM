@@ -16,6 +16,22 @@ comes from the design skill, not this file.
   routing, hit-once; it outranks config routing because it is what the
   user *did*, not what the app *is*. Restore input only — membership
   stays single-sourced in the trees (ADR-0003).
+- **Placement seatbelt** — The in-session, continuously maintained
+  placement record (`state::placement`, `note_where`/`where_should`):
+  window → (pid, workspace index, bundle, title), noted at every
+  placement change including park time. Consulted at rediscovery before
+  the durable memory (a pid match admits the recall), and projected
+  into the session snapshot — so placement survives sleep, crashes,
+  and the listing-diff misjudgments the hidden-member shield can't
+  cover. Also restore input only — never a second membership owner
+  (ADR-0003).
+- **Hidden-member shield** — The listing diff never judges a window
+  that is a member of a hidden workspace: macOS omits off-Space windows
+  from listings and only listed windows get their element refs
+  re-polled, so both discriminators can misread a live hidden member as
+  dead (the wake repro). Tree membership *is* the evidence it is
+  alive; its death verdict defers to reveal time, where the write
+  path's gone grace owns cleanup.
 - **Park** — A tracked window that left the tiling tree but waits to come
   back: `ParkReason::Hide` (minimize / app-hide) or `ParkReason::Fullscreen`
   (native fullscreen). One parking map, one reveal funnel.

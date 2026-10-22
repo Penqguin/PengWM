@@ -394,3 +394,91 @@ fn double_wake_notification_arms_once() {
     sm.on_tick();
     assert!(!sm.wake_resync_pending());
 }
+
+#[test]
+fn wake_settle_sweep_cannot_untrack_a_hidden_workspace_member() {
+    // The user's repro: a window moved to a hidden workspace (DrRacket →
+    // "notes"), then sleep. Only *listed* windows get their element refs
+    // re-polled at the wake resync, so the hidden member's ref goes
+    // stale; and macOS omits off-Space windows from `kAXWindows`. Once
+    // the settle window passes, the listing diff's element probe
+    // therefore misreads the live window as dead and untracks it — and
+    // rediscovery re-homes it onto the active workspace. Tree membership
+    // is the evidence a hidden member is alive: the sweep must not
+    // judge it at all; its death verdict defers to reveal time.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.move_focused_to_workspace(1);
+    assert!(
+        sm.workspaces[1].find_window(100).is_some(),
+        "precondition: the window lives on the hidden workspace"
+    );
+
+    // Sleep → wake. The app now omits the window (off-Space) and its
+    // stale element ref reads as absent — the misjudgment shape.
+    handle.unlist_window(42, 100);
+    sm.on_system_woke();
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.wake_resync_pending(),
+        "precondition: the resync committed (pid 42 still lists window 200)"
+    );
+
+    // The settle window passes; the sweep re-judges. The old behavior
+    // untracked the live window here.
+    sm.age_wake_committed_for_test();
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
+        sm.store.contains(100),
+        "a hidden-workspace member must not be untracked by the listing diff"
+    );
+    assert!(
+        sm.workspaces[1].find_window(100).is_some(),
+        "the window must stay on its own workspace, not the active one"
+    );
+    assert!(
+        sm.workspaces[0].find_window(100).is_none(),
+        "the active workspace must not gain the window"
+    );
+}
+
+#[test]
+fn rediscovered_window_returns_to_its_last_workspace() {
+    // The seatbelt: a window the store *does* lose (a minimized window
+    // parked out of the tree is not shielded by membership; unlisted +
+    // unreadable element = untracked) must return to its last workspace
+    // at rediscovery, not fall through to the active-workspace fallback.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.move_focused_to_workspace(1);
+    assert!(sm.workspaces[1].find_window(100).is_some());
+
+    // Minimize: parked — out of the tree, still tracked.
+    sm.on_window_hidden(100);
+    assert!(sm.workspaces[1].find_window(100).is_none());
+    assert!(sm.store.contains(100));
+
+    // The misjudgment shape: unlisted, element read fails.
+    handle.unlist_window(42, 100);
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.store.contains(100),
+        "precondition: the sweep untracked the parked window"
+    );
+
+    // Rediscovery: the window reappears in its app's listing.
+    handle.inject_window(42, 100);
+    sm.force_window_sweep_for_test();
+    sm.on_tick();
+    assert!(
+        sm.workspaces[1].find_window(100).is_some(),
+        "the rediscovered window must return to its last workspace"
+    );
+    assert!(
+        sm.workspaces[0].find_window(100).is_none(),
+        "the active workspace must not gain the window"
+    );
+}

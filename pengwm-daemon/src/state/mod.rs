@@ -8,7 +8,7 @@ use pengwm_core::command::{BarMessage, BarState, BarWorkspace};
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::Workspace;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -110,9 +110,30 @@ pub struct StateManager {
     wake_resync: Option<WakeResync>,
     /// Placement memory from the last session: durable (bundle, title →
     /// workspace name) records consumed through the one routing ask
-    /// (`state::placement::remembered_workspace`). Restore input, never a
+    /// (`state::placement::where_should`). Restore input, never a
     /// live membership owner (ADR-0003).
     placement_memory: Vec<session::WindowPlacement>,
+    /// The in-session placement seatbelt: window → (pid, workspace index,
+    /// bundle, title), re-noted at every placement change by
+    /// `state::placement::note_where`. A rediscovered window — untracked
+    /// by a misjudgment the shields can't see, a deadline-forced resync,
+    /// a minimized window whose untrack the listing diff got away with —
+    /// must not fall through to the active-workspace fallback; that is
+    /// the wake repro. Deliberately *not* evicted on
+    /// `on_window_destroyed` (see the module doc); entries die with the
+    /// pid. In-memory only: cross-restart placement is
+    /// `placement_memory`'s job — this is rediscovery *input*, never a
+    /// live membership owner (ADR-0003).
+    live_placement: BTreeMap<WindowId, placement::PlacementRecord>,
+    /// Set by `note_where` on any placement change; the tick drains it
+    /// to `session_path` at most once per `SESSION_SAVE_INTERVAL`.
+    /// Crash survival: a crash loses at most one interval of placement.
+    session_dirty: bool,
+    last_session_save: Instant,
+    /// Where the session snapshot is written. Real path in prod; a
+    /// tempdir path under `cfg!(test)` so the save funnel runs for real
+    /// in tests without touching the user's file.
+    session_path: std::path::PathBuf,
     /// When the wake resync committed. It commits on any answered
     /// listing while window-element reads can still be blacked out, so
     /// the listing diff distrusts unreadable elements until the settle
@@ -163,6 +184,20 @@ enum AppLabel {
 /// absorb an AX hiccup spanning many publishes, short enough that a
 /// late-naming app is relabeled within a bar refresh or two.
 const LABEL_NEG_TTL: Duration = Duration::from_secs(30);
+
+/// A per-manager harness session path: unique within the process so
+/// parallel test threads never race on one file. Not `#[cfg(test)]`:
+/// the `cfg!(test)` branch that calls it is a runtime `false` in prod
+/// builds, not a cfg-stripped one — the function must exist everywhere
+/// even though only the test build reaches it.
+fn test_session_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "pengwm-test-session-{}.toml",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
+}
 
 impl StateManager {
     pub fn new(
@@ -257,6 +292,19 @@ impl StateManager {
             placement_memory: maybe_session
                 .map(|sess| sess.placements.clone())
                 .unwrap_or_default(),
+            live_placement: BTreeMap::new(),
+            session_dirty: false,
+            last_session_save: Instant::now(),
+            session_path: if cfg!(test) {
+                // Tests exercise the real save funnel against a harness
+                // path, never the user's file (mirrors the
+                // deterministic-fresh-state rule for restore above).
+                // Unique per manager: tests run in parallel threads
+                // within one process and must not race on one file.
+                test_session_path()
+            } else {
+                session::session_file_path()
+            },
             wake_committed_at: None,
         };
 
@@ -466,7 +514,8 @@ impl StateManager {
                 entry.idx
             } else {
                 let identity = self.app_identity(pid);
-                self.routed_workspace_for(&identity)
+                self.where_should(wid, pid, identity.bundle.as_deref())
+                    .or_else(|| self.routed_workspace_for(&identity))
                     .unwrap_or_else(|| self.active_workspace_idx())
             };
             if self.add_window_to_workspace(wid, preferred).is_some() {

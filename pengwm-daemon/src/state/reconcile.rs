@@ -27,6 +27,11 @@ impl StateManager {
         // subsystem is what starts gone-grace timers on live windows.
         self.drive_wake_resync(now);
 
+        // Placement persistence: a dirty session drains to disk at most
+        // once per interval. The projection reads no OS state, so this
+        // is safe mid-blackout and costs nothing when clean.
+        self.save_session_if_dirty(now);
+
         // Fallback hidden reconcile via predicate — no downcast. The
         // fullscreen exit probe rides the same interval: one tick of
         // latency to catch a unfullscreen, guaranteed, because the parked

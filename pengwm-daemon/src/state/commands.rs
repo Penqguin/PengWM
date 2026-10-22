@@ -4,7 +4,6 @@ use pengwm_core::command::{BarMessage, Command, DaemonResponse};
 use pengwm_core::tree::{Direction, WindowId};
 use tokio::sync::mpsc;
 
-use super::session;
 use super::StateManager;
 
 /// Owns the `Command` dispatch: the single vocabulary every surface (IPC,
@@ -171,19 +170,14 @@ impl StateManager {
                     let _ = tx.try_send(DaemonResponse::Ack);
                 }
                 log::info!("Quit requested — shutting down daemon and menubar");
-                // Persist session (topology + active + gaps) atomically before exit.
-                // Skipped in tests to avoid polluting the user's real session file.
-                if !cfg!(test) {
-                    let sess = session::snapshot_from(
-                        &self.workspaces,
-                        self.displays.active(),
-                        self.capture_placements(),
-                        self.gap_outer,
-                        self.gap_inner,
-                    );
-                    if let Err(e) = session::save_default(&sess) {
-                        log::warn!("Failed to save session on quit: {}", e);
-                    }
+                // Persist session (topology + active + placements + gaps)
+                // atomically before exit. The I/O seam is the path
+                // (`session_path` — real file in prod, harness tempdir in
+                // tests), so this funnel runs unconditionally and tests
+                // exercise the real round trip.
+                let path = self.session_path.clone();
+                if let Err(e) = self.save_session(&path) {
+                    log::warn!("Failed to save session on quit: {}", e);
                 }
                 self.bar_sender.send(BarMessage::Exit);
                 std::thread::sleep(Duration::from_millis(150));
@@ -253,6 +247,7 @@ impl StateManager {
             self.apply_layout(from);
         }
         self.workspaces[to].add_window(wid, None);
+        self.note_where(wid);
         if self.displays.is_visible(to, &self.workspaces) {
             self.apply_layout(to);
         } else {

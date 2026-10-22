@@ -150,9 +150,8 @@ impl StateManager {
     /// `LayoutWriteCache::WAKE_GONE_GRACE` of wall clock passing).
     #[cfg(test)]
     pub(super) fn age_wake_committed_for_test(&mut self) {
-        self.wake_committed_at = Some(
-            Instant::now() - LayoutWriteCache::WAKE_GONE_GRACE - Duration::from_millis(1),
-        );
+        self.wake_committed_at =
+            Some(Instant::now() - LayoutWriteCache::WAKE_GONE_GRACE - Duration::from_millis(1));
     }
 
     /// True while a wake resync is still waiting on AX.
@@ -219,12 +218,9 @@ impl StateManager {
         // Poll every app first: this refreshes the element cache and tells
         // us whether AX is answering at all.
         let polled = self.os.poll_windows_for_pids(&pids);
-        let any_windows = polled
-            .iter()
-            .any(|(_, listing)| {
-                StateManager::listing_evidence(listing)
-                    .is_some_and(|wins| !wins.is_empty())
-            });
+        let any_windows = polled.iter().any(|(_, listing)| {
+            StateManager::listing_evidence(listing).is_some_and(|wins| !wins.is_empty())
+        });
         if !any_windows && !force {
             // No app listed any window. On a machine that was managing
             // windows a moment ago that means AX is not answering yet,

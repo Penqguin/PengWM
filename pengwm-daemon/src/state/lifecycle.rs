@@ -99,17 +99,18 @@ impl StateManager {
             return;
         }
 
-        // Placement memory (restore-time) outranks config routing: the
-        // record is what the user *did* last session, the config list is
-        // what the app *is*. Then the config entry match. Then the active
-        // workspace — unassigned windows restore where the boot finds them.
+        // The one placement ask (`state::placement`): seatbelt first —
+        // the most current fact about this window — then placement
+        // memory (restore-time — what the user *did* last session).
+        // Then the config entry match (what the app *is*). Then the
+        // active workspace — unassigned windows restore where the boot
+        // finds them.
         let preferred = self
-            .remembered_workspace(window_id, identity.bundle.as_deref())
+            .where_should(window_id, pid, identity.bundle.as_deref())
             .or_else(|| self.routed_workspace_for(identity))
             .unwrap_or_else(|| self.active_workspace_idx());
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
-        let placed_workspace =
-            self.add_window_to_workspace(window_id, preferred);
+        let placed_workspace = self.add_window_to_workspace(window_id, preferred);
         // Candidate 3: a member of a hidden workspace is offscreen. The
         // initial hide pass ran inside `new()` while every tree was still
         // empty — everything discovered after it (bootstrap poll, sweep,
@@ -169,9 +170,9 @@ impl StateManager {
     /// comes from the pass's `AppIdentity` — see that type for why it is
     /// not re-read here.
     pub(super) fn app_is_restricted(&self, bundle: Option<&str>) -> bool {
-        self.restricted_apps.iter().any(|app| {
-            bundle.is_some_and(|b| b.eq_ignore_ascii_case(app))
-        })
+        self.restricted_apps
+            .iter()
+            .any(|app| bundle.is_some_and(|b| b.eq_ignore_ascii_case(app)))
     }
 
     /// `float_apps` semantics (ADR-0002): every window of these bundles is
@@ -179,9 +180,9 @@ impl StateManager {
     /// closed. Same case-insensitive bundle match as `restricted_apps`,
     /// same `AppIdentity` threading.
     pub(super) fn app_is_float_app(&self, bundle: Option<&str>) -> bool {
-        self.float_apps.iter().any(|app| {
-            bundle.is_some_and(|b| b.eq_ignore_ascii_case(app))
-        })
+        self.float_apps
+            .iter()
+            .any(|app| bundle.is_some_and(|b| b.eq_ignore_ascii_case(app)))
     }
 
     /// Route `window_id` into a workspace and retile. Prefers `preferred`,
@@ -193,6 +194,7 @@ impl StateManager {
         preferred: usize,
     ) -> Option<usize> {
         if self.workspaces[preferred].find_window(window_id).is_some() {
+            self.note_where(window_id);
             return Some(preferred);
         }
         let target = match self.displays.target_with_room(&self.workspaces, preferred) {
@@ -222,6 +224,7 @@ impl StateManager {
         // Restricted apps tile like everything else (monocle is gone).
 
         ws.add_window(window_id, None);
+        self.note_where(window_id);
         if self.displays.is_visible(target, &self.workspaces) {
             self.apply_layout(target);
         }
@@ -281,6 +284,10 @@ impl StateManager {
             return;
         };
         debug_assert!(idx < self.workspaces.len());
+        // Identity is captured while the window is demonstrably alive and
+        // readable: a parked window's seatbelt record is what the session
+        // projection reads, and a later misjudgment rediscovery asks it.
+        self.note_where(window_id);
         if self.workspaces[idx].is_popup(window_id) {
             self.store.park_popup(window_id, idx);
             self.workspaces[idx].remove_popup(window_id);
@@ -342,13 +349,18 @@ impl StateManager {
     /// The shared tree-window tail of the reveal funnel: re-tile at the
     /// remembered workspace, overflowing through the normal capacity
     /// routing (`add_window_to_workspace` → `target_with_room`) when the
-    /// remembered slot no longer has room. Publishes bar state on re-tile.
+    /// remembered slot no longer has room. The fallback asks the one
+    /// placement ask (`where_should` — seatbelt, then memory) before
+    /// config routing and the active workspace, so a window the store
+    /// lost and rediscovered comes home here too. Publishes bar state on
+    /// re-tile.
     fn reveal_tree_window(&mut self, window_id: WindowId, pid: i32, remembered: Option<usize>) {
         let preferred = remembered
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
                 let identity = self.app_identity(pid);
-                self.routed_workspace_for(&identity)
+                self.where_should(window_id, pid, identity.bundle.as_deref())
+                    .or_else(|| self.routed_workspace_for(&identity))
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
         if self.add_window_to_workspace(window_id, preferred).is_some() {
@@ -380,6 +392,10 @@ impl StateManager {
         if !self.os.window_is_fullscreen(window_id) {
             return false;
         }
+        // Identity captured while readable, before the window leaves the
+        // tree: the fullscreen-parked window's seatbelt record is what
+        // the session projection and a misjudgment rediscovery read.
+        self.note_where(window_id);
         let Some(idx) = self
             .store
             .park(window_id, &self.workspaces, ParkReason::Fullscreen)
@@ -647,6 +663,14 @@ impl StateManager {
     ///   app running with *zero* windows — the app's own "I have none"
     ///   verdict is the fast close-detector for exactly the case the
     ///   destroyed notification is most likely to miss.
+    /// - **A member of a hidden workspace is never judged.** macOS omits
+    ///   off-Space windows from listings, and only *listed* windows get
+    ///   their element refs re-polled — so a hidden member fails both
+    ///   discriminators below while perfectly alive (the wake repro:
+    ///   sleep → sweep untracks it → rediscovery re-homes it onto the
+    ///   active workspace). Tree membership *is* the evidence it is
+    ///   alive; its death verdict defers to reveal time, where the
+    ///   write path's gone grace owns cleanup.
     /// - **Suppressed while a wake resync is pending** for the same
     ///   reason: during the blackout even live apps list nothing, and a
     ///   partial listing from a recovering app is ambiguous.
@@ -670,6 +694,23 @@ impl StateManager {
                 .unwrap_or_default();
             for window_id in tracked {
                 if !listed.contains(&window_id) {
+                    // A member of a hidden workspace is *supposed* to be
+                    // unlisted (off-Space omission) and its element ref is
+                    // never refreshed (only listed windows are re-polled) —
+                    // both discriminators below can misread it as dead. See
+                    // the rule above: tree membership shields it; the
+                    // verdict defers to reveal time.
+                    if let Some(idx) = self.find_workspace_of_any(window_id) {
+                        if !self.displays.is_visible(idx, &self.workspaces) {
+                            log::debug!(
+                                "untrack_unlisted: window {} pid {} unlisted but a member of hidden workspace {} — alive by membership, not judged",
+                                window_id,
+                                pid,
+                                idx
+                            );
+                            continue;
+                        }
+                    }
                     // An answered listing that omits a window whose
                     // element still answers is a listing artifact, not a
                     // death. macOS Space transitions make apps answer
@@ -762,6 +803,9 @@ impl StateManager {
         // entries would mislabel a recycled pid forever.
         self.app_labels.remove(&pid);
         let windows = self.store.remove_pid(pid);
+        // The seatbelt dies with the pid, like the label cache: a
+        // recycled pid must not inherit the dead app's homes.
+        self.expire_pid(pid);
         for window_id in windows {
             // Synchronous eviction: the queued WindowDestroyed dispatches
             // reach the same funnel later, but the observer (and with it

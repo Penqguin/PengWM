@@ -388,7 +388,10 @@ fn placement_memory_miss_falls_through_to_config_with_record_intact() {
         .iter()
         .position(|ws| ws.find_window(778).is_some())
         .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Browsing", "config routing owns the miss");
+    assert_eq!(
+        sm.workspaces[idx].name, "Browsing",
+        "config routing owns the miss"
+    );
     assert_eq!(
         sm.placement_memory_len_for_test(),
         1,
@@ -425,7 +428,10 @@ fn placement_memory_hit_is_consumed_once_for_identical_windows() {
         .position(|ws| ws.find_window(888).is_some())
         .expect("second window tracked");
     assert_eq!(sm.workspaces[first].name, "Notes");
-    assert_eq!(sm.workspaces[second].name, "Browsing", "config routing, record spent");
+    assert_eq!(
+        sm.workspaces[second].name, "Browsing",
+        "config routing, record spent"
+    );
 }
 
 #[test]
@@ -525,7 +531,10 @@ fn window_routed_into_visible_workspace_is_not_hidden_offscreen() {
     // Unassigned app: routes to the active workspace (Development, visible).
     handle.inject_bundle_id(99, "com.example.unassigned".into());
     handle.inject_title(999, "Local note".to_string());
-    handle.inject_rect(999, pengwm_core::layout::Rect::new(100.0, 100.0, 800.0, 600.0));
+    handle.inject_rect(
+        999,
+        pengwm_core::layout::Rect::new(100.0, 100.0, 800.0, 600.0),
+    );
 
     sm.on_window_created(999, 99);
 
