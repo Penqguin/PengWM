@@ -208,6 +208,106 @@ fn quench_the_wake_repro_end_to_end() {
 }
 
 #[test]
+fn successor_window_inherits_the_originals_home() {
+    // The re-created-window shape: macOS keeps a CGWindowID for a
+    // window's lifetime within a login session, so a new id carrying
+    // the same pid + durable identity while the recorded id no longer
+    // lists is that window's successor — it inherits the home instead
+    // of falling through to the active workspace.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(42, "com.test".into());
+    handle.inject_title(100, "T100".into());
+    sm.on_window_created(100, 42);
+    sm.move_focused_to_workspace(1);
+    assert!(sm.workspaces[1].find_window(100).is_some());
+
+    // The app re-creates the window: the old id vanishes from the
+    // listing, a new id appears with the same identity.
+    handle.unlist_window(42, 100);
+    handle.inject_window(42, 999);
+    handle.inject_title(999, "T100".into());
+    sm.on_window_created(999, 42);
+
+    assert!(
+        sm.workspaces[1].find_window(999).is_some(),
+        "the successor inherits the original's hidden workspace home"
+    );
+    assert!(
+        sm.workspaces[0].find_window(999).is_none(),
+        "the active workspace must not gain the successor"
+    );
+    assert!(
+        !sm.live_placement.contains_key(&100),
+        "the stale record is consumed by the transfer"
+    );
+}
+
+#[test]
+fn successor_rejects_a_listed_sibling() {
+    // A live, listed window with the same identity is a sibling, not a
+    // successor: the new window routes as today (active workspace) and
+    // the sibling's record is untouched.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(42, "com.test".into());
+    handle.inject_title(100, "T100".into());
+    sm.on_window_created(100, 42);
+    sm.move_focused_to_workspace(1);
+    assert!(sm.workspaces[1].find_window(100).is_some());
+
+    // A genuinely NEW window, same identity — and the original still
+    // lists. The new window is itself listed, so the ask runs; the
+    // listed sibling is filtered out, not transferred.
+    handle.inject_window(42, 999);
+    handle.inject_title(999, "T100".into());
+    sm.on_window_created(999, 42);
+
+    assert!(
+        sm.workspaces[0].find_window(999).is_some(),
+        "the new window takes the active workspace (successor ask found no unlisted candidate)"
+    );
+    assert!(
+        sm.workspaces[1].find_window(999).is_none(),
+        "the sibling's home is not stolen"
+    );
+    assert!(
+        sm.live_placement.contains_key(&100),
+        "the sibling's record survives"
+    );
+}
+
+#[test]
+fn ambiguous_successors_transfer_nothing() {
+    // Two same-identity records both unlisted: which is this window's
+    // predecessor? Unknowable — exactly-one is the admission rule;
+    // ambiguity transfers nothing.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(42, "com.test".into());
+    handle.inject_title(100, "T100".into());
+    handle.inject_title(101, "T100".into());
+    sm.on_window_created(100, 42);
+    sm.store.register(101, 42);
+    sm.workspaces[0].add_window(101, None);
+    sm.note_where(101);
+
+    // Both originals leave the listing; one new window appears.
+    handle.unlist_window(42, 100);
+    handle.unlist_window(42, 101);
+    handle.inject_window(42, 999);
+    handle.inject_title(999, "T100".into());
+    sm.on_window_created(999, 42);
+
+    assert!(
+        sm.workspaces.iter().all(|ws| ws.find_window(999).is_none())
+            || sm.workspaces[0].find_window(999).is_some(),
+        "the successor routes as today (active workspace), not to a guessed home"
+    );
+    assert!(
+        sm.live_placement.contains_key(&100) && sm.live_placement.contains_key(&101),
+        "ambiguous records transfer nothing"
+    );
+}
+
+#[test]
 fn age_helper_mirrors_the_interval() {
     // Documents the helper's contract: one call moves the save clock
     // past the drain interval.

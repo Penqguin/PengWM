@@ -24,7 +24,11 @@ comes from the design skill, not this file.
   into the session snapshot — so placement survives sleep, crashes,
   and the listing-diff misjudgments the hidden-member shield can't
   cover. Also restore input only — never a second membership owner
-  (ADR-0003).
+  (ADR-0003). A WindowId macOS reissues mid-session (window re-created,
+  app relaunch) resolves through the **successor ask**: a new id with
+  the same pid + identity while the recorded id no longer lists
+  inherits the home — exactly-one candidate admits the transfer, and
+  only when the successor itself lists.
 - **Hidden-member shield** — The listing diff never judges a window
   that is a member of a hidden workspace: macOS omits off-Space windows
   from listings and only listed windows get their element refs

@@ -75,6 +75,27 @@ pub struct WindowPlacement {
     pub workspace: String,
 }
 
+/// Does one window's durable identity describe another window's? The
+/// one identity-match contract (`WindowPlacement::matches` and the
+/// seatbelt's successor ask share it): every evidence pair both sides
+/// can supply must agree, and at least one window-level dimension must
+/// positively match — an identity-less record is never a hit (it would
+/// match everything). Evidence one side cannot read does not veto.
+pub fn identity_hit(
+    bundle_a: Option<&str>,
+    title_a: Option<&str>,
+    bundle_b: Option<&str>,
+    title_b: Option<&str>,
+) -> bool {
+    if bundle_a.is_some() && bundle_b.is_some() && bundle_a != bundle_b {
+        return false;
+    }
+    if title_a.is_some() && title_b.is_some() && title_a != title_b {
+        return false;
+    }
+    bundle_a.is_some_and(|b| bundle_b == Some(b)) || title_a.is_some_and(|t| title_b == Some(t))
+}
+
 impl WindowPlacement {
     /// Does this record describe the window behind (`bundle`, `title`)?
     /// Every evidence pair both sides can supply must agree, and at least
@@ -83,15 +104,7 @@ impl WindowPlacement {
     /// Evidence one side cannot read does not veto: the boot where the
     /// bundle read times out still re-homes by title.
     pub fn matches(&self, bundle: Option<&str>, title: Option<&str>) -> bool {
-        if self.title.is_some() && title.is_some() && self.title.as_deref() != title {
-            return false;
-        }
-        if self.bundle.is_some() && bundle.is_some() && self.bundle.as_deref() != bundle {
-            return false;
-        }
-        let title_hit = self.title.as_deref().is_some_and(|t| title == Some(t));
-        let bundle_hit = self.bundle.as_deref().is_some_and(|b| bundle == Some(b));
-        title_hit || bundle_hit
+        identity_hit(self.bundle.as_deref(), self.title.as_deref(), bundle, title)
     }
 }
 
