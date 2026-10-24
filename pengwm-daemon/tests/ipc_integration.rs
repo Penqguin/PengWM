@@ -17,6 +17,7 @@ const TEST_SOCKET_PROBE: &str = "/tmp/pengwm_test_probe.sock";
 const TEST_BAR_SOCKET: &str = "/tmp/pengwm_test_bar.sock";
 const TEST_SOCKET_HEAL: &str = "/tmp/pengwm_test_heal.sock";
 const TEST_SOCKET_FOREIGN: &str = "/tmp/pengwm_test_foreign.sock";
+const TEST_SOCKET_STALE: &str = "/tmp/pengwm_test_stale.sock";
 const TEST_BAR_SOCKET_HEAL: &str = "/tmp/pengwm_test_bar_heal.sock";
 
 fn connect_with_retry(path: &str, timeout: Duration) -> std::io::Result<UnixStream> {
@@ -220,20 +221,25 @@ fn ipc_server_never_steals_a_live_socket() {
         "the original listener must survive a second start attempt"
     );
 
-    // A stale socket file (no listener behind it) is rebound fine.
-    let _ = std::fs::remove_file(path);
+    // A stale socket file (no listener behind it) is rebound fine. The stale
+    // file lives on its own path: the first daemon above is still running,
+    // and its per-tick identity check would rebind a removed socket on
+    // `path` — recreating a live file between the test's unlink and bind
+    // (the CI flake). No daemon is bound to TEST_SOCKET_STALE, so the file
+    // stays genuinely dead until the fresh server takes it.
+    let _ = std::fs::remove_file(TEST_SOCKET_STALE);
     // Re-create an unlinked-behind file: bind then drop the listener.
-    drop(UnixListener::bind(path).unwrap());
+    drop(UnixListener::bind(TEST_SOCKET_STALE).unwrap());
     let (tx3, _) = mpsc::channel(64);
     thread::spawn(move || {
-        pengwm_daemon::ipc_server::start_ipc_server_with_path(tx3, path);
+        pengwm_daemon::ipc_server::start_ipc_server_with_path(tx3, TEST_SOCKET_STALE);
     });
-    wait_until_alive(path, Duration::from_secs(5));
+    wait_until_alive(TEST_SOCKET_STALE, Duration::from_secs(5));
     assert!(
-        pengwm_daemon::ipc_server::daemon_already_running_at(path),
+        pengwm_daemon::ipc_server::daemon_already_running_at(TEST_SOCKET_STALE),
         "a stale file must be removed and rebound"
     );
-    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(TEST_SOCKET_STALE);
 }
 
 #[test]
