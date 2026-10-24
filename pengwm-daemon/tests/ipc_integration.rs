@@ -296,12 +296,14 @@ fn ipc_server_reclaims_a_stolen_socket() {
 
     // Steal: unlink, then bind a rival listener (kept alive on a parked
     // thread). If our server rebinding wins the race, the rival bind
-    // fails EADDRINUSE and the end state is correct anyway — treat that
-    // as a pass-through, not a failure.
+    // fails — EADDRINUSE on Linux, EEXIST on macOS when the rebound
+    // socket file already exists — and the end state is correct anyway:
+    // treat both as pass-through, not a failure.
     std::fs::remove_file(TEST_SOCKET_FOREIGN).unwrap();
     let rival = match UnixListener::bind(TEST_SOCKET_FOREIGN) {
         Ok(l) => Some(l),
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => None,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
         Err(e) => panic!("unexpected rival bind error: {e}"),
     };
     thread::spawn(move || {
