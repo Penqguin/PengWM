@@ -1,3 +1,17 @@
 [workspace]
 resolver = "2"
 members = ["pengwm-core", "pengwm-daemon", "pengwm-menubar"]
+
+# A 24/7 single-threaded FFI daemon: optimise the shipped binaries once,
+# not compile time. `codegen-units = 1` gives the optimizer the whole
+# crate per unit (measurable in the hot AX wrapper code); thin LTO
+# crosses crate seams for the one-crate-plus-core dependency shape; strip
+# because symbols ship in rlibs consumers never debug through launchd.
+# Kept at "thin" rather than "fat": the daemon links a large amount of
+# system frameworks, and fat LTO's incremental link cost buys nothing
+# measurable over thin for this dependency shape.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
