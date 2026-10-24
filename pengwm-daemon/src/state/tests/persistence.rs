@@ -276,8 +276,7 @@ fn successor_rejects_a_listed_sibling() {
 }
 
 #[test]
-fn ambiguous_successors_transfer_nothing() {
-    // Two same-identity records both unlisted: which is this window's
+fn ambiguous_successors_transfer_nothing() {    // Two same-identity records both unlisted: which is this window's
     // predecessor? Unknowable — exactly-one is the admission rule;
     // ambiguity transfers nothing.
     let (mut sm, handle) = setup_with_handle(1);
@@ -314,4 +313,28 @@ fn age_helper_mirrors_the_interval() {
     let (mut sm, _handle) = setup_with_handle(1);
     sm.age_session_save_for_test();
     assert!(Duration::from_secs(11) >= super::super::placement::SESSION_SAVE_INTERVAL);
+}
+
+#[test]
+fn seatbelt_caps_records_per_pid() {
+    // A never-quitting app that churns WindowIds (browsers, Electron) is
+    // the one unbounded growth the seatbelt map had: entries die with the
+    // pid by design, so the cap is the only bound. The newest records per
+    // pid survive — the successor ask's legitimate candidates are always
+    // the recent ones.
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(42, "com.test".into());
+    for wid in 300..312u64 {
+        handle.inject_title(wid, format!("W{wid}"));
+        sm.on_window_created(wid, 42);
+    }
+    assert!(
+        sm.live_placement.len() <= 8,
+        "the seatbelt caps per-pid records (got {})",
+        sm.live_placement.len()
+    );
+    assert!(
+        sm.live_placement.contains_key(&311),
+        "the most recent placement always survives the cap"
+    );
 }

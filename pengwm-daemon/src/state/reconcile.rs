@@ -155,11 +155,29 @@ impl StateManager {
     /// ones that became visible again. Uses predicate injection so tests don't
     /// need `as_any_mut` downcast.
     fn reconcile_hidden_windows(&mut self) {
-        // One batched read for the whole sweep: the adapter resolves each
-        // app element once per pid, so the app-hidden answer is paid per
-        // app, not per window.
-        let ids = self.store.tracked_window_ids();
-        let hidden = self.os.windows_are_hidden(&ids);
+        // One batched read for the whole sweep — but only for the windows
+        // whose verdict this reconcile can act on: current tree/popup
+        // members (hide candidates) and Hide-parked windows (show
+        // candidates). Fullscreen-parked windows and Untracked overlays
+        // are deliberately absent: `pending_for_reconcile` can only
+        // discard their answers (fullscreen reveal is owned by the
+        // probe, overlays have no reveal funnel), so polling them paid
+        // up to two AX RPCs each per second for an unusable verdict.
+        // The read set narrows with the verdicts; the adapter's
+        // app-hidden resolution follows (one app element per pid that
+        // still has a candidate).
+        let members: HashSet<WindowId> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.all_windows().into_iter().chain(ws.popup_ids()))
+            .collect();
+        let mut read_set: Vec<WindowId> = members.iter().copied().collect();
+        for wid in self.store.hide_parked() {
+            if !members.contains(&wid) {
+                read_set.push(wid);
+            }
+        }
+        let hidden = self.os.windows_are_hidden(&read_set);
         let (to_hide, to_show) = self.store.pending_for_reconcile(&self.workspaces, &hidden);
         // Hide first, then show — order doesn't matter but hide frees capacity.
         for wid in to_hide {
@@ -218,7 +236,11 @@ impl StateManager {
     /// One sweep funnel: visible workspaces only (invisible ones aren't
     /// asserted until shown). Displacement judgment lives in
     /// `LayoutWriteCache::sweep_displaced`; this only feeds reads and
-    /// re-applies what came back invalidated. Popups are skipped (free-drag
+    /// re-applies what came back invalidated. The read set comes from
+    /// `sweep_plan` — only at-target windows past the write grace get
+    /// their actual read (the drift detector); unsettled windows are
+    /// already scheduled for a write, so their workspace goes to
+    /// re-apply without a read. Popups are skipped (free-drag
     /// after placement — nothing re-centers them) via the exclusion
     /// predicate, and so is anything the user is dragging or the OS
     /// reports hidden.
@@ -238,16 +260,21 @@ impl StateManager {
                 continue;
             }
             let targets = self.workspaces[idx].layout(self.gap_inner, self.gap_outer);
-            let actuals: HashMap<WindowId, Option<Rect>> = targets
-                .keys()
+            let is_skipped = |wid: WindowId| {
+                Some(wid) == drag_window || self.store.is_hidden(wid) || popups.contains(&wid)
+            };
+            // The read set is the plan's: at-target windows only, grace
+            // fresh ones included. Everything else either owns its
+            // geometry or is already scheduled for a write.
+            let (needs_read, unsettled) = self.layout_cache.sweep_plan(&targets, now, is_skipped);
+            let actuals: HashMap<WindowId, Option<Rect>> = needs_read
+                .iter()
                 .map(|&wid| (wid, self.os.window_rect(wid)))
                 .collect();
             let invalidated = self
                 .layout_cache
-                .sweep_displaced(&targets, &actuals, now, |wid| {
-                    Some(wid) == drag_window || self.store.is_hidden(wid) || popups.contains(&wid)
-                });
-            if !invalidated.is_empty() {
+                .sweep_displaced(&targets, &actuals, now, is_skipped);
+            if !invalidated.is_empty() || unsettled {
                 affected.push(idx);
             }
         }

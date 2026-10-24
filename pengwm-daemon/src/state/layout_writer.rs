@@ -345,17 +345,16 @@ impl LayoutWriteCache {
                 // Same reasoning as Pinned: a drift report means the
                 // element answered a readback, so it is not gone.
                 self.gone_since.remove(&window_id);
-                self.log_transient(
-                    window_id,
-                    &format!(
+                self.log_transient(window_id, || {
+                    format!(
                         "drift did not converge target {:?} actual {:?}",
                         target, actual
-                    ),
-                );
+                    )
+                });
                 AfterWrite::ProbeFullscreen
             }
             WriteOutcome::Transient(msg) => {
-                self.log_transient(window_id, &msg);
+                self.log_transient(window_id, || msg);
                 AfterWrite::ProbeFullscreen
             }
         }
@@ -463,6 +462,63 @@ impl LayoutWriteCache {
         true
     }
 
+    /// The misplaced sweep's read-set planner, the ask that keeps the
+    /// sweep from paying for reads whose verdict it cannot use. For one
+    /// workspace's targets, return `(windows to read, workspace needs a
+    /// re-apply regardless of any read)`:
+    ///
+    /// - **At target** (`applied == target`): the read is the drift
+    ///   detector — the only read that can change the plan. Within the
+    ///   write grace the verdict is provably "not displaced" (recent
+    ///   writes are settling animation), so even that read is skipped.
+    /// - **Off target or no entry** ("unsettled"): already scheduled for
+    ///   a write — `should_write` falls through without consulting an
+    ///   actual, and `apply_layout` reads no-entry windows itself — so
+    ///   the sweep read would be bought and discarded; the re-apply is
+    ///   the plan.
+    ///
+    /// Caller-owned skips (drag, hidden, popups) are excluded from both
+    /// answers: skipped windows own their geometry. A pinned window is
+    /// the pin's subject, not the sweep's: while the backoff is active
+    /// neither a read nor a re-apply (its re-apply would write nothing);
+    /// once the backoff expires the re-apply **is** the retry — that is
+    /// the timer the backoff cadence reaches through.
+    pub(super) fn sweep_plan(
+        &self,
+        targets: &HashMap<WindowId, Rect>,
+        now: Instant,
+        is_skipped: impl Fn(WindowId) -> bool,
+    ) -> (Vec<WindowId>, bool) {
+        let mut needs_read = Vec::new();
+        let mut unsettled = false;
+        for (&window_id, &target) in targets {
+            if is_skipped(window_id) {
+                continue;
+            }
+            if let Some(pin) = self.pin_state.get(&window_id) {
+                if pin.target == target {
+                    if !self.pin_backoff_active(window_id, now) {
+                        unsettled = true;
+                    }
+                } else {
+                    // Changed target: a fresh situation — `should_write`
+                    // drops the pin and writes; no read to buy.
+                    unsettled = true;
+                }
+                continue;
+            }
+            match self.applied_rects.get(&window_id) {
+                Some((applied, written_at)) if *applied == target => {
+                    if now.duration_since(*written_at) >= DISPLACE_GRACE {
+                        needs_read.push(window_id);
+                    }
+                }
+                _ => unsettled = true,
+            }
+        }
+        (needs_read, unsettled)
+    }
+
     /// The one sweep funnel for the misplaced tick: given tiled targets and
     /// one cheap AX read per window, invalidate genuinely displaced windows
     /// so the next layout re-asserts. `is_skipped` covers caller-owned skips
@@ -537,8 +593,10 @@ impl LayoutWriteCache {
     /// Throttled log for expected-transient failures: warn on the first
     /// failure per window per throttle window, debug on repeats. Repeats
     /// mean the next layout is still retrying the same contested write
-    /// (e.g. an in-progress live resize), not new information.
-    fn log_transient(&mut self, window_id: WindowId, msg: &str) {
+    /// (e.g. an in-progress live resize), not new information. `msg` is
+    /// built lazily — the Drift path's `format!` must not run on every
+    /// retry of a contested write when the log level filters it.
+    fn log_transient(&mut self, window_id: WindowId, msg: impl FnOnce() -> String) {
         const FAIL_LOG_THROTTLE: Duration = Duration::from_secs(5);
         let now = Instant::now();
         let repeat = self
@@ -546,16 +604,18 @@ impl LayoutWriteCache {
             .get(&window_id)
             .is_some_and(|last| now.duration_since(*last) < FAIL_LOG_THROTTLE);
         if repeat {
-            log::debug!(
-                "layout_writer: write retry failed for window {}: {}",
-                window_id,
-                msg
-            );
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!(
+                    "layout_writer: write retry failed for window {}: {}",
+                    window_id,
+                    msg()
+                );
+            }
         } else {
             log::warn!(
                 "layout_writer: write failed for window {}: {} (retrying)",
                 window_id,
-                msg
+                msg()
             );
             self.layout_fail_logged.insert(window_id, now);
         }
@@ -972,10 +1032,72 @@ mod tests {
     }
 
     #[test]
+    fn sweep_plan_reads_only_at_target_windows() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let other = Rect::new(960.0, 0.0, 960.0, 1040.0);
+        // 7 at target (aged past the grace): the drift detector's read.
+        cache.record_success(7, t);
+        cache.age_applied_for_test(7, Duration::from_secs(5));
+        // 8 has an entry for a DIFFERENT target: unsettled — scheduled for
+        // a write, the sweep read would be discarded.
+        cache.record_success(8, other);
+        cache.age_applied_for_test(8, Duration::from_secs(5));
+        // 9 has no entry: unsettled the same way (apply_layout reads it).
+        let targets: HashMap<WindowId, Rect> =
+            [(7, t), (8, t), (9, t), (10, t)].into_iter().collect();
+        let (needs_read, unsettled) =
+            cache.sweep_plan(&targets, Instant::now(), |wid| wid == 10);
+        assert_eq!(needs_read, vec![7], "only the at-target window is read");
+        assert!(unsettled, "8's stale target and 9's missing entry re-apply");
+    }
+
+    #[test]
+    fn sweep_plan_skips_the_read_inside_the_write_grace() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        // Freshly written: the verdict is provably "not displaced" for the
+        // grace window, so the read buys nothing this sweep.
+        cache.record_success(7, t);
+        let targets: HashMap<WindowId, Rect> = [(7, t)].into_iter().collect();
+        let (needs_read, unsettled) =
+            cache.sweep_plan(&targets, Instant::now(), |_| false);
+        assert!(needs_read.is_empty());
+        assert!(!unsettled);
+    }
+
+    #[test]
+    fn sweep_plan_leaves_backoff_to_the_pin_until_it_expires() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let far = Rect::new(500.0, 500.0, 960.0, 1040.0);
+        for _ in 1..=3 {
+            cache.record_failure(
+                7,
+                t,
+                WriteOutcome::Pinned {
+                    target: t,
+                    actual: far,
+                },
+            );
+        }
+        let targets: HashMap<WindowId, Rect> = [(7, t)].into_iter().collect();
+        // Active backoff: neither a read nor a re-apply — the pin owns the
+        // retry cadence.
+        let (needs_read, unsettled) = cache.sweep_plan(&targets, Instant::now(), |_| false);
+        assert!(needs_read.is_empty());
+        assert!(!unsettled);
+        // Expired backoff: the re-apply IS the retry.
+        cache.age_pin_for_test(7, Duration::from_secs(16));
+        let (_, unsettled) = cache.sweep_plan(&targets, Instant::now(), |_| false);
+        assert!(unsettled, "an expired backoff re-arms the sweep's retry");
+    }
+
+    #[test]
     fn forget_and_clear_on_wake_drop_everything() {
         let (mut cache, t) = cache_with_placed_window();
         cache.record_failure(7, t, WriteOutcome::Gone);
-        cache.log_transient(7, "boom");
+        cache.log_transient(7, || "boom".to_string());
         cache.forget(7);
         assert!(cache.should_write(7, t, None));
         assert!(!cache.throttle_armed(7));

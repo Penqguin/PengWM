@@ -12,11 +12,14 @@ use core_foundation::string::{CFString, CFStringRef};
 use pengwm_core::layout::{rects_close, Rect, WriteOutcome, LAYOUT_EPSILON};
 use pengwm_core::tree::WindowId;
 
+use super::cf_intern::intern;
 use super::cf_ref::CFRef;
 
 pub fn is_process_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
+
+/// Show the system Accessibility permission prompt dialog.
 
 pub fn is_process_trusted_with_prompt() -> bool {
     unsafe {
@@ -138,7 +141,7 @@ pub unsafe fn set_window_position_raw(
     x: f64,
     y: f64,
 ) -> anyhow::Result<()> {
-    let pos_name = CFString::new(kAXPositionAttribute);
+    let pos_name = intern(kAXPositionAttribute);
     let mut point = CGPoint { x, y };
     let Some(pos_value) = CFRef::from_create(AXValueCreate(
         kAXValueTypeCGPoint,
@@ -148,7 +151,7 @@ pub unsafe fn set_window_position_raw(
     };
     let err = AXUIElementSetAttributeValue(
         element,
-        pos_name.as_concrete_TypeRef(),
+        pos_name,
         pos_value.ptr() as CFTypeRef,
     );
     if err != kAXErrorSuccess {
@@ -167,7 +170,7 @@ pub unsafe fn set_window_size_raw(
     width: f64,
     height: f64,
 ) -> anyhow::Result<()> {
-    let size_name = CFString::new(kAXSizeAttribute);
+    let size_name = intern(kAXSizeAttribute);
     let mut size = CGSize { width, height };
     let Some(size_value) = CFRef::from_create(AXValueCreate(
         kAXValueTypeCGSize,
@@ -177,7 +180,7 @@ pub unsafe fn set_window_size_raw(
     };
     let err = AXUIElementSetAttributeValue(
         element,
-        size_name.as_concrete_TypeRef(),
+        size_name,
         size_value.ptr() as CFTypeRef,
     );
     if err != kAXErrorSuccess {
@@ -296,12 +299,12 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> WriteOutco
 /// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
 /// element remains valid for the duration of the call.
 pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
-    let pos_name = CFString::new(kAXPositionAttribute);
-    let size_name = CFString::new(kAXSizeAttribute);
+    let pos_name = intern(kAXPositionAttribute);
+    let size_name = intern(kAXSizeAttribute);
 
     let mut pos_raw: CFTypeRef = ptr::null();
     let err_pos =
-        AXUIElementCopyAttributeValue(element, pos_name.as_concrete_TypeRef(), &mut pos_raw);
+        AXUIElementCopyAttributeValue(element, pos_name, &mut pos_raw);
     if err_pos != kAXErrorSuccess {
         return None;
     }
@@ -309,7 +312,7 @@ pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
 
     let mut size_raw: CFTypeRef = ptr::null();
     let err_size =
-        AXUIElementCopyAttributeValue(element, size_name.as_concrete_TypeRef(), &mut size_raw);
+        AXUIElementCopyAttributeValue(element, size_name, &mut size_raw);
     if err_size != kAXErrorSuccess {
         // pos_val drops here — the failure path releases what it owns.
         return None;
@@ -343,10 +346,12 @@ pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
 /// Activate the owning application so its windows come to the front.
 fn activate_app(pid: i32) -> bool {
     use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-    match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
-        Some(app) => app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows),
-        None => false,
-    }
+    objc2::rc::autoreleasepool(|_pool| {
+        match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+            Some(app) => app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows),
+            None => false,
+        }
+    })
 }
 
 /// # Safety
@@ -357,23 +362,23 @@ fn activate_app(pid: i32) -> bool {
 pub unsafe fn focus_window(element: AXUIElementRef, pid: i32) {
     activate_app(pid);
 
-    let raise_name = CFString::new(kAXRaiseAction);
-    AXUIElementPerformAction(element, raise_name.as_concrete_TypeRef());
+    let raise_name = intern(kAXRaiseAction);
+    AXUIElementPerformAction(element, raise_name);
 
-    let main_name = CFString::new(kAXMainAttribute);
+    let main_name = intern(kAXMainAttribute);
     AXUIElementSetAttributeValue(
         element,
-        main_name.as_concrete_TypeRef(),
+        main_name,
         kCFBooleanTrue as CFTypeRef,
     );
 
     let Some(app) = create_app_element(pid) else {
         return;
     };
-    let focused_name = CFString::new(kAXFocusedWindowAttribute);
+    let focused_name = intern(kAXFocusedWindowAttribute);
     AXUIElementSetAttributeValue(
         app.ptr(),
-        focused_name.as_concrete_TypeRef(),
+        focused_name,
         element as CFTypeRef,
     );
 }
@@ -393,9 +398,9 @@ pub unsafe fn classify(element: AXUIElementRef) -> crate::adapter::WindowClass {
 /// `pid` must reference a valid running process with Accessibility permissions.
 pub unsafe fn focused_window_for_pid(pid: i32) -> Option<WindowId> {
     let app = create_app_element(pid)?;
-    let attr = CFString::new(kAXFocusedWindowAttribute);
+    let attr = intern(kAXFocusedWindowAttribute);
     let mut value: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(app.ptr(), attr.as_concrete_TypeRef(), &mut value);
+    let err = AXUIElementCopyAttributeValue(app.ptr(), attr, &mut value);
     // `app` drops here whether or not the copy succeeded.
     if err != kAXErrorSuccess || value.is_null() {
         return None;
@@ -411,8 +416,10 @@ pub fn frontmost_pid() -> Option<i32> {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::NSWorkspace;
-        let ws = NSWorkspace::sharedWorkspace();
-        ws.frontmostApplication().map(|app| app.processIdentifier())
+        objc2::rc::autoreleasepool(|_pool| {
+            let ws = NSWorkspace::sharedWorkspace();
+            ws.frontmostApplication().map(|app| app.processIdentifier())
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -445,11 +452,11 @@ pub fn frontmost_pid() -> Option<i32> {
 pub unsafe fn windows_for_pid(pid: i32) -> Option<Vec<(CFRef<AXUIElementRef>, WindowId)>> {
     let app = create_app_element(pid)?;
 
-    let windows_attr = CFString::new(kAXWindowsAttribute);
+    let windows_attr = intern(kAXWindowsAttribute);
     let mut windows_array: CFTypeRef = ptr::null();
     let err = AXUIElementCopyAttributeValue(
         app.ptr(),
-        windows_attr.as_concrete_TypeRef(),
+        windows_attr,
         &mut windows_array as *mut _ as *mut CFTypeRef,
     );
     if err != kAXErrorSuccess {
@@ -484,9 +491,9 @@ pub unsafe fn windows_for_pid(pid: i32) -> Option<Vec<(CFRef<AXUIElementRef>, Wi
 ///
 /// `element` must be a valid, retained `AXUIElementRef` representing a window.
 pub unsafe fn close_window(element: AXUIElementRef) {
-    let attr = CFString::new("AXCloseButton");
+    let attr = intern("AXCloseButton");
     let mut close_button: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut close_button);
+    let err = AXUIElementCopyAttributeValue(element, attr, &mut close_button);
     if err != kAXErrorSuccess {
         log::warn!("close_window: no close button found (err={})", err);
         return;
@@ -494,8 +501,8 @@ pub unsafe fn close_window(element: AXUIElementRef) {
     let Some(close_button) = CFRef::from_create(close_button as AXUIElementRef) else {
         return;
     };
-    let press = CFString::new("AXPress");
-    AXUIElementPerformAction(close_button.ptr(), press.as_concrete_TypeRef());
+    let press = intern("AXPress");
+    AXUIElementPerformAction(close_button.ptr(), press);
 }
 
 /// Bring a window to the front of the stacking order (`AXRaise` action).
@@ -504,8 +511,8 @@ pub unsafe fn close_window(element: AXUIElementRef) {
 /// # Safety
 /// `element` must be a valid, retained `AXUIElementRef` representing a window.
 pub unsafe fn raise_window(element: AXUIElementRef) {
-    let action = CFString::new(kAXRaiseAction);
-    AXUIElementPerformAction(element, action.as_concrete_TypeRef());
+    let action = intern(kAXRaiseAction);
+    AXUIElementPerformAction(element, action);
 }
 
 #[repr(C)]
@@ -526,7 +533,7 @@ struct CGSize {
 /// # Safety
 /// `element` must be a valid, retained `AXUIElementRef`.
 pub unsafe fn set_window_position(element: AXUIElementRef, x: f64, y: f64) -> anyhow::Result<()> {
-    let pos_name = CFString::new(kAXPositionAttribute);
+    let pos_name = intern(kAXPositionAttribute);
     let mut point = CGPoint { x, y };
     let Some(pos_value) = CFRef::from_create(AXValueCreate(
         kAXValueTypeCGPoint,
@@ -536,7 +543,7 @@ pub unsafe fn set_window_position(element: AXUIElementRef, x: f64, y: f64) -> an
     };
     let err = AXUIElementSetAttributeValue(
         element,
-        pos_name.as_concrete_TypeRef(),
+        pos_name,
         pos_value.ptr() as CFTypeRef,
     );
     if err != kAXErrorSuccess {
@@ -560,25 +567,41 @@ const ENHANCED_USER_INTERFACE: &str = "AXEnhancedUserInterface";
 /// was on, and `Drop` restores it — assistive tech such as VoiceOver
 /// depends on it, so it must never be left off. When the flag was already
 /// off (the normal case) the guard costs one AX read and does nothing else.
+///
+/// The guard **borrows** its element: the app-element memo in
+/// `MacOsAdapter` owns the ref and evicts it only via `forget_pid`, which
+/// cannot run while a write is in flight (single-threaded event loop, no
+/// reentrancy through the synchronous AX calls) — so the borrowed
+/// pointer is valid for the guard's life.
 pub struct EnhancedUiGuard {
-    app: Option<CFRef<AXUIElementRef>>,
+    element: Option<AXUIElementRef>,
     was_enabled: bool,
 }
 
 impl EnhancedUiGuard {
-    /// # Safety
-    /// `pid` must reference a running process.
-    pub unsafe fn suspend(pid: i32) -> Self {
-        let app = create_app_element(pid);
-        let was_enabled = app
-            .as_ref()
-            .is_some_and(|app| bool_attribute(app.ptr(), ENHANCED_USER_INTERFACE));
-        if was_enabled {
-            if let Some(app) = app.as_ref() {
-                set_bool_attribute(app.ptr(), ENHANCED_USER_INTERFACE, false);
-            }
+    /// A guard that does nothing: the app element could not be resolved
+    /// (the app is unreachable), so there is no flag to read and nothing
+    /// to restore. Same answer the per-pid create gave: suspend silently
+    /// skips, the write proceeds.
+    pub fn inactive() -> Self {
+        Self {
+            element: None,
+            was_enabled: false,
         }
-        Self { app, was_enabled }
+    }
+
+    /// # Safety
+    /// `element` must be a valid, retained `AXUIElementRef` that stays
+    /// alive for the guard's lifetime (see the struct docs).
+    pub unsafe fn suspend(element: AXUIElementRef) -> Self {
+        let was_enabled = bool_attribute(element, ENHANCED_USER_INTERFACE);
+        if was_enabled {
+            set_bool_attribute(element, ENHANCED_USER_INTERFACE, false);
+        }
+        Self {
+            element: Some(element),
+            was_enabled,
+        }
     }
 
     /// Whether the app had enhanced UI on when the guard was taken.
@@ -589,24 +612,25 @@ impl EnhancedUiGuard {
 
 impl Drop for EnhancedUiGuard {
     fn drop(&mut self) {
-        if let (true, Some(app)) = (self.was_enabled, self.app.as_ref()) {
-            unsafe { set_bool_attribute(app.ptr(), ENHANCED_USER_INTERFACE, true) };
+        if let (true, Some(element)) = (self.was_enabled, self.element) {
+            unsafe { set_bool_attribute(element, ENHANCED_USER_INTERFACE, true) };
         }
-        // `app` releases itself — the guard never leaks the element.
+        // The element is borrowed from the app-element memo, which owns
+        // its release — the guard never leaks and never releases.
     }
 }
 
 /// # Safety
 /// `element` must be a valid, retained `AXUIElementRef`.
-unsafe fn set_bool_attribute(element: AXUIElementRef, attribute: &str, value: bool) {
-    let name = CFString::new(attribute);
+unsafe fn set_bool_attribute(element: AXUIElementRef, attribute: &'static str, value: bool) {
+    let name = intern(attribute);
     let cf_value = if value {
         kCFBooleanTrue
     } else {
         core_foundation::boolean::kCFBooleanFalse
     };
     let err =
-        AXUIElementSetAttributeValue(element, name.as_concrete_TypeRef(), cf_value as CFTypeRef);
+        AXUIElementSetAttributeValue(element, name, cf_value as CFTypeRef);
     if err != kAXErrorSuccess {
         log::debug!("set {}={} failed: {}", attribute, value, error_string(err));
     }
@@ -627,10 +651,10 @@ unsafe fn set_bool_attribute(element: AXUIElementRef, attribute: &str, value: bo
 ///
 /// # Safety
 /// `element` must be a valid, retained `AXUIElementRef`.
-pub unsafe fn is_attribute_settable(element: AXUIElementRef, attribute: &str) -> bool {
-    let name = CFString::new(attribute);
+pub unsafe fn is_attribute_settable(element: AXUIElementRef, attribute: &'static str) -> bool {
+    let name = intern(attribute);
     let mut settable: std::ffi::c_uchar = 0;
-    let err = AXUIElementIsAttributeSettable(element, name.as_concrete_TypeRef(), &mut settable);
+    let err = AXUIElementIsAttributeSettable(element, name, &mut settable);
     if err != kAXErrorSuccess {
         return true;
     }
@@ -642,10 +666,10 @@ pub unsafe fn is_attribute_settable(element: AXUIElementRef, attribute: &str) ->
 ///
 /// # Safety
 /// `element` must be a valid, retained `AXUIElementRef`.
-pub unsafe fn string_attribute(element: AXUIElementRef, attribute: &str) -> Option<String> {
-    let name = CFString::new(attribute);
+pub unsafe fn string_attribute(element: AXUIElementRef, attribute: &'static str) -> Option<String> {
+    let name = intern(attribute);
     let mut value: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value);
+    let err = AXUIElementCopyAttributeValue(element, name, &mut value);
     if err != kAXErrorSuccess || value.is_null() {
         return None;
     }
@@ -656,10 +680,10 @@ pub unsafe fn string_attribute(element: AXUIElementRef, attribute: &str) -> Opti
 ///
 /// `element` must be a valid, retained `AXUIElementRef`. The caller must ensure the
 /// element remains valid for the duration of the call.
-pub unsafe fn bool_attribute(element: AXUIElementRef, attribute: &str) -> bool {
-    let name = CFString::new(attribute);
+pub unsafe fn bool_attribute(element: AXUIElementRef, attribute: &'static str) -> bool {
+    let name = intern(attribute);
     let mut value: CFTypeRef = ptr::null();
-    let err = AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value);
+    let err = AXUIElementCopyAttributeValue(element, name, &mut value);
     if err != kAXErrorSuccess {
         return false;
     }

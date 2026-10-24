@@ -93,6 +93,17 @@ const AX_SYSTEM_DIALOG_SUBROLE: &str = "AXSystemDialog";
 const AX_FLOATING_WINDOW_SUBROLE: &str = "AXFloatingWindow";
 const AX_SHEET_SUBROLE: &str = "AXSheet";
 
+/// The NSWorkspace identity reads for one pid: bundle id and display name.
+/// Resolution is expensive — each read costs a linear scan of
+/// `runningApplications` (and each `processIdentifier()` in that scan a
+/// LaunchServices XPC round trip) — so it lives behind one adapter ask,
+/// memoized per pid, instead of being re-scanned per pid per pass.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AppIdentity {
+    pub bundle: Option<String>,
+    pub name: Option<String>,
+}
+
 pub trait ObserverRegistry {
     fn attach_observer(&mut self, pid: i32);
     fn detach_observer(&mut self, pid: i32);
@@ -216,6 +227,21 @@ pub trait OsAdapter: ObserverRegistry {
     /// distinct from its bundle id ("com.apple.Safari"). Drives the menubar's
     /// per-window app labels.
     fn app_name(&self, pid: i32) -> Option<String>;
+    /// Identity reads for a batch of pids, resolved against one snapshot of
+    /// the running-app list. Callers sweeping several pids (the discovery
+    /// loop) use this; the adapter memoizes per-pid answers, so A pids cost
+    /// one scan total instead of two scans per pid. Pid reuse can never
+    /// serve a stale identity: an entry for a pid that vanished from the
+    /// snapshot is dropped, so the next ask of a recycled pid resolves
+    /// fresh.
+    fn app_identities(&self, pids: &[i32]) -> HashMap<i32, AppIdentity>;
+    /// The single-pid shape of `app_identities` — the per-event paths
+    /// (window routing, placement capture) that never batch.
+    fn app_identity(&self, pid: i32) -> AppIdentity {
+        self.app_identities(std::slice::from_ref(&pid))
+            .remove(&pid)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone)]

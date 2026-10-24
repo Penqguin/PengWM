@@ -26,6 +26,8 @@ use core_graphics::window::{
 
 use pengwm_core::tree::WindowId;
 
+use super::cf_intern::intern;
+
 const LAYER_NORMAL: i32 = 0;
 
 pub fn is_overlay_level(level: i32) -> bool {
@@ -34,10 +36,10 @@ pub fn is_overlay_level(level: i32) -> bool {
 
 /// The dictionary value for `key` as an i64 via `CFNumber` (get-rule
 /// borrow — the value belongs to the snapshot array).
-fn number_value(dict: CFDictionaryRef, key: &str) -> Option<i64> {
+fn number_value(dict: CFDictionaryRef, key: &'static str) -> Option<i64> {
     unsafe {
         let typed: CFDictionary<CFString, CFType> = CFDictionary::wrap_under_get_rule(dict);
-        let item = typed.find(CFString::new(key))?;
+        let item = typed.find(intern(key))?;
         let raw = TCFType::as_concrete_TypeRef(&*item);
         CFNumber::wrap_under_get_rule(raw as CFNumberRef).to_i64()
     }
@@ -77,6 +79,19 @@ pub fn window_levels() -> HashMap<WindowId, i32> {
 /// Level of one window, from a fresh on-screen snapshot. `None` when the
 /// window is not on screen (or CG answered nothing) — the caller keeps
 /// the subrole classification.
+///
+/// No snapshot cache, deliberately: the only per-call caller is the
+/// `WindowCreated` path classifying a window **for the first time**, and
+/// first-classification-wins (ADR-0002) makes a wrong class sticky. A
+/// TTL-cached snapshot taken before the new window existed would answer
+/// `None` for it and hand a level≠0 overlay (a PiP) to the subrole
+/// answer — `AXFloatingWindow` → popup, exactly the misrouting the
+/// level gate exists to prevent. A cache hit requires the window to have
+/// been on screen at snapshot time, but a first-time classification is
+/// by definition for a window that may not have been; absence-from-
+/// cache would then have to force a fresh snapshot anyway, which
+/// collapses the cache back to one snapshot per created window. The
+/// interned dict keys are the win that was actually available here.
 pub fn window_level(window_id: WindowId) -> Option<i32> {
     window_levels().get(&window_id).copied()
 }

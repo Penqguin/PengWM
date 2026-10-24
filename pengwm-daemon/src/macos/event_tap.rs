@@ -138,12 +138,14 @@ unsafe extern "C" fn event_tap_callback(
 
     // The prefix owns unmodified keys while armed: a bare follow-up inherits
     // the prefix modifiers (`prefix, h` behaves like `alt-h`). Everything
-    // else unmodified passes through untouched as before.
-    let prefix_armed = ctx
-        .prefix
-        .lock()
-        .map(|p| p.is_armed(Instant::now()))
-        .unwrap_or(false);
+    // else unmodified passes through untouched as before. One lock covers
+    // both the armed check and the keydown handling — a per-keystroke
+    // double lock was pure overhead on the input path.
+    let mut prefix = match ctx.prefix.lock() {
+        Ok(guard) => guard,
+        Err(_) => return event, // fail-open: never block input on lock failure
+    };
+    let prefix_armed = prefix.is_armed(Instant::now());
     if filtered_flags == MODIFIER_NONE && !prefix_armed {
         return event;
     }
@@ -156,10 +158,6 @@ unsafe extern "C" fn event_tap_callback(
     let keybinds = match ctx.keybinds.lock() {
         Ok(guard) => guard,
         Err(_) => return event, // fail-open: never block input on lock failure
-    };
-    let mut prefix = match ctx.prefix.lock() {
-        Ok(guard) => guard,
-        Err(_) => return event,
     };
     match prefix.on_keydown(keycode, filtered_flags, Instant::now(), &|kc, md| {
         find_keybind(kc, md, &keybinds)

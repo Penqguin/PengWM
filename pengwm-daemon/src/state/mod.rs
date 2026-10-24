@@ -158,16 +158,7 @@ pub(crate) struct WakeResync {
     pub(crate) last_probe: Instant,
 }
 
-/// The NSWorkspace identity reads for one pid's routing pass: bundle id
-/// and display name. Each costs a linear scan of `runningApplications`,
-/// so a pass resolves them once per pid and threads them down — an app
-/// launching N windows pays two scans, not ~5 × N. Resolution is also
-/// the consistency point: every check in one routing pass matches the
-/// same answer, not consecutive live scans.
-pub(super) struct AppIdentity {
-    pub(super) bundle: Option<String>,
-    pub(super) name: Option<String>,
-}
+use crate::adapter::AppIdentity;
 
 /// A menubar app label: a resolved name, or a timestamped "could not
 /// resolve" verdict. The negative side bounds the retry cost of a pid the
@@ -330,12 +321,10 @@ impl StateManager {
         )
     }
 
-    /// The identity reads for one pid's routing pass (see `AppIdentity`).
+    /// The identity reads for one pid (see `AppIdentity`): one memoized
+    /// adapter ask, not two `runningApplications` scans.
     pub(super) fn app_identity(&self, pid: i32) -> AppIdentity {
-        AppIdentity {
-            bundle: self.os.app_bundle_id(pid),
-            name: self.os.app_name(pid),
-        }
+        self.os.app_identity(pid)
     }
 
     /// Global workspace a window of `pid` routes to per the app routing

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter, WindowClass, WindowListing};
+use crate::adapter::{DisplayInfo, ObserverRegistry, OsAdapter, WindowClass, WindowListing, AppIdentity};
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
 
@@ -597,6 +597,10 @@ impl OsAdapter for SharedTestAdapter {
     fn app_name(&self, pid: i32) -> Option<String> {
         self.0.app_name(pid)
     }
+
+    fn app_identities(&self, pids: &[i32]) -> HashMap<i32, AppIdentity> {
+        self.0.app_identities(pids)
+    }
 }
 
 impl ObserverRegistry for TestAdapter {
@@ -813,5 +817,28 @@ impl OsAdapter for TestAdapter {
             .get(&pid)
             .cloned()
             .or_else(|| self.bundle_ids.borrow().get(&pid).cloned())
+    }
+
+    fn app_identities(&self, pids: &[i32]) -> HashMap<i32, AppIdentity> {
+        // No memo: every ask reads the current injections, so tests that
+        // inject after an ask still see the fresh answer.
+        pids.iter()
+            .map(|&pid| {
+                let bundle = self.bundle_ids.borrow().get(&pid).cloned();
+                let name = self
+                    .app_names
+                    .borrow()
+                    .get(&pid)
+                    .cloned()
+                    .or_else(|| bundle.clone());
+                (
+                    pid,
+                    AppIdentity {
+                        bundle,
+                        name,
+                    },
+                )
+            })
+            .collect()
     }
 }

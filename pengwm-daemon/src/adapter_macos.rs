@@ -1,8 +1,11 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::time::{Duration, Instant};
 
 use crate::adapter::{
-    DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter, WindowClass, WindowListing,
+    AppIdentity, DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter, WindowClass,
+    WindowListing,
 };
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
@@ -21,9 +24,33 @@ use pengwm_core::tree::WindowId;
 /// its own out-of-set constants.
 const AX_FULLSCREEN_ATTRIBUTE: &str = "AXFullScreen";
 
+/// How long a memoized identity stays authoritative without re-asking.
+/// App identity (bundle id, display name) never changes while a process
+/// lives, so this is purely the pid-reuse backstop on top of the
+/// snapshot-driven GC, which is the correctness path.
+const IDENTITY_TTL: Duration = Duration::from_secs(60);
+
 pub struct MacOsAdapter {
     observer_registry: AxObserverRegistry,
     ctx: Box<ObserverContext>,
+    /// Per-pid identity memo behind every bundle/name ask — the batched
+    /// sweep ask (`app_identities`) and the per-event ask
+    /// (`app_identity`) share it, so A pids cost one running-apps scan
+    /// instead of two scans per pid (and every later ask reads the memo).
+    identities: RefCell<IdentityMemo>,
+    /// Per-pid app-level AX element memo behind the `EnhancedUiGuard`:
+    /// creating an app element per layout write cost a mach RPC per
+    /// window per pass for one flag read. Entries evict with the pid
+    /// (`forget_pid` — notification or dead-pid sweep), so an app
+    /// relaunch never writes through a dead app's element.
+    app_elements: RefCell<HashMap<i32, CFRef<AXUIElementRef>>>,
+}
+
+/// The identity memo: one resolved `AppIdentity` per pid, timestamped.
+/// Entries expire via the TTL and are garbage-collected against the
+/// live-pid snapshot at every miss resolution.
+struct IdentityMemo {
+    entries: HashMap<i32, (AppIdentity, Instant)>,
 }
 
 impl MacOsAdapter {
@@ -31,7 +58,82 @@ impl MacOsAdapter {
         Self {
             observer_registry: AxObserverRegistry::new(),
             ctx: Box::new(ObserverContext::new(callback)),
+            identities: RefCell::new(IdentityMemo {
+                entries: HashMap::new(),
+            }),
+            app_elements: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// The memoized app element for `pid`, borrowed raw — ownership stays
+    /// in the memo; the entry is evicted only via `forget_pid`, which
+    /// cannot run while a write is in flight (single-threaded event
+    /// loop, no reentrancy through the synchronous AX calls).
+    fn app_element_for(&self, pid: i32) -> Option<AXUIElementRef> {
+        let mut memo = self.app_elements.borrow_mut();
+        if let Some(app) = memo.get(&pid) {
+            return Some(app.ptr());
+        }
+        let app = unsafe { ax_element::create_app_element(pid)? };
+        let ptr = app.ptr();
+        memo.insert(pid, app);
+        Some(ptr)
+    }
+
+    /// The Enhanced-UI guard for one write: one app-element resolution
+    /// per pid per process, one flag read per write.
+    fn enhanced_ui_guard(&self, pid: i32) -> ax_element::EnhancedUiGuard {
+        match self.app_element_for(pid) {
+            Some(app) => unsafe { ax_element::EnhancedUiGuard::suspend(app) },
+            None => ax_element::EnhancedUiGuard::inactive(),
+        }
+    }
+
+    /// Resolve identities for `pids`: memo hit reads the entry; misses run
+    /// ONE `continuous-apps` scan and GC the memo. Two invariants make the
+    /// memo safe at zero policy cost:
+    /// - **Snapshot GC** — an entry whose pid is absent from the fresh
+    ///   scan is dropped, so a recycled pid can never inherit a dead
+    ///   app's identity.
+    /// - **TTL backstop** — a pid that died between scans and was reused
+    ///   before any ask saw the vacancy still expires after `IDENTITY_TTL`.
+    fn resolved_identities(&self, pids: &[i32]) -> HashMap<i32, AppIdentity> {
+        let now = Instant::now();
+        let mut memo = self.identities.borrow_mut();
+        let mut missing: Vec<i32> = Vec::new();
+        for &pid in pids {
+            match memo.entries.get(&pid) {
+                Some((_, at)) if now.duration_since(*at) < IDENTITY_TTL => {}
+                _ => missing.push(pid),
+            }
+        }
+        if !missing.is_empty() {
+            let live = ns_workspace::running_app_identities();
+            for &pid in &missing {
+                let (bundle, name) = live
+                    .get(&pid)
+                    .cloned()
+                    .unwrap_or((None, None));
+                memo.entries.insert(
+                    pid,
+                    (
+                        AppIdentity {
+                            bundle,
+                            name,
+                        },
+                        now,
+                    ),
+                );
+            }
+            memo.entries.retain(|pid, _| live.contains_key(&pid));
+        }
+        pids.iter()
+            .filter_map(|&pid| {
+                memo.entries
+                    .get(&pid)
+                    .map(|(identity, _)| (pid, identity.clone()))
+            })
+            .collect()
     }
 
     fn cache_get_element(&self, window_id: WindowId) -> Option<(CFRef<AXUIElementRef>, i32)> {
@@ -130,7 +232,7 @@ impl MacOsAdapter {
         };
         // Hiding animates under enhanced UI just like tiling does; see
         // `set_window_rect`.
-        let _enhanced_ui = unsafe { ax_element::EnhancedUiGuard::suspend(pid) };
+        let _enhanced_ui = self.enhanced_ui_guard(pid);
         match unsafe { ax_element::set_window_position(element.ptr(), x, y) } {
             Ok(()) => Ok(()),
             Err(e) if is_stale_element_message(&e.to_string()) => {
@@ -416,7 +518,7 @@ impl OsAdapter for MacOsAdapter {
         // Amethyst all toggle it off around frame writes for this reason.
         // Restored on drop, since assistive tech (VoiceOver) relies on it.
         let started = std::time::Instant::now();
-        let enhanced_ui = unsafe { ax_element::EnhancedUiGuard::suspend(pid) };
+        let enhanced_ui = self.enhanced_ui_guard(pid);
         let outcome = self.write_resolved(window_id, element.ptr(), pid, rect);
         let enhanced_was_on = enhanced_ui.was_enabled();
         drop(enhanced_ui);
@@ -551,6 +653,9 @@ impl OsAdapter for MacOsAdapter {
     /// windows; this releases what the observer cached beyond that set.
     fn forget_pid(&self, pid: i32) -> usize {
         let evicted = self.ctx.clear_pid(pid);
+        // The app-element memo dies with the pid too — an app relaunch
+        // must never write through the dead process's element.
+        self.app_elements.borrow_mut().remove(&pid);
         if evicted > 0 {
             log::debug!(
                 "forget_pid: released {} cached element(s) for pid {}",
@@ -576,12 +681,22 @@ impl OsAdapter for MacOsAdapter {
         evicted
     }
 
+    /// The memoized identity ask — one entry per pid, one scan per miss
+    /// wave. Both the batched sweep and the per-event paths read here.
+    fn app_identities(&self, pids: &[i32]) -> HashMap<i32, AppIdentity> {
+        self.resolved_identities(pids)
+    }
+
     fn app_bundle_id(&self, pid: i32) -> Option<String> {
-        ns_workspace::bundle_id_for_pid(pid)
+        self.resolved_identities(std::slice::from_ref(&pid))
+            .remove(&pid)
+            .and_then(|identity| identity.bundle)
     }
 
     fn app_name(&self, pid: i32) -> Option<String> {
-        ns_workspace::localized_name_for_pid(pid)
+        self.resolved_identities(std::slice::from_ref(&pid))
+            .remove(&pid)
+            .and_then(|identity| identity.name)
     }
 }
 

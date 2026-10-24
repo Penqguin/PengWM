@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use pengwm_core::tree::WindowId;
-use pengwm_core::workspace::{position_of_member, position_of_window, Workspace};
+use pengwm_core::workspace::{position_of_window, Workspace};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -324,6 +324,17 @@ impl WindowStore {
             .collect()
     }
 
+    /// Snapshot of every Hide-parked window id — the hidden reconcile's
+    /// show candidates. Paired with `fullscreen_parked` so callers can
+    /// scope their reads to the reason whose reveal funnel they own.
+    pub fn hide_parked(&self) -> Vec<WindowId> {
+        self.parked
+            .iter()
+            .filter(|(_, e)| e.reason == ParkReason::Hide)
+            .map(|(&wid, _)| wid)
+            .collect()
+    }
+
     /// True when `RECONCILE_INTERVAL` has elapsed since the last reconcile.
     /// When true, also advances the timestamp so the next call is debounced.
     pub fn should_reconcile(&mut self, now: Instant) -> bool {
@@ -350,16 +361,24 @@ impl WindowStore {
     /// prod (one sweep-scoped read; per-pid app-hidden resolved by the
     /// adapter); tests pass a hand-built map. A window absent from the map
     /// reads as visible.
+    ///
+    /// Membership is one pass over the trees — the set answers for every
+    /// tracked window afterwards — instead of a `position_of_member` arena
+    /// walk per window.
     pub fn pending_for_reconcile(
         &self,
         workspaces: &[Workspace],
         hidden: &HashMap<WindowId, bool>,
     ) -> (Vec<WindowId>, Vec<WindowId>) {
+        let members: HashSet<WindowId> = workspaces
+            .iter()
+            .flat_map(|ws| ws.all_windows().into_iter().chain(ws.popup_ids()))
+            .collect();
         let mut to_hide = Vec::new();
         let mut to_show = Vec::new();
         for &wid in self.window_pids.keys() {
             let hidden_now = hidden.get(&wid).copied().unwrap_or(false);
-            let member = position_of_member(workspaces, wid).is_some();
+            let member = members.contains(&wid);
             if hidden_now && member {
                 to_hide.push(wid);
             } else if !hidden_now && self.is_hidden(wid) {

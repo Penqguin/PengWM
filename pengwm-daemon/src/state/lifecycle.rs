@@ -620,11 +620,16 @@ impl StateManager {
         // Untrack dead members first, so the discovery layouts below
         // compute targets against a tree that no longer holds them.
         self.untrack_unlisted_windows(&listings);
+        // One batched identity ask for the whole pass: the adapter's memo
+        // resolves every miss against one running-apps scan, so the pass
+        // pays A pids' identities with one NSWorkspace sweep instead of
+        // two scans per pid.
+        let identities = self.os.app_identities(&pids);
         for (pid, listing) in listings {
             // One identity resolution per pid, not per window: the pass's
             // NSWorkspace scans are paid once and every window of the app
             // routes against the same answer.
-            let identity = self.app_identity(pid);
+            let identity = identities.get(&pid).cloned().unwrap_or_default();
             let listed = StateManager::listing_evidence(&listing).unwrap_or(&[]);
             for window_id in listed.iter().copied() {
                 if !self.store.contains(window_id) {

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use pengwm_core::tree::WindowId;
 
 use super::session::WindowPlacement;
@@ -38,7 +40,19 @@ pub(super) struct PlacementRecord {
     pub(super) idx: usize,
     pub(super) bundle: Option<String>,
     pub(super) title: Option<String>,
+    /// When the record was last confirmed as the window's current
+    /// placement. The seatbelt is deliberately not evicted on window
+    /// destroy, so a churn-heavy app (browsers, Electron) accretes one
+    /// record per churned WindowId until the app dies — this timestamp
+    /// is what the per-pid cap prunes by (newest K survive; the
+    /// successor ask's legitimate candidates are always recent).
+    pub(super) noted_at: Instant,
 }
+
+/// How many seatbelt records one pid may hold. Generous: the successor
+/// ask needs the *recent* records of a churn-heavy app, and every entry
+/// costs pid + idx + two identity strings.
+const SEATBELT_CAP_PER_PID: usize = 8;
 
 /// How long a dirty session waits before the tick drains it to disk.
 /// Short enough that a crash loses seconds of placement, long enough
@@ -190,8 +204,10 @@ impl StateManager {
         };
         let bundle = self.os.app_bundle_id(pid);
         let title = self.os.window_title(window_id);
-        if let Some(rec) = self.live_placement.get(&window_id) {
+        let now = Instant::now();
+        if let Some(rec) = self.live_placement.get_mut(&window_id) {
             if rec.pid == pid && rec.idx == idx && rec.bundle == bundle && rec.title == title {
+                rec.noted_at = now;
                 return;
             }
         }
@@ -202,8 +218,30 @@ impl StateManager {
                 idx,
                 bundle,
                 title,
+                noted_at: now,
             },
         );
+        // Cap per pid — the one boundedness rule the seatbelt map has.
+        // Records die with the pid by design (a minimized window
+        // untracked by a listing misjudgment must survive), so the only
+        // unbounded growth is a never-quitting app that churns
+        // WindowIds; its successor-ask candidates are always the recent
+        // ones, so the newest K per pid keep every legitimate ask.
+        let mut same_pid: Vec<(WindowId, Instant)> = self
+            .live_placement
+            .iter()
+            .filter(|(_, rec)| rec.pid == pid)
+            .map(|(&wid, rec)| (wid, rec.noted_at))
+            .collect();
+        if same_pid.len() > SEATBELT_CAP_PER_PID {
+            same_pid.sort_by_key(|&(_, at)| at);
+            let excess = same_pid.len() - SEATBELT_CAP_PER_PID;
+            for &(wid, _) in &same_pid[..excess] {
+                if wid != window_id {
+                    self.live_placement.remove(&wid);
+                }
+            }
+        }
         self.session_dirty = true;
     }
 

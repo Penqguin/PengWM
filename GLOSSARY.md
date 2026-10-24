@@ -10,6 +10,16 @@ comes from the design skill, not this file.
   `WindowStore` (`note_routed`, first-call-wins) so window identity
   survives the evictable element cache and its fallback
   re-classification. Ask the store, never re-derive from `window_kind`.
+- **App identity** — The `pid → (bundle id, display name)` read behind
+  routing, placement capture, and menubar labels. One memoized ask at
+  the `OsAdapter` seam (`app_identities` batched for a pass,
+  `app_identity` for events): the adapter resolves misses against one
+  `NSWorkspace` scan instead of two scans per pid, and the memo is
+  garbage-collected against the live-pid snapshot so a recycled pid can
+  never inherit a dead app's identity. Every consumer of identity asks
+  this one seam; the answer is also the consistency point — all checks
+  in a routing pass see the same resolution, not consecutive live
+  scans.
 - **Placement memory** — The session's durable "where did this window
   live" record: bundle + title → workspace **name** (per window,
   captured at quit, `state::placement`). Consumed through one ask at

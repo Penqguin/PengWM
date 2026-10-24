@@ -67,6 +67,9 @@ pub trait OsAdapter: ObserverRegistry {
     fn windows_are_hidden(&self, window_ids: &[WindowId]) -> HashMap<WindowId, bool>;
     fn app_bundle_id(&self, pid: i32) -> Option<String>;
     fn app_name(&self, pid: i32) -> Option<String>;
+    /// Batched + memoized identity ask: bundle/name per pid against one
+    /// NSWorkspace snapshot (see GLOSSARY "App identity").
+    fn app_identities(&self, pids: &[i32]) -> HashMap<i32, AppIdentity>;
 }
 ```
 
