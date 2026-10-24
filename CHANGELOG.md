@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.6.8 — Memory and the tick's reads (2026-10-23)
+
+- **Fixed: unbounded memory growth at idle.** The daemon never drained
+  an autorelease pool: its main thread runs a bare `CFRunLoop`, so every
+  AppKit/Foundation call's autoreleased temporaries stayed reachable
+  forever — `leaks` reported almost nothing while RSS climbed ~2.7 MB/min.
+  The dominant source, measured on a live daemon: every
+  `NSWorkspace.runningApplications()` scan materializes fresh
+  `NSRunningApplication` objects, and the dead-pid sweep (1s) plus the
+  new-window sweep (2s) ran ~90 scans/min × every running app ≈ 10,300
+  objects/min, exactly matching the heap delta. Every AppKit touchpoint
+  (`ns_workspace`'s scans, the notification blocks, `frontmost_pid`,
+  `activate_app`, `menu_bar_height`) now owns one autorelease pool per
+  call: the churn drains at the seam instead of piling up in the
+  pool-less runloop.
+- **The tick reads only what its verdicts can use** — steady-state AX
+  traffic roughly halved, with the measured hot stacks gone:
+  - **App identity is one memoized ask at the `OsAdapter` seam**
+    (`app_identities`, batched for a pass; `app_identity` for events).
+    Resolution used to cost two full `runningApplications` scans per pid
+    per sweep — O(apps²), each `processIdentifier()` a synchronous XPC
+    round trip — now one scan per miss wave, memoized per pid, GC'd
+    against the live-pid snapshot so a recycled pid can never inherit a
+    dead app's identity. Per-event identity reads (routing, placement
+    capture, bar labels) hit the memo. `AppIdentity` moved to the
+    adapter seam; GLOSSARY records the term.
+  - **The hidden reconcile polls only windows whose verdict it can act
+    on**: tree/popup members + Hide-parked. Fullscreen-parked windows
+    and Untracked overlays were read every second and the answer
+    discarded by construction. Membership is also one pass over the
+    trees instead of an arena walk per window.
+  - **The misplaced sweep plans its reads** (`LayoutWriteCache::sweep_plan`):
+    only at-target windows past the write grace get their actual read
+    (the drift detector); unsettled windows are already scheduled for a
+    write, so their workspace re-applies without one — popups and the
+    drag window were read every sweep and discarded. An expired pin
+    backoff re-arms the sweep's retry through the re-apply; the pin's
+    cadence is untouched.
+  - **The Enhanced-UI guard borrows an app-element memo**: one app
+    element per pid (evicted via `forget_pid`) instead of one per
+    layout write — each write drops from ~3 synchronous round trips to
+    the one flag read.
+- **Interned CF strings** (`macos::cf_intern`): AX attribute names and
+  CG dict keys are one interned `CFStringRef` per constant for the
+  process lifetime, not a fresh `CFString` per AX call on the hot
+  thread. `cg_window_level`'s single-window query deliberately has no
+  snapshot cache: first-classification-wins makes a stale snapshot's
+  `None` answer misroute a level≠0 overlay (documented at the site).
+- **Seatbelt boundedness**: the placement map's entries die with the
+  pid by design, so a churn-heavy app was the one unbounded map left —
+  `note_where` now keeps the newest 8 records per pid (`noted_at`);
+  the successor ask's candidates are always the recent ones.
+- **Build footprint**: `tokio` narrowed to `sync`-only (the daemon
+  never enters a runtime), a tuned `[profile.release]` (thin LTO,
+  codegen-units=1, strip), and both UDS accept loops replaced the 25ms
+  would-block spin with `poll(2)` — clients still connect instantly,
+  the socket-identity tick rides the timeout, and ~80 wake-ups/s are
+  gone. Plus in-place `window_count`, a lazily-formatted transient log,
+  and one prefix lock per keystroke.
+
 ## v0.6.7 — Windows come home (2026-10-22)
 
 - **Fixed: windows jumping workspaces after sleep.** A window parked on
