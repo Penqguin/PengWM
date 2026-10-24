@@ -20,7 +20,6 @@ pub fn is_process_trusted() -> bool {
 }
 
 /// Show the system Accessibility permission prompt dialog.
-
 pub fn is_process_trusted_with_prompt() -> bool {
     unsafe {
         let key = CFString::new("AXTrustedCheckOptionPrompt");

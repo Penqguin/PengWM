@@ -125,7 +125,7 @@ impl MacOsAdapter {
                     ),
                 );
             }
-            memo.entries.retain(|pid, _| live.contains_key(&pid));
+            memo.entries.retain(|pid, _| live.contains_key(pid));
         }
         pids.iter()
             .filter_map(|&pid| {
