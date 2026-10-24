@@ -77,7 +77,9 @@ impl Workspace {
     }
 
     pub fn window_count(&self) -> usize {
-        self.all_windows().len()
+        // Count in place — `all_windows()` allocates a throwaway `Vec`,
+        // and this runs per overflow-routing step and per bar publish.
+        self.arena.windows_iter().count()
     }
 
     pub fn focused_window_id(&self) -> Option<WindowId> {
