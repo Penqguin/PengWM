@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,11 +18,12 @@ use crate::socket_guard::{bind_first, SocketGuard};
 /// already treats as end-of-payload.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The accept loop polls instead of blocking on `accept`, so the per-tick
-/// socket-identity check (`SocketGuard::tick`) can run and a rebound
-/// listener can be swapped in. Worst-case added accept latency is one
-/// poll — well inside the daemon's 50ms pump granularity.
-const ACCEPT_POLL: Duration = Duration::from_millis(25);
+/// poll(2) timeout for the accept loop, in milliseconds. The socket fd
+/// wakes the thread the moment a client connects — connect latency is
+/// unchanged — and the socket-identity tick (`SocketGuard::tick`, the
+/// rogue-`rm` self-heal) rides the same timeout, sub-second. Replaces
+/// the 25ms would-block spin, which woke ~40×/s to do nothing.
+const ACCEPT_POLL_MS: i32 = 250;
 
 pub use pengwm_core::ipc::COMMAND_SOCKET_PATH as DEFAULT_SOCKET_PATH;
 
@@ -99,7 +101,15 @@ pub fn start_ipc_server_with_path(event_tx: mpsc::Sender<DaemonEvent>, socket_pa
             listener = fresh;
             log::info!("UDS listener rebound to {}", socket_path);
         }
-        thread::sleep(ACCEPT_POLL);
+        // poll(2), not a fixed sleep: a pending connection wakes the
+        // thread immediately; otherwise the guard tick runs on the
+        // timeout and the thread stays asleep.
+        let mut fds = [libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        unsafe { libc::poll(fds.as_mut_ptr(), 1, ACCEPT_POLL_MS) };
     }
 }
 

@@ -1,16 +1,18 @@
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use pengwm_core::command::BarMessage;
 
 use crate::socket_guard::{bind_first, SocketGuard};
 
-/// The bar accept loop polls instead of blocking on `accept`, so the
-/// per-tick socket-identity check can run and a rebound listener can be
-/// swapped in (same contract as the command socket; see `ipc_server`).
-const ACCEPT_POLL: Duration = Duration::from_millis(25);
+/// poll(2) timeout for the bar accept loop, in milliseconds. A connecting
+/// menubar wakes the thread immediately; the socket-identity tick rides
+/// the same timeout (same contract as the command socket; see
+/// `ipc_server`). Replaces the 25ms would-block spin.
+const ACCEPT_POLL_MS: i32 = 250;
 
 pub use pengwm_core::ipc::BAR_SOCKET_PATH;
 
@@ -111,7 +113,15 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
                     listener = fresh;
                     log::info!("Bar listener rebound to {}", socket_path);
                 }
-                thread::sleep(ACCEPT_POLL);
+                // poll(2), not a fixed sleep: a connecting menubar wakes
+                // the thread immediately; otherwise the guard tick runs
+                // on the timeout and the thread stays asleep.
+                let mut fds = [libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                }];
+                unsafe { libc::poll(fds.as_mut_ptr(), 1, ACCEPT_POLL_MS) };
             });
         }
 
