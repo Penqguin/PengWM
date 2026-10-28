@@ -341,148 +341,39 @@ fn per_monitor_workspace_entries_respected() {
 }
 
 // -----------------------------------------------------------------------
-// Placement memory (state::placement)
+// Placement routing at birth (state::placement, ADR-0005)
 // -----------------------------------------------------------------------
 
-use crate::state::session::WindowPlacement;
-
 #[test]
-fn placement_memory_rehomes_before_config_routing() {
-    // The record is what the user *did* last session (a manual move), so it
-    // outranks the config list (what the app *is*).
+fn a_new_window_never_rehomes_to_a_previous_window_home() {
+    // ADR-0005: a birth is a birth. An earlier window of the same app
+    // with the same title (the successor shape) does not hand its home
+    // to the new window — the new window routes by config, then the
+    // active workspace.
     let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
-    handle.inject_title(778, "MDN — tree shaking".to_string());
-    sm.seed_placement_memory_for_test(vec![WindowPlacement {
-        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
-        title: Some("MDN — tree shaking".into()),
-        workspace: "Notes".into(),
-    }]);
+    handle.inject_bundle_id(42, "com.test".into());
+    handle.inject_title(100, "T100".into());
+    sm.on_window_created(100, 42);
+    sm.move_focused_to_workspace(1);
+    assert!(sm.workspaces[1].find_window(100).is_some());
 
-    sm.on_window_created(778, 78);
+    // A genuinely NEW window, same identity — the original still lists.
+    handle.inject_window(42, 999);
+    handle.inject_title(999, "T100".into());
+    sm.on_window_created(999, 42);
 
-    let idx = sm
-        .workspaces
-        .iter()
-        .position(|ws| ws.find_window(778).is_some())
-        .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Notes");
-    assert_eq!(sm.placement_memory_len_for_test(), 0, "hit consumed once");
-}
-
-#[test]
-fn placement_memory_miss_falls_through_to_config_with_record_intact() {
-    let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
-    handle.inject_title(778, "MDN — tree shaking".to_string());
-    sm.seed_placement_memory_for_test(vec![WindowPlacement {
-        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
-        title: Some("Some other title".into()),
-        workspace: "Notes".into(),
-    }]);
-
-    sm.on_window_created(778, 78);
-
-    let idx = sm
-        .workspaces
-        .iter()
-        .position(|ws| ws.find_window(778).is_some())
-        .expect("routed window should be tracked");
-    assert_eq!(
-        sm.workspaces[idx].name, "Browsing",
-        "config routing owns the miss"
+    assert!(
+        sm.workspaces[1].find_window(999).is_none(),
+        "the new window must not inherit the original's hidden workspace home"
     );
-    assert_eq!(
-        sm.placement_memory_len_for_test(),
-        1,
-        "a miss must not consume the record"
+    assert!(
+        sm.workspaces[0].find_window(999).is_some(),
+        "the new window takes the active workspace"
     );
 }
 
 #[test]
-fn placement_memory_hit_is_consumed_once_for_identical_windows() {
-    // Two identically-titled windows of one bundle (two "New Tab" tabs):
-    // only the first re-homes; the second routes normally instead of
-    // stealing the record again.
-    let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(77, "org.mozilla.firefox".into());
-    handle.inject_title(777, "New Tab".to_string());
-    handle.inject_title(888, "New Tab".to_string());
-    sm.seed_placement_memory_for_test(vec![WindowPlacement {
-        bundle: Some("org.mozilla.firefox".into()),
-        title: Some("New Tab".into()),
-        workspace: "Notes".into(),
-    }]);
-
-    sm.on_window_created(777, 77);
-    sm.on_window_created(888, 77);
-
-    let first = sm
-        .workspaces
-        .iter()
-        .position(|ws| ws.find_window(777).is_some())
-        .expect("first window tracked");
-    let second = sm
-        .workspaces
-        .iter()
-        .position(|ws| ws.find_window(888).is_some())
-        .expect("second window tracked");
-    assert_eq!(sm.workspaces[first].name, "Notes");
-    assert_eq!(
-        sm.workspaces[second].name, "Browsing",
-        "config routing, record spent"
-    );
-}
-
-#[test]
-fn placement_memory_rehomes_across_reboot_pid_drift() {
-    // A reboot changes pids. The record matches bundle+title, so the
-    // window still re-homes — and the record's owning pid difference does
-    // not veto.
-    let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(9102, "org.mozilla.firefoxdeveloperedition".into());
-    handle.inject_title(9103, "MDN — tree shaking".to_string());
-    sm.seed_placement_memory_for_test(vec![WindowPlacement {
-        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
-        title: Some("MDN — tree shaking".into()),
-        workspace: "Messaging".into(),
-    }]);
-
-    sm.on_window_created(9103, 9102);
-
-    let idx = sm
-        .workspaces
-        .iter()
-        .position(|ws| ws.find_window(9103).is_some())
-        .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Messaging");
-}
-
-#[test]
-fn placement_memory_record_for_missing_workspace_name_misses() {
-    // The workspace was renamed between save and restore: a stale name is
-    // a miss, not a panic or a fallback-to-index.
-    let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
-    handle.inject_title(778, "MDN — tree shaking".to_string());
-    sm.seed_placement_memory_for_test(vec![WindowPlacement {
-        bundle: Some("org.mozilla.firefoxdeveloperedition".into()),
-        title: Some("MDN — tree shaking".into()),
-        workspace: "Gaming".into(),
-    }]);
-
-    sm.on_window_created(778, 78);
-
-    let idx = sm
-        .workspaces
-        .iter()
-        .position(|ws| ws.find_window(778).is_some())
-        .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Browsing");
-}
-
-#[test]
-fn placement_memory_captures_tileable_windows_with_evidence() {
+fn placement_capture_records_tileable_windows_with_evidence() {
     let (mut sm, handle) = setup_with_handle(1);
     handle.inject_bundle_id(77, "org.mozilla.firefox".into());
     handle.inject_title(777, "New Tab".to_string());

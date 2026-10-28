@@ -22,23 +22,23 @@ comes from the design skill, not this file.
   scans.
 - **Placement memory** — The session's durable "where did this window
   live" record: bundle + title → workspace **name** (per window,
-  captured at quit, `state::placement`). Consumed through one ask at
-  routing, hit-once; it outranks config routing because it is what the
-  user *did*, not what the app *is*. Restore input only — membership
-  stays single-sourced in the trees (ADR-0003).
+  projected from the seatbelt at every save, `state::placement`).
+  Diagnostic data since ADR-0005: written to the session file but
+  never consumed at routing — a new window routes by config, then the
+  active workspace. Restore input only — membership stays
+  single-sourced in the trees (ADR-0003).
 - **Placement seatbelt** — The in-session, continuously maintained
   placement record (`state::placement`, `note_where`/`where_should`):
   window → (pid, workspace index, bundle, title), noted at every
-  placement change including park time. Consulted at rediscovery before
-  the durable memory (a pid match admits the recall), and projected
-  into the session snapshot — so placement survives sleep, crashes,
-  and the listing-diff misjudgments the hidden-member shield can't
-  cover. Also restore input only — never a second membership owner
-  (ADR-0003). A WindowId macOS reissues mid-session (window re-created,
-  app relaunch) resolves through the **successor ask**: a new id with
-  the same pid + identity while the recorded id no longer lists
-  inherits the home — exactly-one candidate admits the transfer, and
-  only when the successor itself lists.
+  placement change including park time. Consulted at rediscovery
+  before anything else (a pid match admits the recall — the one
+  remembered home a window may return to, since it is the same
+  window), and projected into the session snapshot — so placement
+  survives sleep, crashes, and the listing-diff misjudgments the
+  hidden-member shield can't cover. Also restore input only — never a
+  second membership owner (ADR-0003). A birth never re-homes to a
+  remembered workspace, not even a re-created window's predecessor's
+  home (ADR-0005 removed the successor ask).
 - **Hidden-member shield** — The listing diff never judges a window
   that is a member of a hidden workspace: macOS omits off-Space windows
   from listings and only listed windows get their element refs

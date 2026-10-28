@@ -12,7 +12,7 @@ apply on save (or via `pengwm reload-config`).
 | `gap_inner`            | int    | `5`     | Pixels between adjacent windows           |
 | `max_tiles`            | int    | `4`     | Max windows per workspace; overflow goes to the next workspace with room |
 | `restricted_apps`      | list   | `[]`    | Bundle ids of apps whose windows always pop out as centered overlays — never tiled (see [Popups](#popups)) |
-| `restore_last_session` | bool   | `true`  | Restore last session (workspace layout/focus) from `~/.local/share/pengwm/state.toml` on startup |
+| `restore_last_session` | bool   | `true`  | Restore last session (workspace layout/focus) from `~/.local/share/pengwm/state.toml` on startup — new windows still route by config, then the active workspace |
 | `main_ratio`           | float  | `0.6`   | Share of the split the first window takes in the `main-horizontal` / `main-vertical` presets (clamped to 0.2–0.8) |
 | `prefix`               | string | `"alt-space"` | Chord that arms the tmux-style prefix window, e.g. `"ctrl-b"` |
 | `prefix_timeout_ms`    | int    | `1000`  | How long the prefix stays armed for follow-ups, in milliseconds |
@@ -89,7 +89,10 @@ On `pengwm quit` (or SIGTERM/SIGINT) the daemon atomically saves the session to
 active workspace per monitor, workspace names/monitors, gaps, and the split
 skeleton (windows themselves are ephemeral and re-routed on next launch).
 
-- `restore_last_session = true` (default) restores that file on next launch.
+- `restore_last_session = true` (default) restores that file on next launch
+  (workspace topology, active workspaces, gaps). Window placements are recorded
+  in the file but new windows no longer re-home from them: a new window opens on
+  its config-routed workspace, else the currently active one (ADR-0005).
 - `restore_last_session = false` always starts from `config.toml`.
 - A corrupt/missing session falls back to defaults with a warning.
 - `pengwm clear-session` deletes the saved state so the next launch is fresh.

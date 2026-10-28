@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.9 — New windows open where you are (2026-10-28)
+
+- **New windows open on the current workspace, not their remembered one.**
+  Routing a birth no longer consults remembered placement — neither last
+  session's (bundle, title → workspace) memory nor the successor ask that let
+  an app relaunch inherit its dead window's home. The precedence is now:
+  seatbelt (same-window rediscovery only) → config routing (`apps = [...]`)
+  → the active workspace. Session restore is untouched (topology, active
+  workspaces, gaps), and placement records are still projected into
+  `state.toml` — but as diagnostic data nothing consumes (ADR-0005).
+
 ## v0.6.8 — Memory and the tick's reads (2026-10-23)
 
 - **Fixed: unbounded memory growth at idle.** The daemon never drained

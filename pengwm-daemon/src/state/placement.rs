@@ -5,9 +5,9 @@ use pengwm_core::tree::WindowId;
 use super::session::WindowPlacement;
 use super::StateManager;
 
-/// Owns placement — the in-session seatbelt and the durable memory —
-/// behind one ask (`where_should`) and one write (`note_where`). Two
-/// stores, one interface:
+/// Owns placement — the in-session seatbelt, its session projection and
+/// persistence — behind one ask (`where_should`) and one write
+/// (`note_where`):
 ///
 /// - **The seatbelt** (`live_placement`): window → where it lives *right
 ///   now*, with its durable identity (bundle, title) captured at the
@@ -20,15 +20,17 @@ use super::StateManager;
 ///   exactly the rediscovery this exists for, and a stale entry can only
 ///   mis-route if macOS recycles the WindowId for the same pid (same
 ///   app, benign). Entries die with the pid (`expire_pid`).
-/// - **The memory** (`placement_memory`): the last session's
-///   (bundle, title → workspace name) records, loaded once at boot,
-///   consumed hit-once at the ask. Restore input, never a live
-///   membership owner (ADR-0003).
 ///
-/// Membership itself stays single-sourced in the trees (ADR-0003) — both
-/// stores are rediscovery/restore *input*: `where_should` answers, the
-/// caller places through the normal routing funnel; config routing and
-/// the active-workspace fallback stay the caller's job.
+/// A new window never re-homes to a remembered workspace: routing for
+/// births is seatbelt (same-window rediscovery only) → config routing
+/// → the active workspace (ADR-0005). The session file still *records*
+/// placements — the projection is diagnostic data and keeps the format
+/// stable — but nothing consumes them at restore.
+///
+/// Membership itself stays single-sourced in the trees (ADR-0003) — the
+/// seatbelt is rediscovery *input*: `where_should` answers, the caller
+/// places through the normal routing funnel; config routing and the
+/// active-workspace fallback stay the caller's job.
 ///
 /// One identity read path: the durable identity is captured at note
 /// time — the moment placement changes and the window is demonstrably
@@ -44,13 +46,12 @@ pub(super) struct PlacementRecord {
     /// placement. The seatbelt is deliberately not evicted on window
     /// destroy, so a churn-heavy app (browsers, Electron) accretes one
     /// record per churned WindowId until the app dies — this timestamp
-    /// is what the per-pid cap prunes by (newest K survive; the
-    /// successor ask's legitimate candidates are always recent).
+    /// is what the per-pid cap prunes by (newest K survive).
     pub(super) noted_at: Instant,
 }
 
-/// How many seatbelt records one pid may hold. Generous: the successor
-/// ask needs the *recent* records of a churn-heavy app, and every entry
+/// How many seatbelt records one pid may hold. Generous: a churn-heavy
+/// app's rediscovery ask needs its *recent* records, and every entry
 /// costs pid + idx + two identity strings.
 const SEATBELT_CAP_PER_PID: usize = 8;
 
@@ -61,24 +62,14 @@ const SEATBELT_CAP_PER_PID: usize = 8;
 pub(super) const SESSION_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl StateManager {
-    /// The one placement ask: where should this window live? Three
-    /// asks in precedence order, all inside this module:
-    /// 1. **The seatbelt** — the most current fact about this window,
-    ///    admitted only on a pid match (a recycled WindowId owned by a
-    ///    different app inherits nothing).
-    /// 2. **The durable memory** — restore-time, hit-once.
-    /// 3. **The successor ask** — a re-created window's new WindowId
-    ///    inherits the dead original's seatbelt home (see
-    ///    `successor_home`).
-    ///
-    /// `None` when none knows; the caller falls through to config
-    /// routing and the active workspace.
-    pub(super) fn where_should(
-        &mut self,
-        window_id: WindowId,
-        pid: i32,
-        bundle: Option<&str>,
-    ) -> Option<usize> {
+    /// The one placement ask: where should this window live? The
+    /// **seatbelt** — the most current fact about this window,
+    /// admitted only on a pid match (a recycled WindowId owned by a
+    /// different app inherits nothing). This is rediscovery of an
+    /// existing window, never a birth decision: a *new* window gets
+    /// `None` and falls through to config routing and the active
+    /// workspace (ADR-0005).
+    pub(super) fn where_should(&mut self, window_id: WindowId, pid: i32) -> Option<usize> {
         if let Some(rec) = self.live_placement.get(&window_id) {
             if rec.pid == pid && rec.idx < self.workspaces.len() {
                 log::info!(
@@ -90,99 +81,7 @@ impl StateManager {
                 return Some(rec.idx);
             }
         }
-        let title = self.os.window_title(window_id);
-        let pos = self
-            .placement_memory
-            .iter()
-            .position(|rec| rec.matches(bundle, title.as_deref()));
-        if let Some(pos) = pos {
-            let rec = self.placement_memory.remove(pos);
-            if let Some(idx) = self
-                .displays
-                .index_of_name(&self.workspaces, &rec.workspace)
-            {
-                log::info!(
-                    "Placement memory: window {} (bundle {:?}, title {:?}) re-homed to {} ({})",
-                    window_id,
-                    bundle,
-                    title,
-                    rec.workspace,
-                    idx
-                );
-                return Some(idx);
-            }
-        }
-        self.successor_home(window_id, pid, bundle, title.as_deref())
-    }
-
-    /// The successor ask: macOS keeps a CGWindowID for a window's
-    /// lifetime *within a login session*, so a new WindowId carrying the
-    /// same pid + durable identity while the recorded id no longer
-    /// lists is that window's successor — the app-relaunch and
-    /// window-recreation shapes, the one gap the WindowId key can't
-    /// cover on its own. Exactly-one candidate admits the transfer (the
-    /// stale record is consumed; the routing tail re-notes the home
-    /// under the new id); an ambiguous match or none behaves as today.
-    ///
-    /// The discriminator is the pid's **current listing**: a live,
-    /// listed sibling with the same identity is a sibling, not a
-    /// successor. A `NoAnswer` listing judges nothing (blackout
-    /// signature) — no transfer through a blackout. The poll runs only
-    /// when a same-identity candidate exists, so ordinary routing pays
-    /// nothing.
-    fn successor_home(
-        &mut self,
-        window_id: WindowId,
-        pid: i32,
-        bundle: Option<&str>,
-        title: Option<&str>,
-    ) -> Option<usize> {
-        let candidates: Vec<WindowId> = self
-            .live_placement
-            .iter()
-            .filter(|(old_id, rec)| {
-                **old_id != window_id
-                    && rec.pid == pid
-                    && super::session::identity_hit(
-                        rec.bundle.as_deref(),
-                        rec.title.as_deref(),
-                        bundle,
-                        title,
-                    )
-            })
-            .map(|(old_id, _)| *old_id)
-            .collect();
-        if candidates.is_empty() {
-            return None;
-        }
-        let poll = self.os.poll_windows_for_pid(pid);
-        let listed = StateManager::listing_evidence(&poll)?;
-        // The successor must itself be listed: a fresh id the app does
-        // not (yet) list is too thin to admit a transfer — an app
-        // mid-launch answers empty or partial, and guessing against a
-        // poll that says nothing is how rediscovery mis-homes windows.
-        if !listed.contains(&window_id) {
-            return None;
-        }
-        let successors: Vec<WindowId> = candidates
-            .into_iter()
-            .filter(|old| !listed.contains(old))
-            .collect();
-        if successors.len() != 1 {
-            return None;
-        }
-        let rec = self.live_placement.remove(&successors[0])?;
-        if rec.idx >= self.workspaces.len() {
-            return None;
-        }
-        log::info!(
-            "Placement seatbelt: window {} is the successor of unlisted window {} (pid {}) — inherits workspace {}",
-            window_id,
-            successors[0],
-            rec.pid,
-            rec.idx
-        );
-        Some(rec.idx)
+        None
     }
 
     /// Seatbelt write, the one place a placement change is recorded.
@@ -225,8 +124,8 @@ impl StateManager {
         // Records die with the pid by design (a minimized window
         // untracked by a listing misjudgment must survive), so the only
         // unbounded growth is a never-quitting app that churns
-        // WindowIds; its successor-ask candidates are always the recent
-        // ones, so the newest K per pid keep every legitimate ask.
+        // WindowIds; the newest K per pid keep every legitimate
+        // rediscovery ask.
         let mut same_pid: Vec<(WindowId, Instant)> = self
             .live_placement
             .iter()
@@ -254,12 +153,12 @@ impl StateManager {
 
     /// The durable projection: the session snapshot reads the seatbelt,
     /// not the trees. One record per noted window with at least one
-    /// identity dimension — an identity-less record could never match
-    /// at restore (`WindowPlacement::matches` needs a positive hit) and
-    /// is skipped. Parked windows are here (noted at park time, while
-    /// the identity was readable); popups are not (they re-place by
-    /// monitor rect). Workspace **names** survive the reboot; indices
-    /// do not. Reads no OS state — safe mid-blackout.
+    /// identity dimension. Parked windows are here (noted at park time,
+    /// while the identity was readable); popups are not (they re-place
+    /// by monitor rect). Workspace **names** survive the reboot; indices
+    /// do not. Reads no OS state — safe mid-blackout. The records are
+    /// diagnostic data since ADR-0005: saved, never consumed at
+    /// restore.
     pub(super) fn capture_placements(&self) -> Vec<WindowPlacement> {
         self.live_placement
             .iter()
@@ -317,16 +216,6 @@ impl StateManager {
             log::warn!("Periodic session save failed: {}", e);
             self.last_session_save = now;
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn seed_placement_memory_for_test(&mut self, records: Vec<WindowPlacement>) {
-        self.placement_memory = records;
-    }
-
-    #[cfg(test)]
-    pub(super) fn placement_memory_len_for_test(&self) -> usize {
-        self.placement_memory.len()
     }
 
     /// Move the save clock past the drain interval, mirroring the wall

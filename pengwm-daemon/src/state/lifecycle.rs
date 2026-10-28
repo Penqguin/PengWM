@@ -99,14 +99,14 @@ impl StateManager {
             return;
         }
 
-        // The one placement ask (`state::placement`): seatbelt first —
-        // the most current fact about this window — then placement
-        // memory (restore-time — what the user *did* last session).
-        // Then the config entry match (what the app *is*). Then the
-        // active workspace — unassigned windows restore where the boot
-        // finds them.
+        // The one placement ask (`state::placement`): the seatbelt —
+        // the most current fact about this window, and a rediscovery
+        // answer only (ADR-0005: a birth never re-homes to a
+        // remembered workspace). Then the config entry match (what the
+        // app *is*). Then the active workspace — unassigned windows
+        // open where the user is.
         let preferred = self
-            .where_should(window_id, pid, identity.bundle.as_deref())
+            .where_should(window_id, pid)
             .or_else(|| self.routed_workspace_for(identity))
             .unwrap_or_else(|| self.active_workspace_idx());
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
@@ -350,16 +350,16 @@ impl StateManager {
     /// remembered workspace, overflowing through the normal capacity
     /// routing (`add_window_to_workspace` → `target_with_room`) when the
     /// remembered slot no longer has room. The fallback asks the one
-    /// placement ask (`where_should` — seatbelt, then memory) before
-    /// config routing and the active workspace, so a window the store
-    /// lost and rediscovered comes home here too. Publishes bar state on
-    /// re-tile.
+    /// placement ask (`where_should` — the seatbelt, a rediscovery
+    /// answer only per ADR-0005) before config routing and the active
+    /// workspace, so a window the store lost and rediscovered comes
+    /// home here too. Publishes bar state on re-tile.
     fn reveal_tree_window(&mut self, window_id: WindowId, pid: i32, remembered: Option<usize>) {
         let preferred = remembered
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
                 let identity = self.app_identity(pid);
-                self.where_should(window_id, pid, identity.bundle.as_deref())
+                self.where_should(window_id, pid)
                     .or_else(|| self.routed_workspace_for(&identity))
                     .unwrap_or_else(|| self.active_workspace_idx())
             });

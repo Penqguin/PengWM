@@ -43,17 +43,19 @@ mod string_key_map {
 /// shadowed every later default/config change and re-saved itself on each
 /// quit (the stale-entries fork). The session owns dynamic state only:
 /// workspace topology, active seats, gaps, and the window placement
-/// memory (below) that re-homes windows after a WM restart.
+/// records (below) the seatbelt projects each save.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub version: u32,
     pub workspaces: Vec<Workspace>,
     #[serde(with = "string_key_map")]
     pub active: BTreeMap<u32, usize>,
-    /// Where each window lived at save time, matched at restore by durable
-    /// identity (pid + bundle + title — `WindowPlacement::matches`), not by
-    /// the ephemeral `WindowId`. Empty on a fresh init; old files load with
-    /// an empty default. Consumed once per window, one ask at routing.
+    /// Where each window lived at save time, identified by durable
+    /// identity (bundle + title), not by the ephemeral `WindowId`. Empty
+    /// on a fresh init; old files load with an empty default. Diagnostic
+    /// data since ADR-0005: projected every save, never consumed at
+    /// restore — a new window routes by config, then the active
+    /// workspace.
     #[serde(default)]
     pub placements: Vec<WindowPlacement>,
     pub gap_outer: f64,
@@ -61,8 +63,8 @@ pub struct Session {
 }
 
 /// One window's remembered home: the workspace **name** (names are stable
-/// across restore; indices are not) plus the identity evidence the next
-/// boot can re-verify. `WindowId` is deliberately absent — it dies with the
+/// across restore; indices are not) plus the identity evidence captured
+/// at note time. `WindowId` is deliberately absent — it dies with the
 /// daemon process. Bundle and title survive it, across a WM restart *and*
 /// a reboot; the pid is deliberately absent too — it is app-level
 /// identity, so an app's next window could wrongly inherit it.
@@ -73,39 +75,6 @@ pub struct WindowPlacement {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub workspace: String,
-}
-
-/// Does one window's durable identity describe another window's? The
-/// one identity-match contract (`WindowPlacement::matches` and the
-/// seatbelt's successor ask share it): every evidence pair both sides
-/// can supply must agree, and at least one window-level dimension must
-/// positively match — an identity-less record is never a hit (it would
-/// match everything). Evidence one side cannot read does not veto.
-pub fn identity_hit(
-    bundle_a: Option<&str>,
-    title_a: Option<&str>,
-    bundle_b: Option<&str>,
-    title_b: Option<&str>,
-) -> bool {
-    if bundle_a.is_some() && bundle_b.is_some() && bundle_a != bundle_b {
-        return false;
-    }
-    if title_a.is_some() && title_b.is_some() && title_a != title_b {
-        return false;
-    }
-    bundle_a.is_some_and(|b| bundle_b == Some(b)) || title_a.is_some_and(|t| title_b == Some(t))
-}
-
-impl WindowPlacement {
-    /// Does this record describe the window behind (`bundle`, `title`)?
-    /// Every evidence pair both sides can supply must agree, and at least
-    /// one window-level dimension must positively match — a record with no
-    /// identity evidence is never a hit (it would match everything).
-    /// Evidence one side cannot read does not veto: the boot where the
-    /// bundle read times out still re-homes by title.
-    pub fn matches(&self, bundle: Option<&str>, title: Option<&str>) -> bool {
-        identity_hit(self.bundle.as_deref(), self.title.as_deref(), bundle, title)
-    }
 }
 
 impl Session {
@@ -297,47 +266,6 @@ mod tests {
         let sess = snapshot_from(&[ws], &BTreeMap::from([(2, 0)]), vec![], 10.0, 5.0);
         assert_eq!(sess.workspaces[0].monitor_id, 2);
         assert_eq!(sess.active.get(&2), Some(&0));
-    }
-
-    #[test]
-    fn placement_matches_by_every_evidence_pair_both_sides_supply() {
-        let rec = WindowPlacement {
-            bundle: Some("org.mozilla.firefox".into()),
-            title: Some("PengWM — Development".into()),
-            workspace: "Browsing".into(),
-        };
-        assert!(rec.matches(Some("org.mozilla.firefox"), Some("PengWM — Development")));
-        // Different title: never a hit, even with an identical bundle.
-        assert!(!rec.matches(Some("org.mozilla.firefox"), Some("Untitled")));
-        // Different bundle: never a hit (two apps spawning identically-titled
-        // windows must not steal each other's record).
-        assert!(!rec.matches(Some("com.apple.Preview"), Some("PengWM — Development")));
-        // Different title AND different bundle: inadmissible (the window was
-        // recreated, its identity drifted).
-        assert!(!rec.matches(Some("com.apple.Preview"), Some("Untitled")));
-        // A record with no identity evidence matches nothing.
-        let bare = WindowPlacement {
-            bundle: None,
-            title: None,
-            workspace: "Browsing".into(),
-        };
-        assert!(!bare.matches(Some("org.mozilla.firefox"), Some("Something")));
-        assert!(!bare.matches(None, None));
-    }
-
-    #[test]
-    fn placement_holds_when_one_side_cannot_read() {
-        // Evidence one side can't read must not veto: the boot where the
-        // bundle read times out still re-homes by title.
-        let rec = WindowPlacement {
-            bundle: Some("org.mozilla.firefox".into()),
-            title: Some("Untitled".into()),
-            workspace: "Browsing".into(),
-        };
-        assert!(rec.matches(None, Some("Untitled")));
-        // ... and by bundle when the title went away (retitled windows keep
-        // their home; re-bundled ones don't deserve it).
-        assert!(rec.matches(Some("org.mozilla.firefox"), None));
     }
 
     #[test]

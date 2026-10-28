@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::super::session::{self, WindowPlacement};
+use super::super::session;
 use super::common::*;
 
 fn tmp_session_path(name: &str) -> std::path::PathBuf {
@@ -8,23 +8,15 @@ fn tmp_session_path(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn seatbelt_outranks_durable_memory_at_rediscovery() {
-    // The seatbelt is the most current fact about a window: when both
-    // stores know a home, the rediscovered window returns to where it
-    // *was this session*, and the durable record stays unconsumed.
+fn the_seatbelt_returns_the_rediscovered_window() {
+    // The seatbelt is the most current fact about a window: the
+    // rediscovered window returns to where it *was this session*,
+    // never the active-workspace fallback.
     let (mut sm, handle) = setup_with_handle(1);
     handle.inject_bundle_id(42, "com.test".into());
     handle.inject_title(100, "W100".into());
     sm.on_window_created(100, 42);
     assert!(sm.workspaces[0].find_window(100).is_some());
-
-    // A durable record that would send the same identity somewhere else.
-    let target_name = sm.workspaces[2].name.clone();
-    sm.seed_placement_memory_for_test(vec![WindowPlacement {
-        bundle: Some("com.test".into()),
-        title: Some("W100".into()),
-        workspace: target_name,
-    }]);
 
     // The loss the seatbelt exists for: the store drops the window
     // without a destroy funnel (a misjudgment path), then it is
@@ -37,42 +29,22 @@ fn seatbelt_outranks_durable_memory_at_rediscovery() {
         sm.workspaces[0].find_window(100).is_some(),
         "the rediscovered window must return to its last workspace (the seatbelt)"
     );
-    assert!(
-        sm.workspaces[2].find_window(100).is_none(),
-        "the durable record must not win over the seatbelt"
-    );
-    assert_eq!(
-        sm.placement_memory_len_for_test(),
-        1,
-        "the durable record stays unconsumed when the seatbelt hits"
-    );
 }
 
 #[test]
-fn durable_memory_rehomes_when_the_seatbelt_does_not_know() {
-    // A window the seatbelt has never seen (no placement change noted
-    // for it) falls through to the durable memory — the restore-time
-    // record of what the user did last session.
+fn a_fresh_window_routes_by_config_then_active_workspace() {
+    // ADR-0005: a birth is a birth. A window the seatbelt has never
+    // seen (no placement change noted for it) routes through config
+    // routing and the active workspace — never a remembered home.
     let (mut sm, handle) = setup_with_handle(1);
     handle.inject_bundle_id(42, "com.test".into());
     handle.inject_title(300, "T300".into());
-    let target_name = sm.workspaces[2].name.clone();
-    sm.seed_placement_memory_for_test(vec![WindowPlacement {
-        bundle: Some("com.test".into()),
-        title: Some("T300".into()),
-        workspace: target_name,
-    }]);
 
     sm.on_window_created(300, 42);
 
     assert!(
-        sm.workspaces[2].find_window(300).is_some(),
-        "the memory hit re-homes the window"
-    );
-    assert_eq!(
-        sm.placement_memory_len_for_test(),
-        0,
-        "the memory hit is consumed once"
+        sm.workspaces[0].find_window(300).is_some(),
+        "the unconfigured new window takes the active workspace"
     );
 }
 
@@ -105,9 +77,11 @@ fn projection_includes_parked_and_excludes_unrouted_and_popups() {
 }
 
 #[test]
-fn save_session_round_trip_rehomes_after_reload() {
-    // The composition the old cfg!(test) guard made untestable:
-    // arrange → save → (reload) → boot → re-home.
+fn save_session_round_trip_persists_without_rehoming() {
+    // ADR-0005: placements are projected into the snapshot and round-trip
+    // through the file — but the next boot never consumes them. The
+    // reloaded record stays on disk as diagnostic data while the new
+    // window routes by config, then the active workspace.
     let (mut sm, handle) = setup_with_handle(1);
     handle.inject_bundle_id(42, "com.test".into());
     handle.inject_title(100, "T100".into());
@@ -122,21 +96,19 @@ fn save_session_round_trip_rehomes_after_reload() {
     assert_eq!(loaded.placements.len(), 1);
     assert_eq!(loaded.placements[0].workspace, sm.workspaces[1].name);
 
-    // The next boot: memory seeded from the loaded snapshot re-homes the
-    // window through the normal routing funnel (ADR-0003).
+    // The next boot: the same identity is born again and routes as a
+    // birth — the saved placement is not consulted.
     let (mut sm2, handle2) = setup_with_handle(1);
     handle2.inject_bundle_id(42, "com.test".into());
     handle2.inject_title(100, "T100".into());
-    sm2.seed_placement_memory_for_test(loaded.placements);
     sm2.on_window_created(100, 42);
     assert!(
-        sm2.workspaces[1].find_window(100).is_some(),
-        "the reloaded memory returns the window to its saved workspace"
+        sm2.workspaces[0].find_window(100).is_some(),
+        "the new window takes the active workspace, not the saved home"
     );
-    assert_eq!(
-        sm2.placement_memory_len_for_test(),
-        0,
-        "the record is consumed once"
+    assert!(
+        sm2.workspaces[1].find_window(100).is_none(),
+        "the saved placement must not re-home the new window"
     );
     let _ = std::fs::remove_file(&path);
 }
@@ -208,105 +180,6 @@ fn quench_the_wake_repro_end_to_end() {
 }
 
 #[test]
-fn successor_window_inherits_the_originals_home() {
-    // The re-created-window shape: macOS keeps a CGWindowID for a
-    // window's lifetime within a login session, so a new id carrying
-    // the same pid + durable identity while the recorded id no longer
-    // lists is that window's successor — it inherits the home instead
-    // of falling through to the active workspace.
-    let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(42, "com.test".into());
-    handle.inject_title(100, "T100".into());
-    sm.on_window_created(100, 42);
-    sm.move_focused_to_workspace(1);
-    assert!(sm.workspaces[1].find_window(100).is_some());
-
-    // The app re-creates the window: the old id vanishes from the
-    // listing, a new id appears with the same identity.
-    handle.unlist_window(42, 100);
-    handle.inject_window(42, 999);
-    handle.inject_title(999, "T100".into());
-    sm.on_window_created(999, 42);
-
-    assert!(
-        sm.workspaces[1].find_window(999).is_some(),
-        "the successor inherits the original's hidden workspace home"
-    );
-    assert!(
-        sm.workspaces[0].find_window(999).is_none(),
-        "the active workspace must not gain the successor"
-    );
-    assert!(
-        !sm.live_placement.contains_key(&100),
-        "the stale record is consumed by the transfer"
-    );
-}
-
-#[test]
-fn successor_rejects_a_listed_sibling() {
-    // A live, listed window with the same identity is a sibling, not a
-    // successor: the new window routes as today (active workspace) and
-    // the sibling's record is untouched.
-    let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(42, "com.test".into());
-    handle.inject_title(100, "T100".into());
-    sm.on_window_created(100, 42);
-    sm.move_focused_to_workspace(1);
-    assert!(sm.workspaces[1].find_window(100).is_some());
-
-    // A genuinely NEW window, same identity — and the original still
-    // lists. The new window is itself listed, so the ask runs; the
-    // listed sibling is filtered out, not transferred.
-    handle.inject_window(42, 999);
-    handle.inject_title(999, "T100".into());
-    sm.on_window_created(999, 42);
-
-    assert!(
-        sm.workspaces[0].find_window(999).is_some(),
-        "the new window takes the active workspace (successor ask found no unlisted candidate)"
-    );
-    assert!(
-        sm.workspaces[1].find_window(999).is_none(),
-        "the sibling's home is not stolen"
-    );
-    assert!(
-        sm.live_placement.contains_key(&100),
-        "the sibling's record survives"
-    );
-}
-
-#[test]
-fn ambiguous_successors_transfer_nothing() {    // Two same-identity records both unlisted: which is this window's
-    // predecessor? Unknowable — exactly-one is the admission rule;
-    // ambiguity transfers nothing.
-    let (mut sm, handle) = setup_with_handle(1);
-    handle.inject_bundle_id(42, "com.test".into());
-    handle.inject_title(100, "T100".into());
-    handle.inject_title(101, "T100".into());
-    sm.on_window_created(100, 42);
-    sm.store.register(101, 42);
-    sm.workspaces[0].add_window(101, None);
-    sm.note_where(101);
-
-    // Both originals leave the listing; one new window appears.
-    handle.unlist_window(42, 100);
-    handle.unlist_window(42, 101);
-    handle.inject_window(42, 999);
-    handle.inject_title(999, "T100".into());
-    sm.on_window_created(999, 42);
-
-    assert!(
-        sm.workspaces.iter().all(|ws| ws.find_window(999).is_none())
-            || sm.workspaces[0].find_window(999).is_some(),
-        "the successor routes as today (active workspace), not to a guessed home"
-    );
-    assert!(
-        sm.live_placement.contains_key(&100) && sm.live_placement.contains_key(&101),
-        "ambiguous records transfer nothing"
-    );
-}
-
-#[test]
 fn age_helper_mirrors_the_interval() {
     // Documents the helper's contract: one call moves the save clock
     // past the drain interval.
@@ -320,7 +193,7 @@ fn seatbelt_caps_records_per_pid() {
     // A never-quitting app that churns WindowIds (browsers, Electron) is
     // the one unbounded growth the seatbelt map had: entries die with the
     // pid by design, so the cap is the only bound. The newest records per
-    // pid survive — the successor ask's legitimate candidates are always
+    // pid survive — a rediscovery ask's legitimate candidates are always
     // the recent ones.
     let (mut sm, handle) = setup_with_handle(1);
     handle.inject_bundle_id(42, "com.test".into());

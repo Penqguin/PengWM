@@ -108,11 +108,6 @@ pub struct StateManager {
     /// cannot run inline. See `state::blackout` — the one owner of the
     /// resync lifecycle and the no-judgment-while-blackout rules.
     wake_resync: Option<WakeResync>,
-    /// Placement memory from the last session: durable (bundle, title →
-    /// workspace name) records consumed through the one routing ask
-    /// (`state::placement::where_should`). Restore input, never a
-    /// live membership owner (ADR-0003).
-    placement_memory: Vec<session::WindowPlacement>,
     /// The in-session placement seatbelt: window → (pid, workspace index,
     /// bundle, title), re-noted at every placement change by
     /// `state::placement::note_where`. A rediscovered window — untracked
@@ -121,8 +116,9 @@ pub struct StateManager {
     /// must not fall through to the active-workspace fallback; that is
     /// the wake repro. Deliberately *not* evicted on
     /// `on_window_destroyed` (see the module doc); entries die with the
-    /// pid. In-memory only: cross-restart placement is
-    /// `placement_memory`'s job — this is rediscovery *input*, never a
+    /// pid. In-memory only: the session projection records placements
+    /// for diagnostics, but a birth never re-homes from remembered
+    /// placement (ADR-0005) — this is rediscovery *input*, never a
     /// live membership owner (ADR-0003).
     live_placement: BTreeMap<WindowId, placement::PlacementRecord>,
     /// Set by `note_where` on any placement change; the tick drains it
@@ -280,9 +276,6 @@ impl StateManager {
             // the startup second pass.
             last_window_sweep: Instant::now() - Duration::from_secs(5),
             wake_resync: None,
-            placement_memory: maybe_session
-                .map(|sess| sess.placements.clone())
-                .unwrap_or_default(),
             live_placement: BTreeMap::new(),
             session_dirty: false,
             last_session_save: Instant::now(),
@@ -503,7 +496,7 @@ impl StateManager {
                 entry.idx
             } else {
                 let identity = self.app_identity(pid);
-                self.where_should(wid, pid, identity.bundle.as_deref())
+                self.where_should(wid, pid)
                     .or_else(|| self.routed_workspace_for(&identity))
                     .unwrap_or_else(|| self.active_workspace_idx())
             };
