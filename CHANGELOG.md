@@ -29,7 +29,17 @@
   orders the pill windows on the main thread. The daemon keeps none
   of the window machinery (no `NSWindow`, no subclass, no
   coordinate-facing AppKit in the daemon at all).
+- **Fixed: keybinds acted from the wrong monitor after clicks.** The
+  workspace-resolution ask consulted the pid-membership heuristic
+  *before* the explicit focused-output cell — against its own
+  documented order ("the pid heuristic is fallback only"). With a
+  stale `frontmost_pid` (observable in the field trace: `focus_display
+  Left workspace 0 -> 1` while the click had named a window on the
+  other monitor), "where am I" was hijacked from fresh focus truth and
+  every directional keybind answered from the wrong side; the settle
+  commit now also keeps the frontmost cell current for the fallback.
 - **New: full WM reset on any topology change.** Incremental topology
+
   repair patched member state piecemeal, and every observed failure
   this session was some stale derived corner surviving it (a band
   ratcheted from a width pin, seats pointing at a monitor that no

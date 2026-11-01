@@ -283,6 +283,20 @@ impl DisplaySet {
         pid_to_windows: &HashMap<i32, Vec<WindowId>>,
         frontmost_pid: Option<i32>,
     ) -> usize {
+        // The explicit cell answers FIRST — the focus-truth memory our
+        // own keybinds, focus-display commands and settled click commits
+        // keep current (see `commit_settled_focus`). The pid-membership
+        // heuristic below is the documented FALLBACK: consulted first
+        // (drift) it watched a stale frontmost pid hijack "where am I"
+        // from freshly-clicked truth — the user's "clicking doesn't
+        // register" report, keybinds acting from the wrong monitor.
+        if let Some(mon) = self.focused_output {
+            if let Some(&idx) = self.active.get(&mon) {
+                if idx < workspaces.len() {
+                    return idx;
+                }
+            }
+        }
         if let Some(pid) = frontmost_pid {
             if let Some(windows) = pid_to_windows.get(&pid) {
                 for &window_id in windows {
@@ -291,13 +305,6 @@ impl DisplaySet {
                             return idx;
                         }
                     }
-                }
-            }
-        }
-        if let Some(mon) = self.focused_output {
-            if let Some(&idx) = self.active.get(&mon) {
-                if idx < workspaces.len() {
-                    return idx;
                 }
             }
         }

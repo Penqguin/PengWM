@@ -901,6 +901,10 @@ impl StateManager {
             }
         }
         let frontmost = self.os.frontmost_pid();
+        // The frontmost cell feeds the active-workspace fallback: fresh
+        // per settle so it never falls so far behind reality that the
+        // fallback answers a process that isn't the one the user is in.
+        self.frontmost_pid = frontmost;
         let window = frontmost.and_then(|pid| self.os.focused_window_for_pid(pid));
         match window {
             Some(window_id) => {
