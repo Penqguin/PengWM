@@ -8,6 +8,7 @@ mod lifecycle;
 mod memory;
 mod persistence;
 mod popup;
+mod reset;
 mod topology;
 mod untracked;
 mod wake;

@@ -1,7 +1,26 @@
 # Changelog
 
-## v0.6.12 — HUD hotplug + band accuracy (unreleased)
+## v0.6.12 — HUD hotplug + WM reset on topology change (unreleased)
 
+- **New: full WM reset on any topology change.** Incremental topology
+  repair patched member state piecemeal, and every observed failure
+  this session was some stale derived corner surviving it (a band
+  ratcheted from a width pin, seats pointing at a monitor that no
+  longer exists, a CG id change orphaning state keyed by the old id).
+  Any actual topology change — add/Remove/Resize events, missed
+  events caught by the 2s tick, wake resync — now resets the whole
+  derived world instead of repairing it: fresh `assemble` (no
+  session), fresh store, fresh write cache, bands discarded, then
+  every tracked **member** re-routes through the same
+  `WindowCreated` handler boot feeds (config routing → active seat).
+  What survives is exactly what the OS owns: element caches, keybind
+  state, the menubar contract. What does not: popup parking, magnify
+  pins, manual moves — members re-route as births; that is what
+  "reset" means. Guarded by a 1.5s cooldown (a replug's event burst
+  resets once; suppressed changes fall back to the incremental heal)
+  and a zero-display guard (mid-un-plug never assembles against
+  nothing). Verified by four new state tests plus the whole topology
+  suite, which now heals through the same path unchanged.
 - **Fixed: HUD never drew the second monitor after it was plugged in
   while PengWM ran.** Two layers of fix:
   - Placement read AppKit's `NSScreen` list, which lags CG after

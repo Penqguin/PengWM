@@ -24,6 +24,7 @@ pub mod lifecycle;
 pub mod monitors_wake;
 pub mod placement;
 pub mod reconcile;
+pub mod reset;
 pub mod session;
 pub mod store;
 #[cfg(test)]
@@ -146,6 +147,9 @@ pub struct StateManager {
     /// When the current flash expires (`None` = never drawn / hidden).
     /// `state::hud` owns the draw/hide decisions around it.
     hud_hide_at: Option<Instant>,
+    /// When the last full WM reset ran (`state::reset`) — the hotplug
+    /// cooldown guard so a replug's event burst cannot reset-storm.
+    last_wm_reset: Option<Instant>,
 }
 
 /// A wake resync waiting for the AX subsystem to come back.
@@ -303,6 +307,7 @@ impl StateManager {
             hud_enabled: settings.hud_enabled,
             hud_duration_ms: settings.hud_duration_ms,
             hud_hide_at: None,
+            last_wm_reset: None,
         };
 
         // Hide every workspace that isn't the active one for its monitor.

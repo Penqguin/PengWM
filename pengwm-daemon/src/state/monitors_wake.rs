@@ -29,32 +29,45 @@ impl StateManager {
     /// whose geometry healed, re-lay out the visible set, publish the bar.
     /// A no-op answer runs no machinery at all — cheap on the tick.
     pub fn run_topology_sync(&mut self) {
+        // The sync answer is only the *detection*: the no-op check is
+        // still the cheap CG query every 2s tick rides on. The repair,
+        // though, is no longer incremental — any actual change means
+        // the derived world (seats, bands, reseat coordinates, panel
+        // ids) has possibly rotted every corner at once, and the
+        // observed failure mode was exactly that: partial repairs that
+        // kept a stale corner alive (sticky band, left monitor showing
+        // nothing). "Reset the window manager": `state::reset`.
         let sync = self.displays.sync(&mut self.workspaces, &*self.os);
         if sync.is_noop() {
             return;
         }
         log::info!(
-            "topology sync: shown {:?}, hidden {:?}, re-parked {:?}, re-laid {:?}",
+            "topology changed: shown {:?}, hidden {:?}, re-parked {:?}, re-laid {:?} — resetting",
             sync.shown,
             sync.hidden,
             sync.repark,
             sync.relayout
         );
-        // Every cached "already applied" rect may name coordinates nothing
-        // serves anymore (`clear_topology` keeps pending gone-grace timers —
-        // a topology change is not death evidence).
-        self.layout_cache.clear_topology();
-        // Learned top bands die with their display: the map ratchets
-        // upward, so a stale entry would make a reconnected monitor
-        // inherit a band it may no longer enforce (the strip-size
-        // variance case). Band-only prune — keep is the *CG* id set,
-        // exactly the watch the learning probe uses.
-        let keep: Vec<u32> = self.os.active_displays().iter().map(|d| d.id).collect();
-        crate::macos::cg_display::prune_learned_top_bands(&keep);
-        self.park_topology_changes(sync.hidden, sync.repark);
-        for idx in sync.relayout {
-            if idx < self.workspaces.len() {
-                self.apply_layout(idx);
+        match self.wm_reset() {
+            Some(outcome) => {
+                log::info!(
+                    "WM reset complete: {} members re-routed into {} workspaces",
+                    outcome.members,
+                    outcome.workspaces
+                );
+            }
+            None => {
+                // Suppressed (cooldown / empty display set): fall back
+                // to the incremental repair so a settled-topology
+                // no-op never turns into a standing gap.
+                log::info!("reset suppressed — falling back to incremental sync repair");
+                self.layout_cache.clear_topology();
+                self.park_topology_changes(sync.hidden, sync.repark);
+                for idx in sync.relayout {
+                    if idx < self.workspaces.len() {
+                        self.apply_layout(idx);
+                    }
+                }
             }
         }
         self.publish_bar_state();
