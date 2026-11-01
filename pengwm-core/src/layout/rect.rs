@@ -50,6 +50,24 @@ pub fn rects_displaced(a: Rect, b: Rect) -> bool {
     !rects_close(a, b, LAYOUT_EPSILON)
 }
 
+/// Tile displacement with the minimum-width wedge honored: a wider-than-
+/// target window body (a real app refusing to shrink past its own minimum,
+/// *exactly* the Firefox `582.5 → 599` signature) around its ordered
+/// top-left is not displaced — the writer tolerates it, so the sweep must
+/// too, or the two funnels fight every 2 seconds (re-write, re-place,
+/// visible vibration). A *narrower* body, a displaced position, or a
+/// wrong height is real displacement (wrong split, genuine drift).
+pub const MIN_WIDTH_WEDGE_PX: f64 = 40.0;
+
+pub fn rects_displaced_of_tile(target: Rect, actual: Rect) -> bool {
+    let width_ok = actual.width + LAYOUT_EPSILON >= target.width
+        && actual.width <= target.width + MIN_WIDTH_WEDGE_PX;
+    let x_ok = (actual.x - target.x).abs() <= LAYOUT_EPSILON;
+    let y_ok = (actual.y - target.y).abs() <= LAYOUT_EPSILON;
+    let height_ok = (actual.height - target.height).abs() <= LAYOUT_EPSILON;
+    !(x_ok && y_ok && height_ok && width_ok)
+}
+
 pub fn calculate_layout(
     node_id: NodeId,
     bounding: Rect,

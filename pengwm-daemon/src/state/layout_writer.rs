@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use pengwm_core::layout::{
-    rects_close, rects_displaced, Rect, WriteOutcome, DISPLACE_GRACE, LAYOUT_EPSILON,
+    rects_close, rects_displaced, rects_displaced_of_tile, Rect, WriteOutcome, DISPLACE_GRACE,
+    LAYOUT_EPSILON,
 };
 use pengwm_core::tree::WindowId;
 
@@ -469,7 +470,10 @@ impl LayoutWriteCache {
     /// Full-rect displacement check for the misplaced sweep: true when the
     /// OS rect genuinely disagrees with the tiled target. Recent writes are
     /// animation settling, not external drift. The caller invalidates and
-    /// re-applies on true.
+    /// re-applies on true. The check goes through the *tile*-shaped
+    /// tolerance (`rects_displaced_of_tile` — min-width wedge honored),
+    /// matching the writer's own verdict: the sweep and the writer must
+    /// never fight, and the observed Firefox wedge warred here twice.
     pub(super) fn is_displaced(
         &self,
         window_id: WindowId,
@@ -477,7 +481,7 @@ impl LayoutWriteCache {
         actual: Rect,
         now: Instant,
     ) -> bool {
-        if !rects_displaced(actual, target) {
+        if !rects_displaced_of_tile(target, actual) {
             return false;
         }
         if let Some((_, written_at)) = self.applied_rects.get(&window_id) {

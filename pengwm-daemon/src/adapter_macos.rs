@@ -515,12 +515,25 @@ impl MacOsAdapter {
                         lowered,
                         levels.get(&window_id).copied(),
                     );
-                    log::info!(
-                        "classified win={} pid={} class={:?}",
-                        window_id,
-                        pid,
-                        gated
-                    );
+                    // One line per *manageable* classification — the
+                    // log-level signal the Firefox-dialog work needs.
+                    // Unmanageable (sheets/unknowns) re-arrive on every
+                    // sweep forever (never cached): debug only.
+                    if gated.is_manageable() {
+                        log::info!(
+                            "classified win={} pid={} class={:?}",
+                            window_id,
+                            pid,
+                            gated
+                        );
+                    } else {
+                        log::debug!(
+                            "classified win={} pid={} class={:?} (unmanageable, uncached)",
+                            window_id,
+                            pid,
+                            gated
+                        );
+                    }
                     if !gated.is_manageable() {
                         continue;
                     }

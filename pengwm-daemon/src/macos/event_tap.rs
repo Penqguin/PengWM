@@ -136,6 +136,16 @@ unsafe extern "C" fn event_tap_callback(
 
     let filtered_flags = flags & (MODIFIER_CMD | MODIFIER_ALT | MODIFIER_CTRL | MODIFIER_SHIFT);
 
+    // Tap audit: one line per FILTERED keydown. When the tap is alive,
+    // every chord with modifiers lands here; zero lines for chords the
+    // physical keys pressed means the tap or the OS never delivered.
+    log::debug!(
+        "[tap] keydown keycode={:#04x} flags={:#x} filtered={:#x}",
+        keycode,
+        flags,
+        filtered_flags
+    );
+
     // The prefix owns unmodified keys while armed: a bare follow-up inherits
     // the prefix modifiers (`prefix, h` behaves like `alt-h`). Everything
     // else unmodified passes through untouched as before. One lock covers
