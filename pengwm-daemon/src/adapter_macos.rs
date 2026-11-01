@@ -12,10 +12,8 @@ use crate::macos::ax_element;
 use crate::macos::ax_observer::{ObserverContext, ObserverRegistry as AxObserverRegistry};
 use crate::macos::cf_ref::CFRef;
 use crate::macos::cg_display;
-use crate::macos::cg_window_level;
-use crate::macos::hud::HudPanels;
+use crate::macos::cg_window_level::{self, window_cg_frame};
 use crate::macos::ns_workspace;
-use crate::macos::cg_window_level::window_cg_frame;
 use accessibility_sys::*;
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
@@ -46,9 +44,8 @@ pub struct MacOsAdapter {
     /// (`forget_pid` — notification or dead-pid sweep), so an app
     /// relaunch never writes through a dead app's element.
     app_elements: RefCell<HashMap<i32, CFRef<AXUIElementRef>>>,
-    /// The transient workspace HUD (Spec 0001): lazy per-display pill
-    /// panels, mutated only from the event loop's main thread.
-    hud_panels: RefCell<HudPanels>,
+    /// HUD pushes ride the bar channel — the menubar process renders.
+    bar_sender: Option<crate::bar_server::BarSender>,
 }
 
 /// The identity memo: one resolved `AppIdentity` per pid, timestamped.
@@ -59,7 +56,10 @@ struct IdentityMemo {
 }
 
 impl MacOsAdapter {
-    pub fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self {
+    pub fn with_callback(
+        callback: Box<dyn Fn(DaemonEvent) + Send>,
+        bar_sender: Option<crate::bar_server::BarSender>,
+    ) -> Self {
         Self {
             observer_registry: AxObserverRegistry::new(),
             ctx: Box::new(ObserverContext::new(callback)),
@@ -67,7 +67,7 @@ impl MacOsAdapter {
                 entries: HashMap::new(),
             }),
             app_elements: RefCell::new(HashMap::new()),
-            hud_panels: RefCell::new(HudPanels::new()),
+            bar_sender,
         }
     }
 
@@ -833,12 +833,22 @@ impl OsAdapter for MacOsAdapter {
             .and_then(|identity| identity.name)
     }
 
+    /// Push the HUD pills to the menubar process — which owns the real
+    /// windows (Spec 0001 amendment: pill rendering lives where AppKit's
+    /// screen-list maintenance works; the daemon plans and pushes). A
+    /// missing bar sender (no server was wired) drops the ask.
     fn show_hud(&self, cards: &[crate::adapter::HudCard]) {
-        self.hud_panels.borrow_mut().show(cards);
+        if let Some(sender) = &self.bar_sender {
+            sender.send(pengwm_core::command::BarMessage::Hud {
+                cards: cards.to_vec(),
+            });
+        }
     }
 
     fn hide_hud(&self) {
-        self.hud_panels.borrow_mut().hide();
+        if let Some(sender) = &self.bar_sender {
+            sender.send(pengwm_core::command::BarMessage::HudHide);
+        }
     }
 }
 

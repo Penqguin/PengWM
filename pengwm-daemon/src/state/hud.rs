@@ -36,6 +36,12 @@ impl StateManager {
         // Deterministic reading order: display position, not CG's
         // nondeterministic enumeration order. Left to right, then top.
         displays.sort_by_key(|d| (d.origin.0, d.origin.1));
+        // The pill centers arrive precomputed in AppKit global space
+        // (bottom-left origin, the one space the menubar's NSWindow
+        // placement speaks natively). Formula verified live: a 1180x820
+        // display at CG y=153 next to a 1169-tall primary gives frame
+        // origin.y 196; the usable-area center lands correspondingly.
+        let main_h = crate::macos::cg_display::raw_main_height();
         displays
             .into_iter()
             .map(|d| {
@@ -51,6 +57,10 @@ impl StateManager {
                     name,
                     focused: focused == Some(d.id),
                     prefix_armed,
+                    center: (
+                        d.origin.0 as f64 + d.size.0 as f64 / 2.0,
+                        main_h - (d.origin.1 as f64 + d.size.1 as f64 / 2.0),
+                    ),
                 }
             })
             .collect()
@@ -119,6 +129,7 @@ mod tests {
             name: "Browsing".into(),
             focused: false,
             prefix_armed,
+            center: (0.0, 0.0),
         }
     }
 

@@ -2,6 +2,21 @@
 
 ## v0.6.12 — HUD hotplug + WM reset on topology change (unreleased)
 
+- **Moved: pill rendering into the menubar process.** The daemon drew
+  its own pill windows, and after every hotplug AppKit's screen cache
+  in that process defaulted them to the primary's top-left (the
+  daemon runs its own run loop, so AppKit's screen-list maintenance —
+  which the constraint/refresh workarounds kept losing to — never
+  engages). The menubar, running a real `NSApplication.run()` loop,
+  maintains its screens the normal way: the daemon now plans the
+  cards (dead-center precomputed in AppKit space from the same
+  display snapshot the tiler uses — pill and tile placement can never
+  disagree), pushes them over the existing bar channel
+  (`BarMessage::Hud` / `HudHide`, cached + replayed alongside
+  `State`), and the menubar's 30 ms timer drain creates/restyles/
+  orders the pill windows on the main thread. The daemon keeps none
+  of the window machinery (no `NSWindow`, no subclass, no
+  coordinate-facing AppKit in the daemon at all).
 - **New: full WM reset on any topology change.** Incremental topology
   repair patched member state piecemeal, and every observed failure
   this session was some stale derived corner surviving it (a band

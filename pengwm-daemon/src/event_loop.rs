@@ -65,11 +65,17 @@ impl EventLoop {
     ) -> (Self, mpsc::Sender<DaemonEvent>) {
         let (tx, rx) = mpsc::channel(256);
         let event_tx = tx.clone();
-        let os: Box<dyn OsAdapter> =
-            Box::new(MacOsAdapter::with_callback(Box::new(move |event| {
+        // One bar server for the whole app: the menubar's UI state and
+        // the HUD pill pushes ride the same channel (the menubar-side
+        // rendering decision — see state/hud + bar_server docs).
+        let bar_sender = crate::bar_server::spawn_bar_server();
+        let os: Box<dyn OsAdapter> = Box::new(MacOsAdapter::with_callback(
+            Box::new(move |event| {
                 let _ = event_tx.try_send(event);
-            })));
-        Self::new_with_adapter(keybinds, prefix, os, rx, tx.clone())
+            }),
+            Some(bar_sender.clone()),
+        ));
+        Self::assemble(keybinds, prefix, os, rx, tx.clone(), bar_sender)
     }
 
     /// Test seam: inject a pre-built adapter (e.g. `TestAdapter`) so the loop
@@ -83,8 +89,22 @@ impl EventLoop {
         tx: mpsc::Sender<DaemonEvent>,
     ) -> (Self, mpsc::Sender<DaemonEvent>) {
         let bar_sender: BarSender = spawn_bar_server();
+        Self::assemble(keybinds, prefix, os, rx, tx, bar_sender)
+    }
+
+    /// The construction both entry points share. `bar_sender` arrives
+    /// from the caller so the daemon-side adapter and the state agree on
+    /// ONE server instance.
+    fn assemble(
+        keybinds: Arc<Mutex<KeybindConfig>>,
+        prefix: Arc<Mutex<PrefixKey>>,
+        os: Box<dyn OsAdapter>,
+        rx: mpsc::Receiver<DaemonEvent>,
+        tx: mpsc::Sender<DaemonEvent>,
+        bar_sender: BarSender,
+    ) -> (Self, mpsc::Sender<DaemonEvent>) {
         let settings = crate::config::Settings::load();
-        let menubar_pid = if settings.menubar.enabled {
+        let menubar_pid = if settings.menubar.enabled && !cfg!(test) {
             spawn_menubar_process()
         } else {
             log::info!("menubar.enabled=false — not spawning pengwm-menubar");

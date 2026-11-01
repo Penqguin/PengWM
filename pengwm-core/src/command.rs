@@ -340,6 +340,56 @@ pub struct WorkspaceInfo {
     pub focused_window: Option<WindowId>,
 }
 
+/// One monitor's transient HUD pill (Spec 0001). The daemon builds
+/// these from the current snapshot and pushes the batch to the
+/// menubar process, which owns the pill windows — pill rendering lives
+/// in the menubar because only a real `NSApplication.run()` process
+/// gets AppKit's screen-list maintenance the normal way (the daemon
+/// process variant produced clamps and default placements on freshly
+/// re-plugged displays). The menubar decides each pill's size from its
+/// text and dead-centers it around the precomputed center.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HudCard {
+    /// The CG display id the card belongs to. The menubar keeps one
+    /// panel per id and retires those whose display leaves.
+    pub display_id: u32,
+    /// 1-based global workspace ordinal (config order), as `workspace-N`
+    /// addresses it.
+    pub number: usize,
+    /// Workspace display name.
+    pub name: String,
+    /// True on the focused monitor — the menubar accents its pill.
+    pub focused: bool,
+    /// True while the prefix chord is armed — the menubar shows the
+    /// armed marker and (the daemon) keeps cards flowing while armed.
+    pub prefix_armed: bool,
+    /// Dead-center of the display's usable area in AppKit global
+    /// coordinates (bottom-left origin), precomputed by the daemon from
+    /// the same snapshot the tiler uses — pill placement can never
+    /// disagree with tile placement about which monitors exist or where
+    /// they sit.
+    #[serde(default)]
+    pub center: (f64, f64),
+}
+
+impl HudCard {
+    /// The full pill text: the armed prefix marker leads
+    /// (`» 2 · Browsing`); the workspace ordinal always names the
+    /// position the `workspace-N` keybind addresses. A monitor showing
+    /// no workspace (number 0) reads as a dash — an unnamed slot, not
+    /// `0 · something`.
+    pub fn label(&self) -> String {
+        if self.number == 0 {
+            return "—".to_string();
+        }
+        if self.prefix_armed {
+            format!("» {} · {}", self.number, self.name)
+        } else {
+            format!("{} · {}", self.number, self.name)
+        }
+    }
+}
+
 /// Messages the daemon pushes to a connected `pengwm-menubar` over the UI
 /// socket (/tmp/pengwm-bar.sock — the legacy name of the daemon→UI channel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,6 +398,11 @@ pub enum BarMessage {
     /// immediately instead of waiting out its disconnect grace.
     Exit,
     State(BarState),
+    /// The transient HUD pills to draw (one card per monitor). Replaces
+    /// the whole content set each push.
+    Hud { cards: Vec<HudCard> },
+    /// Order the pills out (flash expired / chord disarmed).
+    HudHide,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

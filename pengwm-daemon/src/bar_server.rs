@@ -70,14 +70,19 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
         // lock during blocking I/O, so a slow bar never stalls others.
         let clients: Arc<Mutex<Vec<tokio::sync::mpsc::Sender<Vec<u8>>>>> =
             Arc::new(Mutex::new(Vec::new()));
-        // Cache the last `State` separately so a freshly connecting
-        // menubar can reconstruct the current picture. `Exit` is not
-        // cached: the daemon would exit before the next menubar connects.
+        // Cache the last `State` snapshot and the last `Hud` pill set
+        // separately so a freshly connecting menubar can reconstruct the
+        // current picture (pills stay up for their configured flash — a
+        // reconnecting menubar mid-flash redraws rather than waiting out
+        // an expire). `Exit` is not cached: the daemon would exit before
+        // the next menubar connects.
         let last_state: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+        let last_hud: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
 
         {
             let clients = Arc::clone(&clients);
             let last_state = Arc::clone(&last_state);
+            let last_hud = Arc::clone(&last_hud);
             thread::spawn(move || loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -93,9 +98,13 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
                             }
                         });
 
-                        // Replay the cached state to the new client
+                        // Replay the cached state + pills to the new client
                         let state = last_state.lock().unwrap().clone();
                         if let Some(payload) = state {
+                            let _ = client_tx.try_send(payload);
+                        }
+                        let hud = last_hud.lock().unwrap().clone();
+                        if let Some(payload) = hud {
                             let _ = client_tx.try_send(payload);
                         }
 
@@ -131,6 +140,12 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
             match &msg {
                 BarMessage::State(_) => {
                     *last_state.lock().unwrap() = Some(payload.clone());
+                }
+                BarMessage::Hud { .. } => {
+                    *last_hud.lock().unwrap() = Some(payload.clone());
+                }
+                BarMessage::HudHide => {
+                    *last_hud.lock().unwrap() = None;
                 }
                 BarMessage::Exit => {}
             }

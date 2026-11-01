@@ -103,11 +103,18 @@ OS executor.
   retained geometry keeps the option open, and this HUD is the
   cheapest honest probe of whether the persistent surface is
   missed at all.
-- **`pengwm-hud` child process** — a second process + reconnect/
-  replay IPC contract is heavy machinery for windows that live
-  half a second; the daemon already links AppKit and runs its run
-  loop on the main thread, so it draws its own UI.
-- **Grid of the menu bar** (per-monitor text slate in the
+- **`pengwm-hud` child process** — initially rejected here in favor
+  of daemon-process drawing; the hotplug field data later reversed
+  that: a daemon running its own CFRunLoop never receives AppKit's
+  screen-list maintenance the normal way, and every manual refresh
+  path produced clamps or default placements on freshly re-plugged
+  displays. The final architecture is the iterate-but-correct one:
+  the **menubar process renders the pills** (it runs
+  `NSApplication.run()`, so AppKit maintains its screens itself), the
+  daemon plans cards — centers precomputed in AppKit space from the
+  tiler's own display snapshot — and pushes them over the existing
+  `BarMessage` channel (`Hud { cards }` / `HudHide`, cached and
+  replayed like `State`).- **Grid of the menu bar** (per-monitor text slate in the
   status item) — disqualified above: no per-second-monitor
   positioning exists.
 - **`prefix, h` default binding** — collides with focus-left

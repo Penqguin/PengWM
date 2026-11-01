@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use pengwm_core::command::{BarMessage, BarState};
 use pengwm_core::ipc::BAR_SOCKET_PATH;
 
+use crate::HudSlot;
+
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(2);
 /// How long the daemon may be unreachable before the menubar gives up and
@@ -14,11 +16,12 @@ const MAX_BACKOFF: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// Blocking subscribe loop. Connects to the daemon's bar socket and stashes the
-/// latest `BarState` into `state`. The menu is rebuilt from that shared state on
-/// every open (`NSMenuDelegate::menuWillOpen`), so no UI work happens here.
-/// While the daemon is down the snapshot is cleared and, after a grace period,
-/// the menubar exits so no orphaned icon lingers without a daemon.
-pub fn subscribe(state: Arc<Mutex<Option<BarState>>>) {
+/// latest `BarState` and pill set into their shared slots. The menu is rebuilt
+/// from that shared state on every open (`NSMenuDelegate::menuWillOpen`), and
+/// the pills are drained by the main thread's timer, so no UI work happens here.
+/// While the daemon is down the snapshots are cleared and, after a grace
+/// period, the menubar exits so no orphaned icon lingers without a daemon.
+pub fn subscribe(state: Arc<Mutex<Option<BarState>>>, hud: Arc<Mutex<HudSlot>>) {
     let mut backoff = INITIAL_BACKOFF;
     let mut down_since: Option<Instant> = None;
     loop {
@@ -28,9 +31,10 @@ pub fn subscribe(state: Arc<Mutex<Option<BarState>>>) {
                 // The daemon is reachable again; give it a fresh grace window.
                 down_since = None;
                 backoff = INITIAL_BACKOFF;
-                if let Err(e) = read_messages(stream, &state) {
+                if let Err(e) = read_messages(stream, &state, &hud) {
                     log::debug!("menubar bar connection: {e}");
                     *state.lock().unwrap() = None;
+                    *hud.lock().unwrap() = HudSlot::Hide;
                     std::thread::sleep(backoff);
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
@@ -41,6 +45,7 @@ pub fn subscribe(state: Arc<Mutex<Option<BarState>>>) {
                 // running" while the daemon is down instead of stale data.
                 // The bar server replays its cached state on reconnect.
                 *state.lock().unwrap() = None;
+                *hud.lock().unwrap() = HudSlot::Hide;
                 let now = Instant::now();
                 let down = down_since.get_or_insert(now);
                 if now.duration_since(*down) >= SHUTDOWN_GRACE {
@@ -58,7 +63,11 @@ fn connect() -> Result<UnixStream, String> {
     UnixStream::connect(BAR_SOCKET_PATH).map_err(|e| format!("connect {BAR_SOCKET_PATH}: {e}"))
 }
 
-fn read_messages(stream: UnixStream, state: &Arc<Mutex<Option<BarState>>>) -> Result<(), String> {
+fn read_messages(
+    stream: UnixStream,
+    state: &Arc<Mutex<Option<BarState>>>,
+    hud: &Arc<Mutex<HudSlot>>,
+) -> Result<(), String> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     loop {
@@ -76,6 +85,15 @@ fn read_messages(stream: UnixStream, state: &Arc<Mutex<Option<BarState>>>) -> Re
         match serde_json::from_str::<BarMessage>(trimmed) {
             Ok(BarMessage::State(s)) => {
                 *state.lock().unwrap() = Some(s);
+            }
+            // The pill set: deposited into the shared slot; the main
+            // thread's timer picks it up and drives the panels. (The
+            // connection thread never touches AppKit.)
+            Ok(BarMessage::Hud { cards }) => {
+                *hud.lock().unwrap() = HudSlot::Show(cards);
+            }
+            Ok(BarMessage::HudHide) => {
+                *hud.lock().unwrap() = HudSlot::Hide;
             }
             // Clean shutdown (`pengwm quit`): the daemon is going away on
             // purpose — exit immediately instead of waiting out the

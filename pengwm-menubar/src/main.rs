@@ -1,15 +1,28 @@
 mod connection;
 #[cfg(target_os = "macos")]
+mod hud;
+#[cfg(target_os = "macos")]
 mod macos;
 mod update_check;
 
 use std::sync::{Arc, Mutex};
 
-use pengwm_core::command::BarState;
+use pengwm_core::command::{BarState, HudCard};
 
 /// Whether this process holds Accessibility trust; polled on a background
 /// thread while the daemon is unreachable (macos.rs owns the poller).
 type TrustedState = Arc<Mutex<bool>>;
+
+/// What the main thread's timer drains: the latest pill set (`None` =
+/// hide). Lives here (platform-agnostic) because the connection thread
+/// produces it and the macOS-side timer consumes it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HudSlot {
+    Hide,
+    Show(Vec<HudCard>),
+}
+
+pub type HudSlotRef = Arc<Mutex<HudSlot>>;
 
 /// Release tag of a strictly newer PengWM release, if the update check found
 /// one (update_check.rs owns the watcher).
@@ -52,10 +65,19 @@ fn main() {
     let state: Arc<Mutex<Option<BarState>>> = Arc::new(Mutex::new(None));
     let trusted: TrustedState = Arc::new(Mutex::new(false));
     let update: UpdateState = Arc::new(Mutex::new(None));
+    #[cfg(target_os = "macos")]
+    let hud: HudSlotRef = Arc::new(Mutex::new(HudSlot::Hide));
 
     {
         let state = Arc::clone(&state);
-        std::thread::spawn(move || connection::subscribe(state));
+        #[cfg(target_os = "macos")]
+        let hud = Arc::clone(&hud);
+        std::thread::spawn(move || {
+            #[cfg(target_os = "macos")]
+            connection::subscribe(state, hud);
+            #[cfg(not(target_os = "macos"))]
+            connection::subscribe(state);
+        });
     }
     {
         let update = Arc::clone(&update);
@@ -64,7 +86,7 @@ fn main() {
 
     #[cfg(target_os = "macos")]
     {
-        macos::run(state, trusted, update);
+        macos::run(state, trusted, update, Arc::clone(&hud));
     }
     #[cfg(not(target_os = "macos"))]
     {
