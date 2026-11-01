@@ -24,14 +24,14 @@
 use std::collections::HashMap;
 
 use objc2::rc::Retained;
-use objc2::MainThreadOnly as _;
-use objc2::{msg_send, MainThreadMarker};
+use objc2::runtime::NSObjectProtocol;
+use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFont, NSTextField, NSVisualEffectBlendingMode,
+    NSBackingStoreType, NSColor, NSFont, NSScreen, NSTextField, NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSRect, NSPoint, NSSize, NSString};
 
 use crate::adapter::HudCard;
 use crate::macos::cg_display;
@@ -52,9 +52,47 @@ const FONT_SIZE: f64 = 12.0;
 const WINDOW_LEVEL: isize = 3;
 
 struct HudPanel {
-    window: Retained<NSWindow>,
+    window: Retained<HudWindow>,
     label: Retained<NSTextField>,
 }
+
+define_class!(
+    /// An `NSWindow` that refuses to be constrained into whatever
+    /// AppKit's cached screen list knows about. The daemon runs its own
+    /// CFRunLoop; AppKit's screen cache inside this process can lag a
+    /// hotplug indefinitely — the observed effect was a pill ordered
+    /// for the freshly re-plugged monitor (CG id 8, alive in the
+    /// daemon's own `active_displays()`) being clamped to the primary
+    /// screen's corner, i.e. on-screen nowhere near its display. The
+    /// one method AppKit consults for placement is
+    /// `constrainFrameRect:toScreen:`; passing the frame through
+    /// unchanged makes the window land exactly where the CG-derived
+    /// math put it, AppKit's screen list notwithstanding. Window
+    /// placement is confirmed by the window server, which *does* know
+    /// every screen, so nothing visual depends on AppKit's cache.
+    #[unsafe(super = NSWindow)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PengwmHudWindow"]
+    struct HudWindow;
+
+    // SAFETY: NSObjectProtocol imposes no runtime requirements.
+    unsafe impl NSObjectProtocol for HudWindow {}
+
+    impl HudWindow {
+        // SAFETY: matches `constrainFrameRect:toScreen:` — the hook
+        // AppKit calls to validate a window frame against a screen.
+        // Returning the frame unchanged is the entire point of the
+        // subclass: our frames are CG-derived and already correct.
+        #[unsafe(method(constrainFrameRect:toScreen:))]
+        unsafe fn constrain_frame_rect(
+            &self,
+            frame_rect: NSRect,
+            _screen: Option<&NSScreen>,
+        ) -> NSRect {
+            frame_rect
+        }
+    }
+);
 
 /// Panels keyed by CG display id. Created lazily by `show`; dropped
 /// when a display leaves the live set. All methods require the main
@@ -231,7 +269,7 @@ fn build_panel(
     mtm: MainThreadMarker,
     label: Retained<NSTextField>,
     center_ax: (f64, f64),
-) -> Option<(Retained<NSWindow>, Retained<NSTextField>)> {
+) -> Option<(Retained<HudWindow>, Retained<NSTextField>)> {
     let text_size = label.frame().size;
     let width = text_size.width + PADDING_X * 2.0;
     let height = text_size.height + PADDING_Y * 2.0;
@@ -259,14 +297,9 @@ fn build_panel(
     effect.addSubview(&label);
 
     let frame = pill_frame(width, height, center_ax);
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(mtm),
-            frame,
-            NSWindowStyleMask::Borderless,
-            NSBackingStoreType::Buffered,
-            false,
-        )
+    let window: Retained<HudWindow> = unsafe {
+        let allocated = HudWindow::alloc(mtm);
+        msg_send![allocated, initWithContentRect: frame, styleMask: NSWindowStyleMask::Borderless, backing: NSBackingStoreType::Buffered, defer: false]
     };
     window.setOpaque(false);
     window.setBackgroundColor(Some(&NSColor::clearColor()));

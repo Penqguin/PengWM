@@ -3,14 +3,26 @@
 ## v0.6.12 — HUD hotplug + band accuracy (unreleased)
 
 - **Fixed: HUD never drew the second monitor after it was plugged in
-  while PengWM ran.** Pill placement read AppKit's `NSScreen` list,
-  which lags CG after a hotplug; every flash logged
-  `hud card dropped: display N has no matching NSScreen` forever.
-  The executor now positions straight from the daemon's own
-  `active_displays()` snapshot (the same source the tiler uses —
-  pill and tiles can never disagree about which monitors exist), with
-  one AX→AppKit center-point conversion verified against
-  `NSScreen.frame` on the reporting machine.
+  while PengWM ran.** Two layers of fix:
+  - Placement read AppKit's `NSScreen` list, which lags CG after
+    a hotplug; every flash logged
+    `hud card dropped: display N has no matching NSScreen` forever.
+    The executor now positions straight from the daemon's own
+    `active_displays()` snapshot (the same source the tiler uses —
+    pill and tiles can never disagree about which monitors exist),
+    with one AX→AppKit center-point conversion verified against
+    `NSScreen.frame` on the reporting machine.
+  - CG-aware placement alone was still blocked by `NSWindow`
+    silently consulting AppKit's cached screen list: the freshly
+    re-plugged display isn't in that cache, and the pill was clamped
+    into the primary screen's corner (window server reported
+    `X=0, Y=0`). The pill window is now a one-method `NSWindow`
+    subclass that refuses `constrainFrameRect:toScreen:` — frames
+    go to the window server, which knows every screen without
+    AppKit's cache. Verified live on the reporting machine: flash
+    after replug landed both pills at their displays' usable-area
+    centers (primary 828/590, left monitor **-651/564**), zero
+    card drops.
 - **Fixed: band learning mis-attributed width pins as top bands.** A
   write pinned on *width* with its top edge exactly on target learned
   `actual.y - frame.top` as a fresh band — the sampled delta (y=238 vs
