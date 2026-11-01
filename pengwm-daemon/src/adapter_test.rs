@@ -21,7 +21,9 @@ pub enum Fault {
 
 pub struct TestAdapter {
     pub running_apps: RefCell<Vec<i32>>,
-    pub frontmost: Option<i32>,
+    /// The frontmost pid (interior-mutable for the focus-settle tests,
+    /// which toggle it mid-life through the shared `TestHandle`).
+    pub frontmost: Cell<Option<i32>>,
     pub windows: RefCell<HashMap<i32, Vec<WindowId>>>,
     pub window_pids: RefCell<HashMap<WindowId, i32>>,
     pub window_rects: RefCell<HashMap<WindowId, Rect>>,
@@ -96,7 +98,7 @@ impl Default for TestAdapter {
     fn default() -> Self {
         Self {
             running_apps: RefCell::new(Vec::new()),
-            frontmost: None,
+            frontmost: Cell::new(None),
             windows: RefCell::new(HashMap::new()),
             window_pids: RefCell::new(HashMap::new()),
             window_rects: RefCell::new(HashMap::new()),
@@ -686,7 +688,7 @@ impl OsAdapter for TestAdapter {
     }
 
     fn frontmost_pid(&self) -> Option<i32> {
-        self.frontmost
+        self.frontmost.get()
     }
 
     fn poll_windows_for_pids(&self, pids: &[i32]) -> Vec<(i32, WindowListing)> {
@@ -918,5 +920,30 @@ impl OsAdapter for TestAdapter {
             return Some(*c);
         }
         self.window_classes.borrow().get(&window_id).copied()
+    }
+}
+
+impl TestHandle {
+    /// Toggle the frontmost app mid-life (the focus-settle tests).
+    pub fn set_frontmost(&self, pid: Option<i32>) {
+        self.0.frontmost.set(pid);
+    }
+
+    /// Inject the focused window of a pid — what `focused_window_for_pid`
+    /// answers (the OS-truth seam the settle drain commits from).
+    pub fn set_focused_window(&self, pid: i32, window_id: Option<WindowId>) {
+        match window_id {
+            Some(wid) => {
+                self.0.focused_windows.borrow_mut().insert(pid, wid);
+            }
+            None => {
+                self.0.focused_windows.borrow_mut().remove(&pid);
+            }
+        }
+    }
+
+    /// The per-pid focused-window ask on the shared adapter's fake.
+    pub fn focused_pid_window(&self, pid: i32) -> Option<WindowId> {
+        self.0.focused_windows.borrow().get(&pid).copied()
     }
 }

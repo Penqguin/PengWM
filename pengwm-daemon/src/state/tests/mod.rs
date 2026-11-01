@@ -1,6 +1,7 @@
 mod bootstrap_routing;
 mod commands;
 pub(super) mod common;
+mod focus;
 mod fullscreen;
 mod hud;
 mod layout_cache_hide;

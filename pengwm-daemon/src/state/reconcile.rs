@@ -27,6 +27,10 @@ impl StateManager {
         // below do (the tick is also the prefix-armed pinner — Spec 0001).
         self.hud_tick(now);
 
+        // Focus-truth settle: after the click/bounce quiet window, commit
+        // the OS's actually-focused window (or the fallback ladder).
+        self.commit_settled_focus(now);
+
         // A wake resync waits here for AX to come back. Driven first: the
         // sweeps below all query AX, and running them against a blacked-out
         // subsystem is what starts gone-grace timers on live windows.

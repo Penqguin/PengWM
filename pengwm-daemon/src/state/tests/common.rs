@@ -32,7 +32,7 @@ pub(super) fn make_adapter(display_count: u32) -> TestAdapter {
             },
         ];
     }
-    adapter.frontmost = Some(42);
+    adapter.frontmost = std::cell::Cell::new(Some(42));
     adapter.running_apps.borrow_mut().push(42);
     adapter
         .windows
@@ -87,7 +87,7 @@ pub(in crate::state) fn setup_with_display_layout(
     let prefix = test_prefix();
     let mut adapter = TestAdapter::new();
     adapter.displays = displays;
-    adapter.frontmost = Some(42);
+    adapter.frontmost = std::cell::Cell::new(Some(42));
     adapter.running_apps.borrow_mut().push(42);
     let handle = TestHandle::new(adapter);
     let boxed: Box<dyn crate::adapter::OsAdapter> = Box::new(handle.shared());

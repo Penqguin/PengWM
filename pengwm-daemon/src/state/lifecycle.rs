@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::adapter::WindowClass;
 use crate::adapter::WindowListing;
@@ -7,7 +7,7 @@ use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::position_of_member;
 
 use super::store::{ParkReason, RoutingVerdict};
-use super::{AppIdentity, StateManager};
+use super::{AppIdentity, StateManager, FOCUS_SETTLE_MS};
 use crate::event_loop::DaemonEvent;
 
 /// Owns the window/app lifecycle: creation, destruction, hide/show, focus,
@@ -866,5 +866,76 @@ impl StateManager {
         } else {
             self.publish_bar_state();
         }
+    }
+
+    /// The dispatch seam for external `WindowFocused` events: marks the
+    /// focus memory dirty (a click/bounce storm is in play) and runs the
+    /// immediate acceptance, which stays low-latency for the common
+    /// single-event case — the tick's settle drain re-commits truth only
+    /// when the events disagreed.
+    pub fn on_window_focused_event(&mut self, window_id: WindowId) {
+        self.focus_dirty_since = Some(Instant::now());
+        self.on_window_focused(window_id);
+    }
+
+    /// The tick's focus-settle drain (Spec 0001's focus-truth rule):
+    /// once the storms of click-bounce events have been quiet for
+    /// `FOCUS_SETTLE_MS`, ask the OS what is ACTUALLY focused and commit
+    /// that — never trusting last-arrival, which the observed
+    /// `126 → 30556 → 61` triple put worst-last. The fallback ladder:
+    /// OS focused window → the last focused window (if still a visible
+    /// member) → the current workspace seat stands.
+    pub(in crate::state) fn commit_settled_focus(&mut self, now: Instant) {
+        let Some(since) = self.focus_dirty_since else {
+            return;
+        };
+        if now.duration_since(since) < Duration::from_millis(FOCUS_SETTLE_MS) {
+            return;
+        }
+        self.focus_dirty_since = None;
+        // An explicit switch owns this stretch of focus truth; the
+        // switch's own bookkeeping is the authority.
+        if let Some(until) = self.switch_debounce_until {
+            if now < until {
+                return;
+            }
+        }
+        let frontmost = self.os.frontmost_pid();
+        let window = frontmost.and_then(|pid| self.os.focused_window_for_pid(pid));
+        match window {
+            Some(window_id) => {
+                        self.last_focused_window = Some(window_id);
+                self.on_window_focused(window_id);
+            }
+            None => {
+                // Ladder (b): no OS focus (desktop clicked, keyboardless,
+                // focus claims nothing) → the last focused window, if it
+                // is still a visible tree member.
+                if let Some(wid) = self.last_focused_window {
+                    let member_of = self.find_workspace_of_any(wid);
+                    if let Some(idx) = member_of {
+                        if self.displays.is_visible(idx, &self.workspaces) {
+                            log::debug!(
+                                "focus settle: no OS focus — falling back to last focused window {}",
+                                wid
+                            );
+                            self.on_window_focused(wid);
+                            return;
+                        }
+                    }
+                }
+                // Ladder (c): no windows visible (or the last focus went
+                // hidden) — the focused workspace *seat* is the memory:
+                // nothing to change, nothing to cross-check.
+                log::debug!("focus settle: no OS focus and no visible last window — workspace seat stands");
+            }
+        }
+    }
+
+    /// True when the pending settle drain may run inside `now` (shared
+    /// with tests via the 300ms sleep convention).
+    #[cfg(test)]
+    pub(crate) fn force_focus_dirty(&mut self) {
+        self.focus_dirty_since = Some(Instant::now());
     }
 }

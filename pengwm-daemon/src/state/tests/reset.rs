@@ -25,7 +25,7 @@ fn setup_two_displays() -> (StateManager, TestHandle, tokio::sync::mpsc::Sender<
     let (tx, _rx) = mpsc::channel(64);
     let keybinds = std::sync::Arc::new(std::sync::Mutex::new(KeybindConfig::default()));
     let mut adapter = make_adapter(2);
-    adapter.frontmost = None;
+    adapter.frontmost = std::cell::Cell::new(None);
     let handle = TestHandle::new(adapter);
     let boxed: Box<dyn crate::adapter::OsAdapter> = Box::new(handle.shared());
     let (bar_tx, _) = mpsc::channel(64);

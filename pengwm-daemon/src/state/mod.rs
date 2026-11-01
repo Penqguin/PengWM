@@ -150,6 +150,18 @@ pub struct StateManager {
     /// When the last full WM reset ran (`state::reset`) — the hotplug
     /// cooldown guard so a replug's event burst cannot reset-storm.
     last_wm_reset: Option<Instant>,
+    /// When the last WindowFocused event arrived: click/bounce storms (the
+    /// observed 126→30556→61 triple in under a second, stale event last)
+    /// must not write focus memory event-by-event — the tick commits the
+    /// OS's *settled* truth after the quiet window, so WM focus follows
+    /// the actually-focused window (click or keybind), never last
+    /// arrival.
+    focus_dirty_since: Option<Instant>,
+    /// The last window focus actually committed as truth. The
+    /// no-window-in-focus fallback scry (Spec 0001's focus ladder): no
+    /// OS focus → last focused *window* → the current workspace seat
+    /// (already the memory) stands.
+    last_focused_window: Option<WindowId>,
 }
 
 /// A wake resync waiting for the AX subsystem to come back.
@@ -185,6 +197,11 @@ enum AppLabel {
 /// absorb an AX hiccup spanning many publishes, short enough that a
 /// late-naming app is relabeled within a bar refresh or two.
 const LABEL_NEG_TTL: Duration = Duration::from_secs(30);
+
+/// The quiet window after which a focus storm (click bounces, stale
+/// last-arrival events) is considered settled and the OS's actually-
+/// focused window is re-read as truth. See `state::lifecycle`.
+const FOCUS_SETTLE_MS: u64 = 250;
 
 /// A per-manager harness session path: unique within the process so
 /// parallel test threads never race on one file. Not `#[cfg(test)]`:
@@ -308,6 +325,8 @@ impl StateManager {
             hud_duration_ms: settings.hud_duration_ms,
             hud_hide_at: None,
             last_wm_reset: None,
+            focus_dirty_since: None,
+            last_focused_window: None,
         };
 
         // Hide every workspace that isn't the active one for its monitor.

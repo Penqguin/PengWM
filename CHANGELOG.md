@@ -1,6 +1,18 @@
 # Changelog
 
-## v0.6.12 — HUD hotplug + WM reset on topology change (unreleased)
+## v0.6.12 — HUD hotplug + WM reset + focus truth (unreleased)
+
+- **New: focus follows the actually-focused window (Spec 0001 focus
+  ladder).** Click/bounce storms (macOS reporting `126 → 30556 → stale
+  61` with the *stale* event arriving last) used to poison the WM's
+  focused-workspace memory — clicks seemed to do nothing, and keybinds
+  acted relative to the wrong side. Every focus event now marks the
+  memory dirty; after 250 ms of quiet the tick re-reads the OS's
+  settled truth (`frontmost pid + its actually-focused window`) and
+  commits that. Fallback ladder: no OS focus → the last focused window
+  (if still a visible member) → the focused-workspace seat stands (the
+  i3 no-reverse-switch rule). The "last focused window" memory is owned
+  by the settle commit only — storm arrivals cannot poison it.
 
 - **Moved: pill rendering into the menubar process.** The daemon drew
   its own pill windows, and after every hotplug AppKit's screen cache

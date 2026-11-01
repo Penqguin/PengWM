@@ -158,7 +158,7 @@ impl EventLoop {
             DaemonEvent::WindowCreated(id, pid) => self.state.on_window_created(id, pid),
             DaemonEvent::WindowDestroyed(id) => self.state.on_window_destroyed(id),
             DaemonEvent::UnknownWindowDestroyed(pid) => self.state.on_unknown_window_destroyed(pid),
-            DaemonEvent::WindowFocused(id) => self.state.on_window_focused(id),
+            DaemonEvent::WindowFocused(id) => self.state.on_window_focused_event(id),
             DaemonEvent::WindowMoved(id, rect) => self.state.on_window_moved(id, rect),
             DaemonEvent::WindowHidden(id) => self.state.on_window_hidden(id),
             DaemonEvent::WindowShown(id) => self.state.on_window_shown(id),
