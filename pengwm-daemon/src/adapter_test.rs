@@ -85,6 +85,11 @@ pub struct TestAdapter {
     pub hud_shows: RefCell<Vec<Vec<HudCard>>>,
     /// Number of `hide_hud` calls, in order (always empty → count).
     pub hud_hides: Cell<usize>,
+    /// Fresh-classification overrides (per window id) — the
+    /// `window_class_fresh` seam's test side: a verdict here beats the
+    /// `window_classes` cache, modeling "the app reported differently
+    /// the moment routing asked".
+    pub fresh_window_classes: RefCell<HashMap<WindowId, WindowClass>>,
 }
 
 impl Default for TestAdapter {
@@ -119,6 +124,7 @@ impl Default for TestAdapter {
             refreshes: Cell::new(0),
             hud_shows: RefCell::new(Vec::new()),
             hud_hides: Cell::new(0),
+            fresh_window_classes: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -471,6 +477,21 @@ impl TestHandle {
         self.0.hud_hides()
     }
 
+    /// Seed the element-cache class (the first-read "frozen lie" stand-in).
+    pub fn inject_cached_class(&self, window_id: WindowId, class: WindowClass) {
+        self.0.window_classes.borrow_mut().insert(window_id, class);
+    }
+
+    /// Seed the routing-time fresh read (`window_class_fresh`).
+    pub fn inject_fresh_class(&self, window_id: WindowId, class: Option<WindowClass>) {
+        if let Some(class) = class {
+            self.0
+                .fresh_window_classes
+                .borrow_mut()
+                .insert(window_id, class);
+        }
+    }
+
     pub fn forgotten(&self) -> Vec<WindowId> {
         self.0.forgotten()
     }
@@ -634,6 +655,10 @@ impl OsAdapter for SharedTestAdapter {
 
     fn hide_hud(&self) {
         self.0.hide_hud();
+    }
+
+    fn window_class_fresh(&self, window_id: WindowId) -> Option<WindowClass> {
+        self.0.window_class_fresh(window_id)
     }
 }
 
@@ -882,5 +907,16 @@ impl OsAdapter for TestAdapter {
 
     fn hide_hud(&self) {
         self.hud_hides.set(self.hud_hides.get() + 1);
+    }
+
+    fn window_class_fresh(&self, window_id: WindowId) -> Option<WindowClass> {
+        // Injection in one place: a fresh read is the override — an
+        // injected verdict answers fresh; an unset id falls through to
+        // the injected per-window class (the same answer the cached
+        // path returns), which is exactly the no-override behavior.
+        if let Some(c) = self.fresh_window_classes.borrow().get(&window_id) {
+            return Some(*c);
+        }
+        self.window_classes.borrow().get(&window_id).copied()
     }
 }

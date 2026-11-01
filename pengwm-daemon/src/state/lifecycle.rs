@@ -37,13 +37,17 @@ impl StateManager {
             return;
         }
 
-        // The class was classified at the discovery gate and rides the
-        // element cache. Uninjected/unknown → Standard: the pre-popup
-        // behavior (tile) for any path that somehow evented a window
-        // without caching it.
+        // The class rides the element cache — but routing is the moment
+        // popup-vs-tile is DECIDED, so the subrole is re-read fresh here
+        // (`window_class_fresh`): first-read-wins in the cache froze a
+        // burst-read Dialog lie (Firefox after a hotplug) into a
+        // permanent popup fate. A fresh read that fails (unreadable
+        // element) falls back to the cached answer, exactly like the
+        // old default read did.
         let class = self
             .os
-            .window_kind(window_id)
+            .window_class_fresh(window_id)
+            .or_else(|| self.os.window_kind(window_id))
             .unwrap_or(WindowClass::Standard);
         if !class.is_manageable() {
             log::debug!(

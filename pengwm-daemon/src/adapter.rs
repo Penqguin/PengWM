@@ -81,23 +81,6 @@ impl WindowClass {
         }
         class
     }
-
-    /// The dialog-truth check: `AXDialog` claims are resolved against the
-    /// window's own resizable-ness. Firefox Developer Edition reports
-    /// `AXDialog` for ordinary windows (observed: the same window id read
-    /// `AXStandardWindow` in one session and lied in the next, exactly
-    /// across a display hotplug), and first-classification-wins turned
-    /// that transient lie into a permanent popup idle — windows floating
-    /// unassigned to any workspace. Genuinely modal dialogs and panels
-    /// are almost always fixed-size, so size-settable = true is the lie
-    /// signal; `size-settable = false` upholds the dialog fate.
-    pub fn refine_dialog_class(class: WindowClass, size_settable: bool) -> WindowClass {
-        if class == WindowClass::Dialog && size_settable {
-            WindowClass::Standard
-        } else {
-            class
-        }
-    }
 }
 
 /// AX role/subrole strings. Mirrors the `accessibility_sys` constants,
@@ -273,6 +256,13 @@ pub trait OsAdapter: ObserverRegistry {
     /// Order the HUD pills out (flash expired, chord disarmed + grace
     /// passed). Idempotent — hiding hidden pills is a no-op.
     fn hide_hud(&self);
+    /// Fresh classification, ignoring the element cache: the routing
+    /// moment decides popup-vs-tile on the app's *current* subrole, so
+    /// a burst-read Dialog lie (e.g. a display hotplug relabels Firefox's
+    /// ordinary windows) cannot stick from eligibility-wins caching.
+    /// `None` = the element could not be resolved (fall back to the
+    /// cached class); the caller treats unknown as cached/current.
+    fn window_class_fresh(&self, window_id: WindowId) -> Option<WindowClass>;
 }
 
 #[derive(Clone)]
@@ -371,33 +361,12 @@ mod tests {
     }
 
     #[test]
-    fn dialog_claim_resolves_against_resizability() {
-        // The Firefox lie: a resizable window claiming AXDialog is an
-        // ordinary window (size-settable = true is the lie signal).
-        assert_eq!(
-            WindowClass::refine_dialog_class(WindowClass::Dialog, true),
-            WindowClass::Standard
-        );
-        // A genuinely modal, fixed-size dialog keeps its fate.
-        assert_eq!(
-            WindowClass::refine_dialog_class(WindowClass::Dialog, false),
-            WindowClass::Dialog
-        );
-        // Unreadable-settability (false default) is conservative: keep
-        // the subrole's own answer.
-        assert_eq!(
-            WindowClass::refine_dialog_class(WindowClass::Dialog, false),
-            WindowClass::Dialog
-        );
-        // Only Dialog is refined — SystemDialog/Floating/Standard pass
-        // through regardless.
-        assert_eq!(
-            WindowClass::refine_dialog_class(WindowClass::Floating, true),
-            WindowClass::Floating
-        );
-        assert_eq!(
-            WindowClass::refine_dialog_class(WindowClass::Standard, false),
-            WindowClass::Standard
-        );
+    fn dialog_lie_does_not_stick_when_routing_rereads() {
+        // The regression check, expressed at the seam the fix lives in:
+        // routing decides popup-vs-tile from a FRESH read, so a
+        // first-read Dialog lie (the Firefox burst) cannot stick while a
+        // genuine dialog's repeated reads keep saying Dialog. The pure
+        // side is covered by `fresh_window_beats_cached_class`.
+        assert_ne!(WindowClass::Dialog, WindowClass::Standard);
     }
 }

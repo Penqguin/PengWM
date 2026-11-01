@@ -4,8 +4,8 @@ use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use crate::adapter::{
-    AppIdentity, DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter, WindowClass,
-    WindowListing,
+    AppIdentity, DisplayInfo, HudCard, ObserverRegistry as AdapterObserverRegistry, OsAdapter,
+    WindowClass, WindowListing,
 };
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
@@ -506,24 +506,13 @@ impl MacOsAdapter {
             let class = match self.cached_class(window_id) {
                 Some(cached) => cached,
                 None => {
+                    // Fresh element on a first poll: read + level gate.
+                    // Routing re-reads subroles at its decision moment
+                    // (`window_class_fresh`), so a burst read here can
+                    // be corrected later without freezing.
                     let lowered = unsafe { ax_element::classify(element.ptr()) };
-                    let classified = match lowered {
-                        // AXDialog claims resolve against resizable-ness
-                        // (see `refine_dialog_class` — the Firefox lie);
-                        // every other class passes through untouched.
-                        WindowClass::Dialog => WindowClass::refine_dialog_class(
-                            lowered,
-                            unsafe {
-                                ax_element::is_attribute_settable(
-                                    element.ptr(),
-                                    kAXSizeAttribute,
-                                )
-                            },
-                        ),
-                        lower => lower,
-                    };
                     let gated = WindowClass::apply_level_gate(
-                        classified,
+                        lowered,
                         levels.get(&window_id).copied(),
                     );
                     log::info!(
@@ -837,7 +826,7 @@ impl OsAdapter for MacOsAdapter {
     /// windows (Spec 0001 amendment: pill rendering lives where AppKit's
     /// screen-list maintenance works; the daemon plans and pushes). A
     /// missing bar sender (no server was wired) drops the ask.
-    fn show_hud(&self, cards: &[crate::adapter::HudCard]) {
+    fn show_hud(&self, cards: &[HudCard]) {
         if let Some(sender) = &self.bar_sender {
             sender.send(pengwm_core::command::BarMessage::Hud {
                 cards: cards.to_vec(),
@@ -849,6 +838,17 @@ impl OsAdapter for MacOsAdapter {
         if let Some(sender) = &self.bar_sender {
             sender.send(pengwm_core::command::BarMessage::HudHide);
         }
+    }
+
+    fn window_class_fresh(&self, window_id: WindowId) -> Option<WindowClass> {
+        let (element, pid) = self.resolve_element(window_id)?;
+        let classified = unsafe { ax_element::classify(element.ptr()) };
+        let gated = WindowClass::apply_level_gate(
+            classified,
+            crate::macos::cg_window_level::window_level(window_id),
+        );
+        let _ = pid;
+        Some(gated)
     }
 }
 

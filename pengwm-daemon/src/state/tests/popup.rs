@@ -223,3 +223,64 @@ fn popup_attaches_to_monitor_containing_it() {
     assert!(!sm.workspaces[0].is_popup(300));
     assert!(sm.workspaces[1].find_window(300).is_none(), "never tiles");
 }
+
+// ---------------------------------------------------------------------------
+// Spec 0001 amendment: routing-time fresh classification
+// ---------------------------------------------------------------------------
+
+/// A burst-read Dialog lie cached at discovery, then corrected: the
+/// routing decision re-reads, the fresh answer says Standard, the
+/// window TILES rather than parking as a popup forever.
+#[test]
+fn fresh_standard_read_routes_over_cached_dialog() {
+    let (mut sm, handle) = setup_with_handle(1);
+    // The element cache holds the frozen lie...
+    handle.inject_cached_class(100, WindowClass::Dialog);
+    // ...and routing-time reads say the truth.
+    handle.inject_fresh_class(100, Some(WindowClass::Standard));
+
+    sm.on_window_created(100, 42);
+
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()),
+        "a corrected Standard read must tile the window"
+    );
+}
+
+/// A genuine dialog: every read says Dialog — it routes as a popup and
+/// never becomes a tree member.
+#[test]
+fn fresh_dialog_read_stays_popup() {
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_cached_class(100, WindowClass::Dialog);
+    handle.inject_fresh_class(100, Some(WindowClass::Dialog));
+
+    sm.on_window_created(100, 42);
+
+    let poped = sm
+        .workspaces
+        .iter()
+        .any(|ws| ws.popup_ids().contains(&100));
+    assert!(poped, "a dialog whose fresh read agrees stays a popup");
+    assert!(
+        sm.workspaces.iter().all(|ws| ws.find_window(100).is_none()),
+        "popups are never tree members"
+    );
+}
+
+/// No fresh answer readable (element refused): the cached class holds:
+/// the fake adapter's fresh ask falls through to the same cache (the
+/// no-override stand-in) — exactly the old fallback behavior.
+#[test]
+fn unreadable_fresh_read_falls_back_to_cache() {
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_cached_class(100, WindowClass::Dialog);
+
+    sm.on_window_created(100, 42);
+
+    let poped = sm
+        .workspaces
+        .iter()
+        .any(|ws| ws.popup_ids().contains(&100));
+    assert!(poped, "cache-only path keeps the dialog fate");
+}
