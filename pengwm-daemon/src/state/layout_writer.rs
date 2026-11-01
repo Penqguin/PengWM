@@ -776,7 +776,7 @@ mod tests {
         // A changed target is a fresh situation — immediate write, pin dropped.
         let other = Rect::new(960.0, 0.0, 960.0, 1040.0);
         assert!(cache.should_write(7, other, None));
-        assert!(cache.pin_state.get(&7).is_none());
+        assert!(!cache.pin_state.contains_key(&7));
     }
 
     #[test]
