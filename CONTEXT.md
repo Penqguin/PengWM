@@ -139,8 +139,13 @@ excluded from tiling by pid) and pushes the UI state to it:
   caches the last `State` and replays it to a reconnecting menubar; `Exit`
   tells the menubar to terminate immediately on a clean `pengwm quit`.
 - The status bar (egui strip + `[bar]` config + `BarReserve` reservation
-  machinery) was **removed** in v0.5.2 — the menubar icon is the only UI
-  surface. The core keeps `BarPosition` / `bar_strip_rect` /
+  machinery) was **removed** in v0.5.2 — the menubar icon is the only
+  *persistent* UI surface. The transient workspace HUD (Spec 0001,
+  `docs/specs/0001-workspace-hud.md`: per-monitor pills, flash on
+  explicit switches + `hud-toggle`, prefix-armed pin) is drawn
+  **in-process** by the daemon behind the `OsAdapter::show_hud` /
+  `hide_hud` seam, planner in `state::hud`. The core keeps
+  `BarPosition` / `bar_strip_rect` /
   `Workspace::set_reserved_rect` as tested pure vocabulary so a future
   screen-strip can be re-introduced without reinventing the geometry.
 

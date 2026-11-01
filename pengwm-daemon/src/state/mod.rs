@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod commands;
 pub mod display;
 pub mod drag;
+pub mod hud;
 pub mod layout_writer;
 pub mod lifecycle;
 pub mod monitors_wake;
@@ -136,6 +137,15 @@ pub struct StateManager {
     /// window (`LayoutWriteCache::WAKE_GONE_GRACE` — the same patience
     /// the write path uses) has passed; the sweep re-judges after it.
     wake_committed_at: Option<Instant>,
+    /// Whether the transient workspace HUD flashes at all
+    /// (docs/specs/0001-workspace-hud.md). Reloaded with the config.
+    hud_enabled: bool,
+    /// How long one flash keeps the pills up; the HUD tick extends the
+    /// deadline while the prefix chord is armed.
+    hud_duration_ms: u64,
+    /// When the current flash expires (`None` = never drawn / hidden).
+    /// `state::hud` owns the draw/hide decisions around it.
+    hud_hide_at: Option<Instant>,
 }
 
 /// A wake resync waiting for the AX subsystem to come back.
@@ -290,6 +300,9 @@ impl StateManager {
                 session::session_file_path()
             },
             wake_committed_at: None,
+            hud_enabled: settings.hud_enabled,
+            hud_duration_ms: settings.hud_duration_ms,
+            hud_hide_at: None,
         };
 
         // Hide every workspace that isn't the active one for its monitor.
@@ -370,6 +383,8 @@ impl StateManager {
         self.float_level_overlays = updated_settings.windows.float_level_overlays;
         set_popup_ratio(&mut self.workspaces, updated_settings.windows.popup_ratio);
         self.focus_first_on_switch = updated_settings.focus_first_on_switch;
+        self.hud_enabled = updated_settings.hud_enabled;
+        self.hud_duration_ms = updated_settings.hud_duration_ms;
         self.displays
             .set_entries(if updated_settings.workspaces.is_empty() {
                 crate::config::default_workspaces()
@@ -565,6 +580,16 @@ impl StateManager {
     #[cfg(test)]
     pub(super) fn set_float_level_overlays_for_test(&mut self, on: bool) {
         self.float_level_overlays = on;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_hud_duration_for_test(&mut self, ms: u64) {
+        self.hud_duration_ms = ms;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_hud_disabled_for_test(&mut self) {
+        self.hud_enabled = false;
     }
 
     #[cfg(test)]

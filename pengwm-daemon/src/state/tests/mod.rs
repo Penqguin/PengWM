@@ -2,6 +2,7 @@ mod bootstrap_routing;
 mod commands;
 pub(super) mod common;
 mod fullscreen;
+mod hud;
 mod layout_cache_hide;
 mod lifecycle;
 mod memory;

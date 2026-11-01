@@ -137,6 +137,15 @@ pub struct Settings {
     /// How long the prefix stays armed for follow-ups, in milliseconds.
     #[serde(default = "default_prefix_timeout_ms")]
     pub prefix_timeout_ms: u64,
+    /// Whether the transient workspace HUD (docs/specs/0001-workspace-hud.md)
+    /// flashes at all. Workspace switches, monitor focus changes and
+    /// `hud-toggle` queue pills; background routing never does.
+    #[serde(default = "default_true")]
+    pub hud_enabled: bool,
+    /// How long the HUD pills stay up after the triggering moment, in
+    /// milliseconds. The tick extends them while the prefix chord is armed.
+    #[serde(default = "default_hud_duration_ms")]
+    pub hud_duration_ms: u64,
 }
 
 /// One named workspace and the apps (by bundle id or app name) whose windows
@@ -299,6 +308,10 @@ fn default_prefix_timeout_ms() -> u64 {
     1000
 }
 
+fn default_hud_duration_ms() -> u64 {
+    500
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -314,6 +327,8 @@ impl Default for Settings {
             main_ratio: default_main_ratio(),
             prefix: default_prefix(),
             prefix_timeout_ms: default_prefix_timeout_ms(),
+            hud_enabled: true,
+            hud_duration_ms: default_hud_duration_ms(),
         }
     }
 }

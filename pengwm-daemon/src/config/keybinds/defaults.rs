@@ -174,6 +174,14 @@ impl Default for KeybindConfig {
                 modifiers: MODIFIER_ALT,
                 action: Command::ToggleMagnify,
             },
+            // HUD recall: alt-w re-flashes the workspace pills (Spec 0001).
+            // Not prefix+h: prefix follow-ups inherit the prefix modifiers,
+            // so `prefix, h` is focus-left.
+            Keybind {
+                keycode: 0x0D,
+                modifiers: MODIFIER_ALT,
+                action: Command::HudToggle,
+            },
             // Reload config: cmd-shift-r
             Keybind {
                 keycode: 0x0F,

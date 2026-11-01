@@ -13,6 +13,7 @@ use crate::macos::ax_observer::{ObserverContext, ObserverRegistry as AxObserverR
 use crate::macos::cf_ref::CFRef;
 use crate::macos::cg_display;
 use crate::macos::cg_window_level;
+use crate::macos::hud::HudPanels;
 use crate::macos::ns_workspace;
 use accessibility_sys::*;
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
@@ -44,6 +45,9 @@ pub struct MacOsAdapter {
     /// (`forget_pid` — notification or dead-pid sweep), so an app
     /// relaunch never writes through a dead app's element.
     app_elements: RefCell<HashMap<i32, CFRef<AXUIElementRef>>>,
+    /// The transient workspace HUD (Spec 0001): lazy per-display pill
+    /// panels, mutated only from the event loop's main thread.
+    hud_panels: RefCell<HudPanels>,
 }
 
 /// The identity memo: one resolved `AppIdentity` per pid, timestamped.
@@ -62,6 +66,7 @@ impl MacOsAdapter {
                 entries: HashMap::new(),
             }),
             app_elements: RefCell::new(HashMap::new()),
+            hud_panels: RefCell::new(HudPanels::new()),
         }
     }
 
@@ -710,6 +715,14 @@ impl OsAdapter for MacOsAdapter {
         self.resolved_identities(std::slice::from_ref(&pid))
             .remove(&pid)
             .and_then(|identity| identity.name)
+    }
+
+    fn show_hud(&self, cards: &[crate::adapter::HudCard]) {
+        self.hud_panels.borrow_mut().show(cards);
+    }
+
+    fn hide_hud(&self) {
+        self.hud_panels.borrow_mut().hide();
     }
 }
 

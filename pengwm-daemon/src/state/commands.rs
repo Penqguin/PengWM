@@ -91,6 +91,11 @@ impl StateManager {
                                 }
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
+                                // An explicit context change — announce what
+                                // landed where (Spec 0001's explicit-only
+                                // triggers). Flash after the swaps settle so
+                                // the pills read the post-switch state.
+                                self.flash_hud();
                             }
                         } else {
                             log::debug!(
@@ -200,6 +205,11 @@ impl StateManager {
                 log::info!("RevealAll requested — retiling hidden windows");
                 self.reveal_all();
             }
+            Command::HudToggle => {
+                // The explicit re-peek: same flash the switches get, on
+                // demand (Spec 0001's `hud-toggle`).
+                self.flash_hud();
+            }
         }
         if let Some(tx) = tx {
             let _ = tx.try_send(DaemonResponse::Ack);
@@ -293,6 +303,10 @@ impl StateManager {
         // (#2/Q9) — otherwise the next switch/move resolves on a stale output.
         let target_mon = self.workspaces[target_idx].monitor_id;
         self.displays.set_focused_output(target_mon);
+        // An explicit monitor focus change — announce the new mapping
+        // (Spec 0001). Focus changes which monitor is accented even when
+        // no visibility changed.
+        self.flash_hud();
         if let Some(wid) = self.workspaces[target_idx].focused_window_id() {
             log::debug!(
                 "focus_display {:?} workspace {} -> {} wid {}",

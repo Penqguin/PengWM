@@ -136,6 +136,46 @@ pub enum WindowListing {
     NoAnswer,
 }
 
+/// One monitor's transient HUD pill (Spec 0001). The planner builds
+/// these from the current snapshot and hands the batch to
+/// `OsAdapter::show_hud`; the executor decides window-level mechanics
+/// (panel per display, position, styling) exactly as `hide_windows`
+/// decides placements from `HidePlacement` intents.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HudCard {
+    /// The CG display id the card belongs to. The executor matches it
+    /// to its screen for positioning.
+    pub display_id: u32,
+    /// 1-based global workspace ordinal (config order), as `workspace-N`
+    /// addresses it.
+    pub number: usize,
+    /// Workspace display name.
+    pub name: String,
+    /// True on the focused monitor — the executor accents its pill.
+    pub focused: bool,
+    /// True while the prefix chord is armed — the executor shows the
+    /// armed marker and (the caller) keeps the pills up.
+    pub prefix_armed: bool,
+}
+
+impl HudCard {
+    /// The full pill text: the armed prefix marker leads
+    /// (`» 2 · Browsing`); the workspace ordinal always names the
+    /// position the `workspace-N` keybind addresses. A monitor showing
+    /// no workspace (number 0) reads as a dash — an unnamed slot, not
+    /// `0 · something`.
+    pub fn label(&self) -> String {
+        if self.number == 0 {
+            return "—".to_string();
+        }
+        if self.prefix_armed {
+            format!("» {} · {}", self.number, self.name)
+        } else {
+            format!("{} · {}", self.number, self.name)
+        }
+    }
+}
+
 pub trait OsAdapter: ObserverRegistry {
     fn running_app_pids(&self) -> Vec<i32>;
     fn frontmost_pid(&self) -> Option<i32>;
@@ -242,6 +282,15 @@ pub trait OsAdapter: ObserverRegistry {
             .remove(&pid)
             .unwrap_or_default()
     }
+    /// Draw the transient HUD pills for the flash (Spec 0001). One card
+    /// per monitor; replaces the whole content/pillar set each call, so
+    /// the executor never diff-tracks pill text. Idempotent per content
+    /// (re-flash updates labels and re-arms ordering). No-op cost when
+    /// the HUD is disabled — the caller never queues an empty ask.
+    fn show_hud(&self, cards: &[HudCard]);
+    /// Order the HUD pills out (flash expired, chord disarmed + grace
+    /// passed). Idempotent — hiding hidden pills is a no-op.
+    fn hide_hud(&self);
 }
 
 #[derive(Clone)]

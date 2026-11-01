@@ -55,6 +55,10 @@ pub enum Command {
     /// Re-tile all hidden windows back into their remembered workspaces.
     /// Daemon-down safety net counterpart to the bottom-edge clamped hide.
     RevealAll,
+    /// Re-show the transient workspace HUD now (flash it, don't dismiss).
+    /// Workspace switches and monitor focus changes flash it implicitly;
+    /// this is the explicit re-peek. See docs/specs/0001-workspace-hud.md.
+    HudToggle,
 }
 
 impl Command {
@@ -270,6 +274,7 @@ const ACTION_TABLE: &[(&str, Command)] = &[
     ("query-state", Command::QueryState),
     ("quit", Command::Quit),
     ("reveal-all", Command::RevealAll),
+    ("hud-toggle", Command::HudToggle),
     (
         "focus-display-left",
         Command::FocusDisplay {
@@ -444,6 +449,10 @@ mod tests {
             Some(Command::QueryState)
         );
         assert_eq!(Command::parse_action("quit"), Some(Command::Quit));
+        assert_eq!(
+            Command::parse_action("hud-toggle"),
+            Some(Command::HudToggle)
+        );
         assert_eq!(
             Command::parse_action("focus-display-left"),
             Some(Command::FocusDisplay {

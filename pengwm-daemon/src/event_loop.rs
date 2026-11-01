@@ -46,6 +46,11 @@ pub enum DaemonEvent {
         pengwm_core::command::Command,
         Option<mpsc::Sender<pengwm_core::command::DaemonResponse>>,
     ),
+    /// The prefix chord just armed (`PrefixOutcome::Armed`, observed by the
+    /// event tap). Draws the workspace HUD pills with their armed marker
+    /// and keeps them up while the chord stays armed (Spec 0001's prefix
+    /// fusion — the HUD is the previously invisible prefix indicator).
+    PrefixArmed,
 }
 
 pub struct EventLoop {
@@ -145,6 +150,7 @@ impl EventLoop {
             DaemonEvent::MonitorResized(id) => self.state.on_monitor_resized(id),
             DaemonEvent::SystemWoke => self.state.on_system_woke(),
             DaemonEvent::Command(cmd, rtx) => self.state.on_command(cmd, rtx),
+            DaemonEvent::PrefixArmed => self.state.on_prefix_armed(),
         }
     }
 }

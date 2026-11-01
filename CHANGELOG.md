@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.6.11 — Workspace HUD (unreleased)
+
+- **New: transient workspace HUD** (Spec 0001,
+  `docs/specs/0001-workspace-hud.md`). One dark translucent pill per
+  monitor, bottom-center, monospaced: `2 · Browsing` — the focused monitor
+  brighter. Flash on explicit context changes only (`workspace-N`,
+  `focus-display-*`, and the new recall), never on background routing.
+  While the `alt-space` prefix chord is armed the pills stay visible with a
+  `»` marker — the HUD doubles as the prefix indicator. A new
+  `Command::HudToggle` (`hud-toggle`, CLI `pengwm hud-toggle`, default
+  keybind `alt-w` — the planned `prefix, h` was rejected: follow-ups
+  inherit the prefix modifiers, colliding with focus-left). The daemon
+  draws its own panels (no child process, no IPC); pills are
+  click-through, floating-level, join all spaces (over native fullscreen
+  too). Config knobs: `hud_enabled` (default on), `hud_duration_ms`
+  (default 500). The removed v0.5.2 bar stays retired; its geometry
+  scaffolding keeps the persistent-bar option open. 
+
 ## v0.6.10 — Multi-monitor repairs (2026-11-01)
 
 - **Fixed: focus events could reverse-switch workspaces.** Switching to a

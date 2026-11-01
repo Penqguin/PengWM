@@ -166,6 +166,20 @@ pengwm reveal-all
 Re-tile every hidden window back into its workspace. Daemon-down recovery:
 if windows ever get stranded offscreen, this brings them back.
 
+## Workspace HUD
+
+```bash
+pengwm hud-toggle
+```
+
+Re-flash the workspace HUD now: one pill per monitor, bottom-center, naming
+what that monitor shows (`2 · Browsing`), the focused monitor brighter.
+HUDs also flash on workspace switches and monitor focus changes — never on
+background routing — and stay up while the prefix chord is armed (the pills
+double as the prefix indicator, with a `»` marker). Duration and the whole
+feature are config knobs (`hud_duration_ms`, `hud_enabled`). Defaults bind
+`alt-w`. See `docs/specs/0001-workspace-hud.md`.
+
 ## Clear Session
 
 ```bash

@@ -22,6 +22,11 @@ impl StateManager {
     pub fn on_tick(&mut self) {
         let now = Instant::now();
 
+        // HUD expiry first: it touches no AX state, and a visible flash
+        // must not outlive its window regardless of what the sweeps
+        // below do (the tick is also the prefix-armed pinner — Spec 0001).
+        self.hud_tick(now);
+
         // A wake resync waits here for AX to come back. Driven first: the
         // sweeps below all query AX, and running them against a blacked-out
         // subsystem is what starts gone-grace timers on live windows.
