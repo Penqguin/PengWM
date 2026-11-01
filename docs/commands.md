@@ -172,8 +172,9 @@ if windows ever get stranded offscreen, this brings them back.
 pengwm hud-toggle
 ```
 
-Re-flash the workspace HUD now: one pill per monitor, bottom-center, naming
-what that monitor shows (`2 · Browsing`), the focused monitor brighter.
+Re-flash the workspace HUD now: one pill per monitor, centered on the
+screen, naming what that monitor shows (`2 · Browsing`), the focused
+monitor brighter.
 HUDs also flash on workspace switches and monitor focus changes — never on
 background routing — and stay up while the prefix chord is armed (the pills
 double as the prefix indicator, with a `»` marker). Duration and the whole

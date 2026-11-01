@@ -1,7 +1,7 @@
 //! The transient workspace HUD executor (Spec 0001).
 //!
 //! One borderless, click-through pill per monitor: dark translucent
-//! rounded rect, monospaced `N · Workspace` text, bottom-center. The
+//! rounded rect, monospaced `N · Workspace` text, dead-center. The
 //! focused monitor's pill is accented; the prefix-armed pill carries a
 //! `»` marker. Panels are created lazily per display, restyled in place
 //! per flash, and ordered out on hide — the daemon process owns them
@@ -31,12 +31,12 @@ use crate::adapter::HudCard;
 /// Comfortable text inset inside the capsule (each side).
 const PADDING_X: f64 = 14.0;
 const PADDING_Y: f64 = 7.0;
-/// Bottom-center placement: distance above the screen's bottom edge
-/// (`gap_outer`-adjacent — flush-ish, not floating mid-screen).
-const BOTTOM_MARGIN: f64 = 12.0;
+/// Pill placement: dead-center of the screen — the one spot you cannot
+/// miss, and precisely the "where did things land" answer the HUD
+/// exists for. Its bulge is click-through and 500 ms, so covering
+/// mid-screen content momentarily is the point, not a hazard.
 const CORNER_RADIUS: f64 = 9.0;
 const FONT_SIZE: f64 = 12.0;
-
 /// The floating window level (3): above every normal/floating window,
 /// below menus — the HUD answers "what is showing", never competes with
 /// one. Combined with `CanJoinAllSpaces` the pill also overlays native
@@ -157,8 +157,18 @@ fn build_label(mtm: MainThreadMarker, text: &str, focused: bool) -> Retained<NST
 /// capsule's size+position. Pill text differs between almost every
 /// flash (armed marker, swap moves, the `—` slot) — sizing once at
 /// creation would clip longer text and leave a drifted capsule after
-/// shorter text (the panel was bottom-center for the *old* width).
+/// shorter text (the panel was centered for the *old* width).
 /// The re-fit mirrors `build_panel`'s sizing math exactly.
+fn pill_frame(width: f64, height: f64, screen: NSRect) -> NSRect {
+    NSRect::new(
+        NSPoint::new(
+            screen.origin.x + (screen.size.width - width) / 2.0,
+            screen.origin.y + (screen.size.height - height) / 2.0,
+        ),
+        NSSize::new(width, height),
+    )
+}
+
 fn refit_panel(panel: &mut HudPanel, text: &str, focused: bool, screen: NSRect) {
     let label_text = NSString::from_str(text);
     panel.label.setStringValue(&label_text);
@@ -177,23 +187,17 @@ fn refit_panel(panel: &mut HudPanel, text: &str, focused: bool, screen: NSRect) 
     panel
         .label
         .setFrameOrigin(NSPoint::new(PADDING_X, PADDING_Y));
-    let frame = NSRect::new(
-        NSPoint::new(
-            screen.origin.x + (screen.size.width - width) / 2.0,
-            screen.origin.y + BOTTOM_MARGIN,
-        ),
-        NSSize::new(width, height),
-    );
     // The window resizes its content view to fill on setFrame, so the
     // effect view (and the rounded clipping) tracks the new capsule.
     // No display flag: the next run-loop pass draws it — pills flash,
-    // they don't animate.
-    panel.window.setFrame_display(frame, false);
+    // they don't animate. The frame's anchor is re-centered per size so
+    // a shorter text never leaves the pill off-center.
+    panel.window.setFrame_display(pill_frame(width, height, screen), false);
 }
 
 /// Create (or finalize) the window for one pill: rounded translucent
-/// capsule content sized to the label, positioned bottom-center of the
-/// matching screen. Returns the window and the label to keep updating.
+/// capsule content sized to the label, centered on the matching screen.
+/// Returns the window and the label to keep updating.
 fn build_panel(
     mtm: MainThreadMarker,
     label: Retained<NSTextField>,
@@ -225,13 +229,7 @@ fn build_panel(
     label.setFrameOrigin(NSPoint::new(PADDING_X, PADDING_Y));
     effect.addSubview(&label);
 
-    let frame = NSRect::new(
-        NSPoint::new(
-            screen.origin.x + (screen.size.width - width) / 2.0,
-            screen.origin.y + BOTTOM_MARGIN,
-        ),
-        NSSize::new(width, height),
-    );
+    let frame = pill_frame(width, height, screen);
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),

@@ -37,7 +37,7 @@ A **transient per-monitor HUD** — tmux-flavored, drawn by the daemon
 process:
 
 1. **One pill per monitor.** Small dark translucent rounded pill,
-   bottom-center of each monitor, monospaced text: `2 · Browsing`.
+   dead-center of each monitor, monospaced text: `2 · Browsing`.
    The focused monitor's pill is accented (brighter text). Pills are
    click-through, non-activating, floating-level, and join all spaces
    (they overlay native-fullscreen workspaces too).

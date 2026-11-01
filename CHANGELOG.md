@@ -4,8 +4,8 @@
 
 - **New: transient workspace HUD** (Spec 0001,
   `docs/specs/0001-workspace-hud.md`). One dark translucent pill per
-  monitor, bottom-center, monospaced: `2 · Browsing` — the focused monitor
-  brighter. Flash on explicit context changes only (`workspace-N`,
+  monitor, centered on the screen, monospaced: `2 · Browsing` — the
+  focused monitor brighter. Flash on explicit context changes only (`workspace-N`,
   `focus-display-*`, and the new recall), never on background routing.
   While the `alt-space` prefix chord is armed the pills stay visible with a
   `»` marker — the HUD doubles as the prefix indicator. A new
