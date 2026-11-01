@@ -67,28 +67,39 @@ impl HudPanels {
     /// missing ones are created, panels whose display vanished are
     /// dropped. The batch is the whole frame — the executor never
     /// diff-tracks pill text.
+    ///
+    /// The whole FFI pass is one autorelease pool: AppKit's helper
+    /// objects here (screens array, description dicts, label/text
+    /// temps, the frames AppKit computes behind setStringValue/
+    /// sizeToFit/setFrameDisplay) would otherwise autoreleases into the
+    /// daemon's pool-less CFRunLoop thread and outlive the flash — a
+    /// few KB per flash, forever. Same trade `ns_workspace::
+    /// screen_top_insets` already makes ("the screens enumeration
+    /// autoreleases on the daemon's pool-less CFRunLoop thread").
     pub fn show(&mut self, cards: &[HudCard]) {
-        let Some(mtm) = MainThreadMarker::new() else {
-            log::debug!("hud show skipped: not on the main thread");
-            return;
-        };
-        let screens = screen_frames(mtm);
-        let live: std::collections::HashSet<u32> =
-            screens.iter().map(|(id, _)| *id).collect();
-        self.panels.retain(|id, _| live.contains(id));
-        for card in cards {
-            let Some((_, frame)) = screens
-                .iter()
-                .find(|(id, _)| *id == card.display_id)
-            else {
-                log::debug!(
-                    "hud card dropped: display {} has no matching NSScreen",
-                    card.display_id
-                );
-                continue;
+        objc2::rc::autoreleasepool(|_| {
+            let Some(mtm) = MainThreadMarker::new() else {
+                log::debug!("hud show skipped: not on the main thread");
+                return;
             };
-            self.show_card(card, *frame, mtm);
-        }
+            let screens = screen_frames(mtm);
+            let live: std::collections::HashSet<u32> =
+                screens.iter().map(|(id, _)| *id).collect();
+            self.panels.retain(|id, _| live.contains(id));
+            for card in cards {
+                let Some((_, frame)) = screens
+                    .iter()
+                    .find(|(id, _)| *id == card.display_id)
+                else {
+                    log::debug!(
+                        "hud card dropped: display {} has no matching NSScreen",
+                        card.display_id
+                    );
+                    continue;
+                };
+                self.show_card(card, *frame, mtm);
+            }
+        });
     }
 
     /// Order every pill out. Idempotent — hiding hidden windows is a
@@ -103,9 +114,13 @@ impl HudPanels {
             log::debug!("hud hide skipped: not on the main thread");
             return;
         }
-        for panel in self.panels.values() {
-            panel.window.orderOut(None);
-        }
+        // Pool, for the same reason `show` is: orderOut touches AppKit
+        // internals that autorelease on the pool-less thread.
+        objc2::rc::autoreleasepool(|_| {
+            for panel in self.panels.values() {
+                panel.window.orderOut(None);
+            }
+        });
     }
 
     fn show_card(&mut self, card: &HudCard, screen: NSRect, mtm: MainThreadMarker) {

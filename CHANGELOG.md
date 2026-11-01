@@ -16,7 +16,16 @@
   click-through, floating-level, join all spaces (over native fullscreen
   too). Config knobs: `hud_enabled` (default on), `hud_duration_ms`
   (default 500). The removed v0.5.2 bar stays retired; its geometry
-  scaffolding keeps the persistent-bar option open. 
+  scaffolding keeps the persistent-bar option open.
+- **Fixed: HUD flash leaked ~2 KB each.** The flash runs AppKit calls on
+  the daemon's pool-less CFRunLoop thread; without an `autoreleasepool`
+  the per-flash helper objects (screens array, description dicts,
+  label/text temps, frames behind `setStringValue`/`sizeToFit`/
+  `setFrame_display`) autoreleased and outlived the flash — measured
+  ~2.4 KB per flash, linear and unrecovered (Leopard's classic
+  pool-less-thread signature; `ns_workspace::screen_top_insets` dodged
+  the same trap with its own pool). Whole executor pass now runs in one
+  pool; 1,800-flash stress settles *down* (~37.7 MB, flat). 
 
 ## v0.6.10 — Multi-monitor repairs (2026-11-01)
 
