@@ -33,6 +33,22 @@
   routed into their config home (Browsing×2). Every fresh
   classification also logs `classified win/id class` so an app's
   truth-vs-lie question decodes straight from the log.
+- **Fixed: phantom AX writes left windows parked with the layout fully
+  applied.** After repeated display hotplugs, Firefox's AX element
+  conversation corrupted: geometry writes "succeeded" with the AX
+  readback echoing the target, but the window server had the real
+  windows parked at the hide rect (the monitored split: daemon
+`pengwm state` said visible-at-tiles, CGWindowList said parked-at
+  hide-corner; also the "switching stops showing windows" report).
+  Every layout write now verifies against the WindowServer's own
+  frame for the window id (`cg_window_level::window_cg_frame` —
+  CGWindowListing bounds, off-screen windows included), and a verdict
+  the CG contradicts re-resolves the element from scratch + retries
+  once, then reports an honest `Pinned { actual: CG }` instead of a
+  phantom Ok. The Firefox minimum-width wedge (width refuses, position
+  + height land) is treated as landed rather than pinned-forever.
+  Verified live: the re-resolve fires on the first phantom, both
+  windows land at their tiles.
 - **Fixed: HUD never drew the second monitor after it was plugged in
   while PengWM ran.** Two layers of fix:
   - Placement read AppKit's `NSScreen` list, which lags CG after

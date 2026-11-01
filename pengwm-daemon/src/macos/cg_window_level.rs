@@ -76,6 +76,65 @@ pub fn window_levels() -> HashMap<WindowId, i32> {
     levels
 }
 
+/// Frame of the window with `number`, from a fresh all-windows snapshot
+/// — including windows that are not on screen (parked/hides), which an
+/// on-screen-only query silently omits. The WindowServer's own verdict
+/// is the ground truth the write-verify path (`cg_ground_outcome`)
+/// leans on: it cannot phantom-succeed the way an app's AX readback
+/// can. `None` when the id is not in the snapshot (CG answered nothing,
+/// or the window closed between the write and this probe).
+pub fn window_cg_frame(window_id: WindowId) -> Option<pengwm_core::layout::Rect> {
+    let list = copy_window_info(
+        kCGWindowListOptionExcludeDesktopElements, // 0 = all windows
+        kCGNullWindowID,
+    )?;
+    unsafe {
+        let array_ref = list.as_concrete_TypeRef();
+        for i in 0..CFArrayGetCount(array_ref) {
+            let dict_ref = CFArrayGetValueAtIndex(array_ref, i) as CFDictionaryRef;
+            if dict_ref.is_null() {
+                continue;
+            }
+            let Some(number) = number_value(dict_ref, "kCGWindowNumber") else {
+                continue;
+            };
+            if number as WindowId != window_id {
+                continue;
+            }
+            let Some(bounds_ref) = dict_value(dict_ref, "kCGWindowBounds") else {
+                continue;
+            };
+            let (Some(x), Some(y), Some(w), Some(h)) = (
+                number_value(bounds_ref, "X"),
+                number_value(bounds_ref, "Y"),
+                number_value(bounds_ref, "Width"),
+                number_value(bounds_ref, "Height"),
+            ) else {
+                continue;
+            };
+            return Some(pengwm_core::layout::Rect::new(
+                x as f64,
+                y as f64,
+                w as f64,
+                h as f64,
+            ));
+        }
+    }
+    None
+}
+
+/// The dictionary value for `key` as a `CFDictionaryRef` (get-rule
+/// borrow — the value belongs to the snapshot array). The bounds
+/// sub-dictionary lives under `kCGWindowBounds`.
+fn dict_value(dict: CFDictionaryRef, key: &'static str) -> Option<CFDictionaryRef> {
+    unsafe {
+        let typed: CFDictionary<CFString, CFType> = CFDictionary::wrap_under_get_rule(dict);
+        let item = typed.find(intern(key))?;
+        let raw = TCFType::as_concrete_TypeRef(&*item);
+        Some(raw as CFDictionaryRef)
+    }
+}
+
 /// Level of one window, from a fresh on-screen snapshot. `None` when the
 /// window is not on screen (or CG answered nothing) — the caller keeps
 /// the subrole classification.

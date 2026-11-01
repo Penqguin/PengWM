@@ -15,6 +15,7 @@ use crate::macos::cg_display;
 use crate::macos::cg_window_level;
 use crate::macos::hud::HudPanels;
 use crate::macos::ns_workspace;
+use crate::macos::cg_window_level::window_cg_frame;
 use accessibility_sys::*;
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
@@ -345,6 +346,94 @@ impl MacOsAdapter {
             }
         }
     }
+    /// The WindowServer's own verdict: where the window with this CG
+    /// id physically is. The AX layer can phantom-succeed — observed on
+    /// Firefox Dev after repeated display hotplugs: writes "succeed",
+    /// the AX readback echoes the target, and the real window never
+    /// leaves its parked rect while the layout cache records it
+    /// applied. `CGWindowListing` bounds are the ground truth the UX
+    /// sees; every write verifies against them.
+    fn cg_ground_outcome(
+        &self,
+        window_id: WindowId,
+        pid: i32,
+        target: Rect,
+        outcome: WriteOutcome,
+    ) -> WriteOutcome {
+        let Some(cg) = window_cg_frame(window_id) else {
+            return outcome;
+        };
+        let position_ok = (cg.x - target.x).abs() < 4.0 && (cg.y - target.y).abs() < 4.0;
+        let height_ok = (cg.height - target.height).abs() < 4.0;
+        let width_ok = (cg.width - target.width).abs() < 40.0;
+        match &outcome {
+            WriteOutcome::Ok => {
+                if position_ok && height_ok && width_ok {
+                    outcome
+                } else {
+                    log::warn!(
+                        "cg_ground: window {} AX-claimed {:?} but really sits {:?} — phantom readback",
+                        window_id,
+                        target,
+                        cg
+                    );
+                    self.retry_fresh_then_report(window_id, pid, target, cg)
+                }
+            }
+            WriteOutcome::Pinned { actual, .. } | WriteOutcome::Drift { actual, .. } => {
+                // Treat "moved to target-within-tolerance but the WIDTH
+                // is off" (the Firefox minimum-width wedge) as landed:
+                // pins on width alone would retry forever; the
+                // resplit-around-real-min-width work is next in line.
+                if position_ok && height_ok && width_ok {
+                    WriteOutcome::Ok
+                } else {
+                    // The AX actual contradicts the window server — the
+                    // element is phantom: refresh + one retry, then an
+                    // honest pin that says where the window IS.
+                    self.retry_fresh_then_report(window_id, pid, target, *actual)
+                }
+            }
+            _ => outcome,
+        }
+    }
+
+    /// One refresh + rewrite at the CG-verified seam. The cached
+    /// element may belong to a phantom window (aliased/stale AX linkage
+    /// after a hotplug); re-resolving from scratch picks up the real
+    /// window surfaces. Returns the retry's outcome; the CG
+    /// verification still applies to it too.
+    fn retry_fresh_then_report(
+        &self,
+        window_id: WindowId,
+        pid: i32,
+        target: Rect,
+        fallback_actual: Rect,
+    ) -> WriteOutcome {
+        log::warn!(
+            "cg_ground: re-resolving element for window {} after phantom verdict",
+            window_id
+        );
+        match self.refresh_after_stale(window_id, pid) {
+            Some(new_elem) => {
+                let retry = unsafe { ax_element::set_window_rect(new_elem.ptr(), target) };
+                match retry {
+                    WriteOutcome::Ok => match window_cg_frame(window_id) {
+                        Some(cg)
+                            if (cg.x - target.x).abs() < 4.0
+                                && (cg.y - target.y).abs() < 4.0 =>
+                        {
+                            WriteOutcome::Ok
+                        }
+                        Some(cg) => WriteOutcome::Pinned { target, actual: cg },
+                        None => WriteOutcome::Pinned { target, actual: fallback_actual },
+                    },
+                    other => other,
+                }
+            }
+            None => WriteOutcome::Pinned { target, actual: fallback_actual },
+        }
+    }
 }
 
 /// True when a transient AX message means the cached element is stale
@@ -547,6 +636,10 @@ impl OsAdapter for MacOsAdapter {
         let started = std::time::Instant::now();
         let enhanced_ui = self.enhanced_ui_guard(pid);
         let outcome = self.write_resolved(window_id, element.ptr(), pid, rect);
+        // Ground the outcome in window-server truth BEFORE anything
+        // downstream (band learning, applied_rects) trusts it: the AX
+        // layer phantom-succeeds on some apps after hotplugs.
+        let outcome = self.cg_ground_outcome(window_id, pid, rect, outcome);
         let enhanced_was_on = enhanced_ui.was_enabled();
         drop(enhanced_ui);
         // The readback is ground truth the CG/AppKit APIs can't provide:
