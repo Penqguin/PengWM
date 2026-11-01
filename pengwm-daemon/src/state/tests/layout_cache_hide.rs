@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::common::*;
+use crate::adapter::DisplayInfo;
 use pengwm_core::command::Command;
 use pengwm_core::workspace::Workspace;
 
@@ -41,12 +42,48 @@ fn hide_workspace_per_monitor_second_display() {
     sm.workspaces[1].add_window(999, None);
     sm.store.register(999, 42);
     sm.hide_workspace(1);
+    // Display 2 is also the globally rightmost display here, so its own
+    // corner and the global corner coincide.
     let expected = pengwm_core::layout::hidden_rect((1920, 0), (1920, 1080));
     let rect = handle.rect(999).expect("hidden window rect should exist");
     assert_eq!(
         (rect.x, rect.y),
         (expected.x, expected.y),
         "display-2 window should hide at its own monitor corner"
+    );
+}
+
+#[test]
+fn hide_workspace_parks_at_globally_rightmost_monitor() {
+    // Sidecar-left arrangement: monitor 1 spans 0..1920 (globally rightmost
+    // — nothing's screenspace continues past its right edge), monitor 2
+    // sits to its left at -1920..0. A hidden workspace on the LEFT monitor
+    // must park at the rightmost display's corner: its OWN monitor corner
+    // abuts monitor 1, so parking there spills the window body onto
+    // monitor 1's screen.
+    let (mut sm, handle) = setup_with_display_layout(vec![
+        DisplayInfo {
+            id: 1,
+            origin: (0, 0),
+            size: (1920, 1080),
+        },
+        DisplayInfo {
+            id: 2,
+            origin: (-1920, 0),
+            size: (1920, 1080),
+        },
+    ]);
+    sm.set_hidden_strategy_for_test(crate::config::HiddenStrategy::BottomEdge);
+    // Workspace entry 1 is seated on display 2 (the left one).
+    sm.workspaces[1].add_window(999, None);
+    sm.store.register(999, 42);
+    sm.hide_workspace(1);
+    let expected = pengwm_core::layout::hidden_rect((0, 0), (1920, 1080));
+    let rect = handle.rect(999).expect("hidden window rect should exist");
+    assert_eq!(
+        (rect.x, rect.y),
+        (expected.x, expected.y),
+        "left-monitor windows park at the globally rightmost corner"
     );
 }
 

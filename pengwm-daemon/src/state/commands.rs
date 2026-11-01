@@ -29,7 +29,9 @@ impl StateManager {
             }
             Command::Workspace { id } => {
                 // Global: id is a 1-based index into config order, any output.
-                // A switch to a workspace visible elsewhere swaps (#1/Q2).
+                // A switch to a workspace visible on another output moves
+                // *focus* there (i3 rule) — the workspace only moves between
+                // outputs by an explicit command.
                 let n = id as usize;
                 if n != 0 {
                     let current_idx = self.active_workspace_idx();
@@ -66,16 +68,26 @@ impl StateManager {
                                     self.os.focus_window(wid);
                                 }
                                 // Stacking for every monitor whose visible
-                                // workspace changed: the focused output shows
-                                // `dec.show`, and a swap also restacked the
-                                // other output (it now shows the workspace
-                                // just left). ADR-0002's raise funnel covers
-                                // every said monitor.
-                                self.reveal_stack(Some(self.workspaces[dec.show].monitor_id));
-                                if let Some(other) =
-                                    dec.relayout.iter().copied().find(|&i| i != dec.show)
-                                {
-                                    self.reveal_stack(Some(self.workspaces[other].monitor_id));
+                                // workspace changed: normally the focused
+                                // output shows `dec.show`. A focus-only
+                                // cross-output switch changed nothing
+                                // visible — both outputs already show what
+                                // they showed. ADR-0002's raise funnel
+                                // covers every said monitor.
+                                if !dec.focus_only {
+                                    self.reveal_stack(Some(
+                                        self.workspaces[dec.show].monitor_id,
+                                    ));
+                                    if let Some(other) = dec
+                                        .relayout
+                                        .iter()
+                                        .copied()
+                                        .find(|&i| i != dec.show)
+                                    {
+                                        self.reveal_stack(Some(
+                                            self.workspaces[other].monitor_id,
+                                        ));
+                                    }
                                 }
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));

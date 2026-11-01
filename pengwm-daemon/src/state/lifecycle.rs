@@ -459,6 +459,25 @@ impl StateManager {
         }
         for i in 0..self.workspaces.len() {
             if self.workspaces[i].find_window(window_id).is_some() {
+                // i3 rule: a workspace is attached to its output and only an
+                // explicit command moves it — focus can never drag a workspace
+                // back into view. X11 enforces this by construction (hidden
+                // workspaces are unmapped, so no focus can ever be reported for
+                // their windows); macOS has no such wall: app-wide activation
+                // (`ActivateAllWindows`) or macOS itself can report focus for a
+                // parked/hidden window. A window on a hidden workspace is by
+                // definition unfocused-*able* — this event is stale observer
+                // noise, so record nothing and flip nothing. (The old 150ms
+                // switch debounce raced this: an event landing just past
+                // expiry still ran the reverse-switch.)
+                if !self.displays.is_visible(i, &self.workspaces) {
+                    log::debug!(
+                        "on_window_focused: ignoring hidden-workspace window {} (ws {})",
+                        window_id,
+                        i
+                    );
+                    return;
+                }
                 self.workspaces[i].focus_window(window_id);
                 let mon_id = self.workspaces[i].monitor_id;
                 // Debounce: don't mutate DisplaySet::active on focus notifications

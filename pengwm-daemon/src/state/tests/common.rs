@@ -75,3 +75,32 @@ pub(in crate::state) fn setup_with_handle(display_count: u32) -> (StateManager, 
         handle,
     )
 }
+
+/// Same harness, but with an explicit display arrangement — tests that need
+/// monitors where one is NOT the rightmost (e.g. a Sidecar to the left of
+/// the built-in) can't be expressed by `make_adapter`'s 1/2-display presets.
+pub(in crate::state) fn setup_with_display_layout(
+    displays: Vec<DisplayInfo>,
+) -> (StateManager, TestHandle) {
+    let (tx, _) = mpsc::channel(64);
+    let keybinds = Arc::new(Mutex::new(KeybindConfig::default()));
+    let prefix = test_prefix();
+    let mut adapter = TestAdapter::new();
+    adapter.displays = displays;
+    adapter.frontmost = Some(42);
+    adapter.running_apps.borrow_mut().push(42);
+    let handle = TestHandle::new(adapter);
+    let boxed: Box<dyn crate::adapter::OsAdapter> = Box::new(handle.shared());
+    let (bar_tx, _) = mpsc::channel(64);
+    (
+        StateManager::new(
+            tx,
+            keybinds,
+            prefix,
+            boxed,
+            BarSender::from_channel(bar_tx),
+            vec![],
+        ),
+        handle,
+    )
+}

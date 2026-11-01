@@ -284,12 +284,23 @@ fn move_window_to_display_bypasses_cap_and_keeps_focus() {
 }
 
 #[test]
-fn workspace_switch_to_visible_elsewhere_swaps_outputs() {
+fn workspace_switch_to_visible_elsewhere_moves_focus_only() {
     let mut sm = setup(2);
-    // Output 1 shows ws 0, output 2 shows ws 1. Switch to global ws 2 → swap.
+    // Output 1 shows ws 0, output 2 shows ws 1. Switch to global ws 2 →
+    // i3 rule: focus moves to output 2, both workspaces stay home.
     sm.on_command(Command::Workspace { id: 2 }, None);
-    assert_eq!(sm.displays.active().get(&1), Some(&1));
-    assert_eq!(sm.displays.active().get(&2), Some(&0));
+    assert_eq!(
+        sm.displays.focused_output(),
+        Some(2),
+        "focus lands on the output showing the target workspace"
+    );
+    assert_eq!(
+        sm.displays.active().get(&1),
+        Some(&0),
+        "output 1 keeps its workspace — no steal"
+    );
+    assert_eq!(sm.displays.active().get(&2), Some(&1));
+    assert_eq!(sm.workspaces[1].monitor_id, 2, "workspace stays home");
 }
 
 #[test]

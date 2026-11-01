@@ -522,6 +522,19 @@ impl OsAdapter for MacOsAdapter {
         let outcome = self.write_resolved(window_id, element.ptr(), pid, rect);
         let enhanced_was_on = enhanced_ui.was_enabled();
         drop(enhanced_ui);
+        // The readback is ground truth the CG/AppKit APIs can't provide:
+        // when a write's renormalization settles a window visibly lower
+        // than requested, the delta is the display's enforced top band
+        // (auto-hidden menu bars report no AppKit inset but are still
+        // reserved). Learning it here turns the next layout's targets
+        // convergent — this is the Sidecar renorm/pin loop, fixed at the
+        // root instead of managing its symptoms.
+        match &outcome {
+            WriteOutcome::Pinned { actual, .. } | WriteOutcome::Drift { actual, .. } => {
+                cg_display::learn_top_band_from_window_rect(actual)
+            }
+            _ => {}
+        }
         log::debug!(
             "set_window_rect win={} pid={} took {:?} outcome={} enhanced_ui={}",
             window_id,

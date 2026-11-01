@@ -299,6 +299,44 @@ fn workspace_switch_debounces_stale_focus() {
 }
 
 #[test]
+fn hidden_workspace_focus_cannot_flip_active_even_past_the_debounce() {
+    let (mut sm, handle) = setup_with_handle(1);
+    handle.inject_bundle_id(77, "org.mozilla.firefox".into());
+    sm.on_window_created(777, 77);
+    let browsing_idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.name == "Browsing")
+        .unwrap();
+    let dev_idx = sm
+        .workspaces
+        .iter()
+        .position(|ws| ws.name == "Development")
+        .unwrap();
+    // Start on browsing, then switch to dev.
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    // The 150ms debounce is a race: on Apple Silicon, a slow app's
+    // (Firefox's) stale `DidActivateApplication` / focused-window event for
+    // its parked window routinely lands *after* expiry — and then the
+    // reverse-switch ran. The i3 visibility rule closes it: a window on a
+    // hidden workspace can never hold real focus, so the event is stale
+    // no matter when it arrives.
+    sm.switch_debounce_until =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    sm.on_window_focused(777);
+    assert_eq!(
+        sm.displays.active().get(&1),
+        Some(&dev_idx),
+        "focus for a hidden-workspace window must not reverse-switch"
+    );
+    assert!(
+        sm.workspaces[browsing_idx].find_window(777).is_some(),
+        "the hidden window stays parked in its own workspace tree"
+    );
+}
+
+#[test]
 fn per_monitor_workspace_entries_respected() {
     let mut ds = DisplaySet::new(vec![
         WorkspaceEntry {

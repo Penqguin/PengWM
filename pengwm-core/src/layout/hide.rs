@@ -1,11 +1,13 @@
 use super::rect::Rect;
 use serde::{Deserialize, Serialize};
 
-/// Global-coordinate 1×1 rect at the bottom-right display corner for hidden
-/// windows. Placing it at `origin + size - 1` tucks traffic lights off-screen;
-/// AppKit clamps the title bar (~28px) into view, leaving a dark strip that
-/// is visible in Mission Control as a daemon-down escape hatch without the
-/// bright red/yellow/green chrome. Only `StateManager::hide_workspace` uses this.
+/// Global-coordinate 1×1 rect at the bottom-right corner of the *globally
+/// rightmost* display (the caller picks the monitor whose frame ends where
+/// nothing continues). Placing it at `origin + size - 1` tucks traffic
+/// lights off-screen; AppKit clamps the title bar (~28px) into view, leaving
+/// a dark strip that is visible in Mission Control as a daemon-down escape
+/// hatch without the bright red/yellow/green chrome. Only
+/// `StateManager::hide_workspace` uses this.
 pub fn hidden_rect(origin: (i32, i32), size: (u32, u32)) -> Rect {
     Rect::new(
         origin.0 as f64 + size.0 as f64 - 1.0,
@@ -32,7 +34,7 @@ pub fn far_offscreen_rect() -> Rect {
 /// escape hatch; `FarOffscreen` is truly invisible.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum HidePlacement {
-    /// 1×1 at the bottom-right corner of the owning monitor.
+    /// 1×1 at the bottom-right corner of the globally rightmost monitor.
     BottomEdge(Rect),
     /// 0×0 at -100k,-100k, fully invisible.
     FarOffscreen,

@@ -416,10 +416,28 @@ impl StateManager {
         let ws = &self.workspaces[workspace_idx];
         match self.windows_hidden_strategy() {
             crate::config::HiddenStrategy::BottomEdge => {
-                pengwm_core::layout::HidePlacement::BottomEdge(pengwm_core::layout::hidden_rect(
-                    ws.monitor_origin(),
-                    ws.monitor_size(),
-                ))
+                // The park corner must be universally offscreen. With
+                // displays side by side, the workspace's OWN monitor corner
+                // is not: a monitor with a neighbor to its right has the
+                // neighbor's screenspace continue exactly where its frame
+                // ends, so the parked window's body spills onto the neighbor
+                // (observed: Sidecar-parked windows sprawled across the
+                // built-in display). Park at the bottom-right corner of the
+                // globally rightmost live display — the only edge nothing
+                // continues past.
+                let park = self
+                    .os
+                    .active_displays()
+                    .into_iter()
+                    .max_by_key(|d| d.origin.0 as i64 + d.size.0 as i64)
+                    .map(|d| pengwm_core::layout::hidden_rect(d.origin, d.size))
+                    .unwrap_or_else(|| {
+                        pengwm_core::layout::hidden_rect(
+                            ws.monitor_origin(),
+                            ws.monitor_size(),
+                        )
+                    });
+                pengwm_core::layout::HidePlacement::BottomEdge(park)
             }
             crate::config::HiddenStrategy::FarOffscreen => {
                 pengwm_core::layout::HidePlacement::FarOffscreen

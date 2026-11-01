@@ -141,7 +141,7 @@ fn daemon_main() {
         macos::cg_display::register_hotplug_callback(tx.clone());
     }
 
-    eprintln!("[7/6] Starting IPC server and config watcher…");
+    eprintln!("[7/7] Starting IPC server and config watcher…");
     config::watcher::watch(tx.clone());
 
     // Ctrl-C / SIGTERM handler: forward Quit through the same channel so

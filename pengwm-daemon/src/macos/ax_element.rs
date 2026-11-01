@@ -218,6 +218,17 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> WriteOutco
     const EPS: f64 = LAYOUT_EPSILON;
     const STABLE_EPS: f64 = 2.0;
     let mut last_actual: Option<Rect> = None;
+    // One wedge-unlock nudge per call: a silent dropped write (see below)
+    // gets exactly one same-display nudge + retry, not a stream.
+    let mut nudged = false;
+    // What the readback showed when the nudge fired. If the *next* attempt
+    // still reads this rect, the drop was not an unlockable wedge (e.g. a
+    // menu-bar band renormalization) and further attempts converge exactly
+    // as badly as the first — report Pinned, NOT Drift: Drift feeds the
+    // throttled-log path alone, and a renormalizing window must feed the
+    // pin-strike machinery (backoff, then the cap) instead of re-writing
+    // on every sweep forever.
+    let mut wedge_actual: Option<Rect> = None;
     for attempt in 0..ATTEMPTS {
         if let Err(e) = set_window_position_raw(element, rect.x, rect.y) {
             return WriteOutcome::Transient(e.to_string());
@@ -257,10 +268,60 @@ pub unsafe fn set_window_rect(element: AXUIElementRef, rect: Rect) -> WriteOutco
                         };
                     }
                 }
+                // A previous nudge did not unlock the window: the readback
+                // is exactly where it was before any of our writes. This
+                // is a stable renormalization (menu bar band, app-side
+                // resistance), not a shifting drift — pin it so the caller
+                // strikes/backoffs/caps instead of sweeping every tick.
+                if let Some(w) = wedge_actual {
+                    if rects_close(actual, w, STABLE_EPS) {
+                        log::debug!(
+                            "set_window_rect pinned attempt {}/{} target {:?} actual {:?} (unchanged even after wedge nudge)",
+                            attempt + 1,
+                            ATTEMPTS,
+                            rect,
+                            actual
+                        );
+                        return WriteOutcome::Pinned {
+                            target: rect,
+                            actual,
+                        };
+                    }
+                }
                 if let Some(prev) = last_actual {
                     if rects_close(prev, actual, STABLE_EPS) {
+                        if !nudged {
+                            // macOS wedge, observed with AirPlay Sidecar
+                            // displays: WindowServer silently drops
+                            // cross-display position/size sets (err=0, the
+                            // readback is unchanged) — byte-for-byte
+                            // identical to a "busy app, zero progress"
+                            // pin. Empirically a window stays wedged until
+                            // one *same-display* geometry write goes
+                            // through, after which cross-display writes
+                            // land again. Nudge 2px from where the window
+                            // actually is (guaranteed to be same-display —
+                            // no display math needed), then take one more
+                            // attempt at the real target.
+                            nudged = true;
+                            wedge_actual = Some(actual);
+                            last_actual = None;
+                            let nudge = Rect {
+                                x: actual.x + 2.0,
+                                y: actual.y + 2.0,
+                                ..actual
+                            };
+                            let _ = set_window_position_raw(element, nudge.x, nudge.y);
+                            log::debug!(
+                                "set_window_rect: unchanged readback detected, wedge nudge attempt -> {:?} (target {:?}, actual {:?})",
+                                nudge,
+                                rect,
+                                actual
+                            );
+                            continue;
+                        }
                         log::debug!(
-                            "set_window_rect pinned attempt {}/{} target {:?} actual {:?} (unchanged since last attempt, bailing)",
+                            "set_window_rect pinned attempt {}/{} target {:?} actual {:?} (unchanged even after nudge, bailing)",
                             attempt + 1,
                             ATTEMPTS,
                             rect,
@@ -359,7 +420,17 @@ fn activate_app(pid: i32) -> bool {
 /// element is valid for the duration of the call and that `pid` references a running
 /// process with Accessibility permissions.
 pub unsafe fn focus_window(element: AXUIElementRef, pid: i32) {
-    activate_app(pid);
+    // i3 principle: focus the container, not the application. Blanket
+    // `activate_app` re-raises every window of the process — on a
+    // workspace swap whose old side holds windows of the same app, that
+    // can pull the *hidden* workspace's parked window forward and have
+    // macOS report it as focused. Only activate the app when it is not
+    // already frontmost (dedup: a re-focus of the frontmost app is a
+    // window-level operation only); the AXRaise below then selects the
+    // single window.
+    if frontmost_pid() != Some(pid) {
+        activate_app(pid);
+    }
 
     let raise_name = intern(kAXRaiseAction);
     AXUIElementPerformAction(element, raise_name);

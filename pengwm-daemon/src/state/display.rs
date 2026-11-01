@@ -200,21 +200,23 @@ impl DisplaySet {
             .map(|(&mon, _)| mon);
         match other_output {
             Some(other) if other != here => {
-                // Swap: target comes here, the workspace just left goes there.
-                let here_info = displays.iter().find(|d| d.id == here);
-                let other_info = displays.iter().find(|d| d.id == other);
-                if let (Some(h), Some(o)) = (here_info, other_info) {
-                    workspaces[target].reseat(h.id, h.origin, h.size);
-                    workspaces[current].reseat(o.id, o.origin, o.size);
-                }
-                self.active.insert(here, target);
-                self.active.insert(other, current);
+                // i3 rule: a workspace stays attached to the output it is
+                // visible on; switching to it moves *focus* to that output —
+                // never the workspace. The old behavior (reseat both trees,
+                // rewrite every window's rect cross-display) requires
+                // per-window cross-display AX writes that WindowServer can
+                // silently drop (err=0 with an unchanged readback — observed
+                // with AirPlay Sidecar displays), stranding one workspace
+                // stacked exactly over another. A workspace only moves
+                // between outputs by an explicit command now.
+                self.set_focused_output(other);
                 let focus = Self::switch_focus(&workspaces[target], focus_first);
                 Some(SwitchDecision {
                     show: target,
                     hide: vec![],
-                    relayout: vec![target, current],
+                    relayout: vec![],
                     focus,
+                    focus_only: true,
                 })
             }
             _ => {
@@ -229,6 +231,7 @@ impl DisplaySet {
                     hide: vec![current],
                     relayout: vec![target],
                     focus,
+                    focus_only: false,
                 })
             }
         }
@@ -601,13 +604,17 @@ pub struct MoveDecision {
 /// `hide` are the now-hidden siblings to park offscreen, `relayout` the
 /// workspaces needing `apply_layout`, `focus` the window the caller must
 /// raise via the `OsAdapter` seam (`None` when the destination is empty).
-/// Answered (plus assignment mutation) by `DisplaySet`, executed by the caller.
+/// `focus_only` marks the i3 cross-output case: the workspace is visible on
+/// another output, so focus moves there and nothing is hidden, re-seated or
+/// re-laid-out. Answered (plus assignment mutation) by `DisplaySet`,
+/// executed by the caller.
 #[derive(Debug)]
 pub struct SwitchDecision {
     pub show: usize,
     pub hide: Vec<usize>,
     pub relayout: Vec<usize>,
     pub focus: Option<WindowId>,
+    pub focus_only: bool,
 }
 
 /// A decided topology sync: `shown` are workspaces newly seated on a live
@@ -982,20 +989,27 @@ mod tests {
     }
 
     #[test]
-    fn plan_switch_swaps_when_visible_elsewhere() {
+    fn plan_switch_focuses_the_other_output_instead_of_swapping() {
         let mut ds = DisplaySet::new(entries_two());
         let mut wss = Vec::new();
         ds.init_workspaces(&mut wss, &test_displays_two(), 1);
-        // Output 1 shows 0, output 2 shows 1. Focused = 1, switch to 1 → swap.
+        // Output 1 shows 0, output 2 shows 1. Focused = 1, switch to 1
+        // (visible on output 2) → i3 rule: focus moves to output 2, the
+        // workspace does not move.
+        ds.set_focused_output(1);
         let dec = ds
             .plan_switch(1, &mut wss, &test_displays_two(), false)
             .unwrap();
         assert_eq!(dec.show, 1);
-        assert!(dec.hide.is_empty());
-        assert_eq!(ds.active.get(&1), Some(&1));
-        assert_eq!(ds.active.get(&2), Some(&0));
-        assert_eq!(wss[1].monitor_id, 1);
-        assert_eq!(wss[0].monitor_id, 2);
+        assert!(dec.hide.is_empty(), "nothing to hide: both keep their seats");
+        assert!(dec.relayout.is_empty(), "nothing to re-seat: no rect rewrites");
+        assert!(dec.focus_only);
+        assert_eq!(ds.focused_output(), Some(2));
+        // active map and seats are untouched.
+        assert_eq!(ds.active.get(&1), Some(&0));
+        assert_eq!(ds.active.get(&2), Some(&1));
+        assert_eq!(wss[1].monitor_id, 2, "workspace stays home");
+        assert_eq!(wss[0].monitor_id, 1);
     }
 
     #[test]

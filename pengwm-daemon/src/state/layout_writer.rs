@@ -63,10 +63,11 @@ pub(super) struct LayoutWriteCache {
     /// Consecutive Pinned reports per window: the writer saw readbacks stop
     /// moving, meaning further writes are futile (busy app event loop).
     /// After `PIN_STRIKES` the layout skips writes for `PIN_BACKOFF` and
-    /// retries on a timer instead of storming. Time-bounded, never
-    /// permanent — a late-becoming-resizable window heals at most one
-    /// backoff late. Cleared on success, target change, destroy, terminate
-    /// and wake — deliberately *not* on displace: see `invalidate`.
+    /// retries on a timer instead of storming. After `PIN_CAP` it stops
+    /// retrying outright — a write persistently refused at the same target
+    /// only flickers the window, so it goes quiet until the situation
+    /// changes. Cleared on success, target change, destroy, terminate and
+    /// wake — deliberately *not* on displace: see `invalidate`.
     pin_state: HashMap<WindowId, PinState>,
     /// Whether a wake resync is pending. Scoped by `monitors_wake.rs`
     /// (armed with the resync, disarmed on commit/deadline) so the
@@ -100,6 +101,15 @@ impl LayoutWriteCache {
     /// Bounds the heal delay for a late-becoming-resizable window while
     /// cutting a chronic storm to a fraction of its write volume.
     const PIN_BACKOFF: Duration = Duration::from_secs(15);
+    /// Total Pinned strikes at the same target after which the writer stops
+    /// retrying entirely (until the target changes or a write heals). The
+    /// 15s backoff alone still re-runs the futile write every 15s — on an
+    /// unfixable geometry mismatch (e.g. a secondary display whose menu bar
+    /// the target ignores) that is a jump+snap-back flicker for the life of
+    /// the session. i3 principle, applied to geometry: never fight a losing
+    /// write forever — at the cap the window goes quiet and heals only when
+    /// its target changes (fresh situation) or a write lands.
+    const PIN_CAP: u32 = 5;
 
     pub(super) fn new() -> Self {
         Self {
@@ -178,11 +188,19 @@ impl LayoutWriteCache {
 
     /// True while writes to this window are backed off: `PIN_STRIKES`
     /// consecutive futile attempts at the same target, the last one inside
-    /// `PIN_BACKOFF`. One definition, two readers — `should_write` gates on
-    /// it, and the misplaced sweep consults it so a pinned window stops
-    /// re-triggering a whole-workspace re-layout on every tick.
+    /// `PIN_BACKOFF` — or, permanently, once strikes reach `PIN_CAP`: an
+    /// unfixable target never heals by retrying, it flickers every cycle.
+    /// One definition, two readers — `should_write` gates on it, and the
+    /// misplaced sweep consults it so a pinned window stops re-triggering a
+    /// whole-workspace re-layout on every tick.
     pub(super) fn pin_backoff_active(&self, window_id: WindowId, now: Instant) -> bool {
         self.pin_state.get(&window_id).is_some_and(|pin| {
+            if pin.strikes >= Self::PIN_CAP {
+                // Capped: no timer, no retry. Only a target change or a
+                // landed write clears this (see `should_write` and
+                // `record_success`).
+                return true;
+            }
             pin.strikes >= Self::PIN_STRIKES
                 && now.duration_since(pin.last_attempt) < Self::PIN_BACKOFF
         })
@@ -289,6 +307,14 @@ impl LayoutWriteCache {
                         actual,
                         target,
                         Self::PIN_BACKOFF
+                    );
+                } else if strikes == Self::PIN_CAP {
+                    log::warn!(
+                        "layout_writer: window {} pinned at {:?} (target {:?}) for {:?} strikes — giving up until the target changes",
+                        window_id,
+                        actual,
+                        target,
+                        Self::PIN_CAP
                     );
                 } else {
                     log::debug!(
@@ -718,6 +744,39 @@ mod tests {
         let t = target();
         assert!(cache.should_write(7, t, Some(Rect::new(500.0, 500.0, 10.0, 10.0))));
         assert!(cache.should_write(7, t, None));
+    }
+
+    #[test]
+    fn pin_cap_stops_retrying_until_target_changes() {
+        let mut cache = LayoutWriteCache::new();
+        let t = target();
+        let actual = Rect::new(500.0, 500.0, 10.0, 10.0);
+        // Strike cycles 1..=PIN_CAP: write → pinned → age well past the
+        // backoff so every retry is purely cap-driven, not timer-driven.
+        for strike in 1..=5 {
+            assert!(cache.should_write(7, t, None), "cycle {strike}");
+            assert_eq!(
+                cache.record_failure(
+                    7,
+                    t,
+                    WriteOutcome::Pinned {
+                        target: t,
+                        actual
+                    }
+                ),
+                AfterWrite::ProbeFullscreen
+            );
+            cache.age_pin_for_test(7, Duration::from_secs(30));
+        }
+        // Cap engaged: even fully aged out of the 15s backoff, the futile
+        // write is not retried — the flicker stops until the situation
+        // changes.
+        assert!(!cache.should_write(7, t, None));
+        assert!(cache.pin_backoff_active(7, Instant::now()));
+        // A changed target is a fresh situation — immediate write, pin dropped.
+        let other = Rect::new(960.0, 0.0, 960.0, 1040.0);
+        assert!(cache.should_write(7, other, None));
+        assert!(cache.pin_state.get(&7).is_none());
     }
 
     #[test]

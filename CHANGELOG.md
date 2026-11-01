@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.6.10 — Multi-monitor repairs (2026-11-01)
+
+- **Fixed: focus events could reverse-switch workspaces.** Switching to a
+  workspace whose app already had windows parked on the hidden side let an
+  app-wide activation (`ActivateAllWindows`) report focus for a *hidden*
+  workspace's window; when the stale event landed just past the 150 ms
+  switch debounce, `on_window_focused` dragged the old workspace back into
+  view. i3 enforces the "focus never moves workspaces" rule by construction
+  (unmapped windows cannot be focused) — pengwm now enforces it explicitly:
+  a focus event for a window on a hidden workspace is stale noise,
+  recorded nowhere, flipping nothing, no matter when it arrives. Explicit
+  switches also focus the window only (`frontmost` dedup on `activate_app`)
+  instead of re-raising the whole app.
+- **Fixed: cross-output workspace switches no longer steal workspaces.**
+  Switching to a workspace visible on another output *swapped* it with the
+  current one — a reseat-both-trees operation requiring per-window
+  cross-display AX writes. WindowServer silently drops cross-display
+  writes for wedged windows (err=0, readback unchanged — observed with
+  AirPlay Sidecar displays), stranding one workspace stacked exactly over
+  another. Now i3 semantics: focus moves to the output showing the target
+  workspace; a workspace only moves between outputs by an explicit
+  command (`SwitchDecision::focus_only`).
+- **Fixed: the Sidecar renormalization/pin loop — learned top bands.** An
+  AirPlay Sidecar display enforces a top placement band on AX geometry
+  writes even though AppKit's `visibleFrame` reports the full frame (the
+  menu bar is auto-hidden and invisible, but reserved); every tiled
+  target violating it renormalized identically, forever, in a visible
+  jump-snap-back cycle. Three parts:
+  - the menu-bar inset is now read from *every* screen's own
+    `visibleFrame` (frame-relative math — the old global-coords arithmetic
+    was only correct for the primary at y=0), not the primary's;
+  - when a write's readback renormalizes, the enforced band is *learned*
+    (`cg_display::learn_top_band_from_window_rect`, clamped, only-ever-up)
+    and merged above the AppKit inset into `DisplayInfo`, so tile targets
+    are born convergent after one observation;
+  - a post-write "unchanged readback" now triggers one same-display
+    wedge-unlock nudge (2px) — empirically, any successful same-display
+    write re-syncs WindowServer's mapping after which cross-display
+    writes land. If the nudge does not unlock, the outcome is reported
+    as `Pinned` (not `Drift`), so strikes → backoff → the cap apply.
+- **Pinned writes now cap out.** `PIN_CAP = 5`: after five futile strikes
+  at the same target, the writer stops retrying outright (i3: never fight
+  a losing write forever) — before, a chronic mismatch re-wrote every
+  15s. Heals immediately on target change or a landed write.
+- **Fixed: hidden windows parked onto the neighbor's screen.** `BottomEdge`
+  parks now sit at the bottom-right corner of the *globally rightmost*
+  live display, not the workspace's own monitor — with a monitor to the
+  right, its own "corner" continues onto that neighbor's screenspace, so
+  hidden windows sprawled visibly across monitor 1. The Mission-Control
+  escape-hatch sliver stays, now on the far-right edge where nothing
+  overlaps. `TopologySync::repark` re-parks at fresh geometry when the
+  rightmost monitor changes.
+- Boot log label: `[7/6]` → `[7/7]`.
+
 ## v0.6.9 — New windows open where you are (2026-10-28)
 
 - **New windows open on the current workspace, not their remembered one.**

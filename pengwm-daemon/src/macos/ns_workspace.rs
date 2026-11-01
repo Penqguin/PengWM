@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSNumber, NSString};
 use tokio::sync::mpsc;
 
 use crate::event_loop::DaemonEvent;
@@ -184,38 +184,60 @@ fn extract_pid(notification: &NSNotification) -> Option<i32> {
 use objc2::msg_send;
 use objc2::runtime::{AnyClass, NSObject};
 
-/// Returns the height of the menu bar on the primary display, in points.
-/// Returns 0 if the menu bar is auto-hidden. Wrapped in a pool: the
-/// `screens`/`frame`/`visibleFrame` calls autorelease on the daemon's
-/// pool-less CFRunLoop thread.
-pub fn menu_bar_height() -> f64 {
+/// Per-display menu-bar top inset, in points, keyed by CG display id
+/// (`NSScreenNumber`, the id in each screen's device description). Reads
+/// *every* screen's `visibleFrame` — macOS shows a menu bar on secondaries
+/// too (incl. Sidecar/iPad panels and the "display has separate Spaces"
+/// menu bar), and tiling that ignores it gets renormalized by the OS on
+/// every write. Auto-hidden menu bars and screens with no bar report 0 and
+/// are best dropped by the caller. Wrapped in a pool: the screens
+/// enumeration autoreleases on the daemon's pool-less CFRunLoop thread.
+#[cfg(target_os = "macos")]
+pub fn screen_top_insets() -> Vec<(u32, f64)> {
+    let mut out = Vec::new();
     objc2::rc::autoreleasepool(|_pool| {
         let cls = match AnyClass::get(c"NSScreen") {
             Some(c) => c,
-            None => return 0.0,
+            None => return,
         };
         unsafe {
             let screens: *mut NSObject = msg_send![cls, screens];
             if screens.is_null() {
-                return 0.0;
+                return;
             }
             let count: usize = msg_send![screens, count];
-            if count == 0 {
-                return 0.0;
+            for i in 0..count {
+                let screen: *mut objc2::runtime::AnyObject =
+                    msg_send![screens, objectAtIndex: i];
+                if screen.is_null() {
+                    continue;
+                }
+                let desc: *mut objc2::runtime::AnyObject =
+                    msg_send![screen, deviceDescription];
+                if desc.is_null() {
+                    continue;
+                }
+                let key = NSString::from_str("NSScreenNumber");
+                let value: Option<Retained<NSNumber>> =
+                    msg_send![desc, objectForKey: &*key];
+                let Some(num) = value else { continue };
+                let display_id: u32 = msg_send![&num, unsignedIntValue];
+                let frame: objc2_foundation::NSRect = msg_send![screen, frame];
+                let visible: objc2_foundation::NSRect = msg_send![screen, visibleFrame];
+                // Both rects are in *global* (bottom-left origin) display
+                // space; only their difference is screen-local. Subtracting
+                // the frame's own origin was skipped by the old primary-only
+                // helper because the primary sits at y=0 — on any other
+                // screen, `visible.origin.y` is its global position, not a
+                // dock inset.
+                let bottom_inset = visible.origin.y - frame.origin.y;
+                let total_inset = frame.size.height - visible.size.height;
+                let top_inset = total_inset - bottom_inset;
+                out.push((display_id, top_inset.max(0.0)));
             }
-            let first: *mut NSObject = msg_send![screens, objectAtIndex: 0usize];
-            if first.is_null() {
-                return 0.0;
-            }
-            let frame: objc2_foundation::NSRect = msg_send![first, frame];
-            let visible: objc2_foundation::NSRect = msg_send![first, visibleFrame];
-
-            let bottom_inset = visible.origin.y;
-            let total_inset = frame.size.height - visible.size.height;
-            let top_inset = total_inset - bottom_inset;
-            top_inset.max(0.0)
         }
-    })
+    });
+    out
 }
 
 #[cfg(test)]
