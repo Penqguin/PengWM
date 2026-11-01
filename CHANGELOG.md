@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.11 — Workspace HUD (unreleased)
+## v0.6.11 — Workspace HUD (2026-11-01)
 
 - **New: transient workspace HUD** (Spec 0001,
   `docs/specs/0001-workspace-hud.md`). One dark translucent pill per
