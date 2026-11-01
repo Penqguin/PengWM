@@ -228,6 +228,28 @@ pub fn register_hotplug_callback(event_tx: mpsc::Sender<DaemonEvent>) {
     }
 }
 
+/// Force AppKit's cached screen list to re-derive from the window server.
+/// The daemon runs its own CFRunLoop, not `NSApp`'s event loop, so the
+/// system never routes `NSApplicationDidChangeScreenParametersNotification`
+/// through this process the way it does for normal apps — AppKit's
+/// in-process screen cache froze at boot. Consequences observed live:
+/// insets read 0 for a re-plugged display, and pill placement refused
+/// to honor a frame on it (default placement on the primary instead).
+/// The notification posts synchronously through NSNotificationCenter,
+/// so its handlers run — AppKit's screen cache included — before this
+/// returns. Same pattern `main.rs` already uses for the
+/// didFinishLaunching poke.
+pub fn refresh_appkit_screen_list() {
+    use objc2_foundation::{NSNotificationCenter, NSString};
+    let center = NSNotificationCenter::defaultCenter();
+    unsafe {
+        center.postNotificationName_object(
+            &NSString::from_str("NSApplicationDidChangeScreenParametersNotification"),
+            None,
+        );
+    }
+}
+
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGDisplayRegisterReconfigurationCallback(
@@ -243,17 +265,28 @@ unsafe extern "C" fn hotplug_callback(
 ) {
     let tx = &*(refcon as *const mpsc::Sender<DaemonEvent>);
 
+    let mut reconfigured = false;
     if flags & kCGDisplayAddFlag != 0 {
         log::info!("Display added: {}", display);
         let _ = tx.try_send(DaemonEvent::MonitorAdded(display));
+        reconfigured = true;
     }
     if flags & kCGDisplayRemoveFlag != 0 {
         log::info!("Display removed: {}", display);
         let _ = tx.try_send(DaemonEvent::MonitorRemoved(display));
+        reconfigured = true;
     }
     if flags & kCGDisplaySetModeFlag != 0 {
         log::info!("Display resized: {}", display);
         let _ = tx.try_send(DaemonEvent::MonitorResized(display));
+        reconfigured = true;
+    }
+    if reconfigured {
+        // The topology reconfiguration is exactly when AppKit's cached
+        // screen list must refresh (see the fn doc); do it on this
+        // thread, which is the main one the callback fires on.
+        refresh_appkit_screen_list();
+        log::debug!("AppKit screen list refreshed after display reconfiguration");
     }
 }
 

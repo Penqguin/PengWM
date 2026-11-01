@@ -31,7 +31,7 @@ use objc2_app_kit::{
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{NSRect, NSPoint, NSSize, NSString};
+use objc2_foundation::{NSRect, NSPoint, NSSize, NSNumber, NSString};
 
 use crate::adapter::HudCard;
 use crate::macos::cg_display;
@@ -129,6 +129,12 @@ impl HudPanels {
                 return;
             };
             let frames = display_frames();
+            log::debug!(
+                "hud draw: cards [{:?}] on cg {:?} / appkit {:?}",
+                cards.iter().map(|c| c.display_id).collect::<Vec<_>>(),
+                frames.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                appkit_screen_ids()
+            );
             let live: std::collections::HashSet<u32> =
                 frames.iter().map(|(id, _)| *id).collect();
             self.panels.retain(|id, _| live.contains(id));
@@ -340,4 +346,43 @@ fn display_frames() -> Vec<(u32, (f64, f64))> {
             )
         })
         .collect()
+}
+
+/// The screen ids AppKit's *cached* list holds, for the per-flash
+/// audit log. CG enumerations are asked fresh every time and can't
+/// lie; AppKit's cache is the one that needed the hotplug refresh —
+/// this is how we see it in the field instead of assuming.
+fn appkit_screen_ids() -> Vec<u32> {
+    use objc2::runtime::{AnyClass, AnyObject, NSObject};
+    objc2::rc::autoreleasepool(|_| {
+        let mut out = Vec::new();
+        let Some(cls) = AnyClass::get(c"NSScreen") else {
+            return out;
+        };
+        unsafe {
+            let screens: *mut NSObject = msg_send![cls, screens];
+            if screens.is_null() {
+                return out;
+            }
+            let count: usize = msg_send![&*screens, count];
+            for i in 0..count {
+                let screen: *mut AnyObject = msg_send![&*screens, objectAtIndex: i];
+                if screen.is_null() {
+                    continue;
+                }
+                let desc: *mut AnyObject = msg_send![&*screen, deviceDescription];
+                if desc.is_null() {
+                    continue;
+                }
+                let key = NSString::from_str("NSScreenNumber");
+                let value: Option<Retained<NSNumber>> =
+                    msg_send![desc, objectForKey: &*key];
+                if let Some(num) = value {
+                    let id: u32 = msg_send![&num, unsignedIntValue];
+                    out.push(id);
+                }
+            }
+        }
+        out
+    })
 }
