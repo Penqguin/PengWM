@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.6.12 — HUD hotplug + band accuracy (unreleased)
+
+- **Fixed: HUD never drew the second monitor after it was plugged in
+  while PengWM ran.** Pill placement read AppKit's `NSScreen` list,
+  which lags CG after a hotplug; every flash logged
+  `hud card dropped: display N has no matching NSScreen` forever.
+  The executor now positions straight from the daemon's own
+  `active_displays()` snapshot (the same source the tiler uses —
+  pill and tiles can never disagree about which monitors exist), with
+  one AX→AppKit center-point conversion verified against
+  `NSScreen.frame` on the reporting machine.
+- **Fixed: band learning mis-attributed width pins as top bands.** A
+  write pinned on *width* with its top edge exactly on target learned
+  `actual.y - frame.top` as a fresh band — the sampled delta (y=238 vs
+  frame top 153 → "85px") authored the sticky vertical-shrink on the
+  left monitor, immune to workspace switches because bands ratchet
+  upward. Bands now learn only from writes where the top edge actually
+  renormalized (`actual.y != target.y`); real bands re-teach within one
+  write, so nothing else changes. Verified live: same write pattern,
+  zero band learnings after the fix.
+- **Learned top bands die with their display** (pruned at every
+  topology sync): a re-plugged monitor re-teaches from live
+  renormalizations instead of inheriting the previous session's band —
+  the source of per-session strip-size variance (60px today, 85px
+  before).
+- Note (not fixed): Firefox Developer Edition windows on the left
+  monitor pin at 599px width — every tile write asks 582.5 and
+  WindowServer keeps 599 (position adjusts, height responds: a real
+  per-window minimum-width refusal). The WM leaves them pinned with
+  15s backs; a band-accurate fix belongs to per-window min-size
+  awareness ("accept real min width and re-split around it").
+
 ## v0.6.11 — Workspace HUD (2026-11-01)
 
 - **New: transient workspace HUD** (Spec 0001,

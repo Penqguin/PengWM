@@ -44,6 +44,13 @@ impl StateManager {
         // serves anymore (`clear_topology` keeps pending gone-grace timers —
         // a topology change is not death evidence).
         self.layout_cache.clear_topology();
+        // Learned top bands die with their display: the map ratchets
+        // upward, so a stale entry would make a reconnected monitor
+        // inherit a band it may no longer enforce (the strip-size
+        // variance case). Band-only prune — keep is the *CG* id set,
+        // exactly the watch the learning probe uses.
+        let keep: Vec<u32> = self.os.active_displays().iter().map(|d| d.id).collect();
+        crate::macos::cg_display::prune_learned_top_bands(&keep);
         self.park_topology_changes(sync.hidden, sync.repark);
         for idx in sync.relayout {
             if idx < self.workspaces.len() {

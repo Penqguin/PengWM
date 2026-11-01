@@ -533,10 +533,11 @@ impl OsAdapter for MacOsAdapter {
         // (auto-hidden menu bars report no AppKit inset but are still
         // reserved). Learning it here turns the next layout's targets
         // convergent — this is the Sidecar renorm/pin loop, fixed at the
-        // root instead of managing its symptoms.
+        // root instead of managing its symptoms. Only a *top-edge*
+        // renormalization teaches: see `learn_top_band_from_write`.
         match &outcome {
-            WriteOutcome::Pinned { actual, .. } | WriteOutcome::Drift { actual, .. } => {
-                cg_display::learn_top_band_from_window_rect(actual)
+            WriteOutcome::Pinned { target, actual } | WriteOutcome::Drift { target, actual } => {
+                cg_display::learn_top_band_from_write(&cg_display::raw_active_display_ids(), target, actual)
             }
             _ => {}
         }

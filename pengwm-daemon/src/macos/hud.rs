@@ -7,6 +7,16 @@
 //! per flash, and ordered out on hide — the daemon process owns them
 //! (no child process, no IPC; see the spec's rejected alternatives).
 //!
+//! Positioning is CG-derived, deliberately not `NSScreen`: after a
+//! display connects while the daemon runs, AppKit's screen list can lag
+//! the CG list (`hud card dropped: display N has no matching NSScreen`
+//! was the hotplug-era symptom), while the daemon tiler itself is
+//! CG-bound. One coordinate-space conversion applies — AppKit global
+//! space is bottom-left origin, AX/CG space is the main display's
+//! top-left with y down: `y_appkit = main_cg_height - y_ax`. The
+//! formula is machinery-free and verifiable against `NSScreen.frame`
+//! on the same machine (see the module docs of `cg_display`).
+//!
 //! Pure planning (what the cards say, which monitor, which is focused)
 //! lives in `state::hud`. This module only knows AppKit: how to put a
 //! rounded translucent capsule with text on each screen.
@@ -17,16 +27,14 @@ use objc2::rc::Retained;
 use objc2::MainThreadOnly as _;
 use objc2::{msg_send, MainThreadMarker};
 use objc2_app_kit::{
-    NSScreen, NSBackingStoreType, NSColor, NSFont, NSTextField, NSVisualEffectBlendingMode,
+    NSBackingStoreType, NSColor, NSFont, NSTextField, NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{
-    NSString,
-};
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSNumber};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::adapter::HudCard;
+use crate::macos::cg_display;
 
 /// Comfortable text inset inside the capsule (each side).
 const PADDING_X: f64 = 14.0;
@@ -82,22 +90,22 @@ impl HudPanels {
                 log::debug!("hud show skipped: not on the main thread");
                 return;
             };
-            let screens = screen_frames(mtm);
+            let frames = display_frames();
             let live: std::collections::HashSet<u32> =
-                screens.iter().map(|(id, _)| *id).collect();
+                frames.iter().map(|(id, _)| *id).collect();
             self.panels.retain(|id, _| live.contains(id));
             for card in cards {
-                let Some((_, frame)) = screens
+                let Some((_, center)) = frames
                     .iter()
                     .find(|(id, _)| *id == card.display_id)
                 else {
                     log::debug!(
-                        "hud card dropped: display {} has no matching NSScreen",
+                        "hud card dropped: display {} is not in the CG display list",
                         card.display_id
                     );
                     continue;
                 };
-                self.show_card(card, *frame, mtm);
+                self.show_card(card, *center, mtm);
             }
         });
     }
@@ -123,10 +131,10 @@ impl HudPanels {
         });
     }
 
-    fn show_card(&mut self, card: &HudCard, screen: NSRect, mtm: MainThreadMarker) {
+    fn show_card(&mut self, card: &HudCard, center_hint: (f64, f64), mtm: MainThreadMarker) {
         let Some(panel) = self.panels.get_mut(&card.display_id) else {
             let label = build_label(mtm, &card.label(), card.focused);
-            let Some((window, label)) = build_panel(mtm, label, screen) else {
+            let Some((window, label)) = build_panel(mtm, label, center_hint) else {
                 log::warn!("hud panel creation failed for display {}", card.display_id);
                 return;
             };
@@ -139,7 +147,7 @@ impl HudPanels {
             );
             return;
         };
-        refit_panel(panel, &card.label(), card.focused, screen);
+        refit_panel(panel, &card.label(), card.focused, center_hint);
         panel.window.orderFrontRegardless();
     }
 }
@@ -174,17 +182,21 @@ fn build_label(mtm: MainThreadMarker, text: &str, focused: bool) -> Retained<NST
 /// creation would clip longer text and leave a drifted capsule after
 /// shorter text (the panel was centered for the *old* width).
 /// The re-fit mirrors `build_panel`'s sizing math exactly.
-fn pill_frame(width: f64, height: f64, screen: NSRect) -> NSRect {
+fn pill_frame(width: f64, height: f64, center_ax: (f64, f64)) -> NSRect {
+    // The only coordinates AppKit will accept for window frames: global
+    // bottom-left-origin. The display center arrives in AX space
+    // (top-left origin, y down); one flip per the module-doc formula.
+    let (cx, cy_ax) = center_ax;
     NSRect::new(
         NSPoint::new(
-            screen.origin.x + (screen.size.width - width) / 2.0,
-            screen.origin.y + (screen.size.height - height) / 2.0,
+            cx - width / 2.0,
+            cg_display::raw_main_height() - cy_ax - height / 2.0,
         ),
         NSSize::new(width, height),
     )
 }
 
-fn refit_panel(panel: &mut HudPanel, text: &str, focused: bool, screen: NSRect) {
+fn refit_panel(panel: &mut HudPanel, text: &str, focused: bool, center_ax: (f64, f64)) {
     let label_text = NSString::from_str(text);
     panel.label.setStringValue(&label_text);
     // The focused accent lives in the label color, not the window —
@@ -207,7 +219,9 @@ fn refit_panel(panel: &mut HudPanel, text: &str, focused: bool, screen: NSRect) 
     // No display flag: the next run-loop pass draws it — pills flash,
     // they don't animate. The frame's anchor is re-centered per size so
     // a shorter text never leaves the pill off-center.
-    panel.window.setFrame_display(pill_frame(width, height, screen), false);
+    panel
+        .window
+        .setFrame_display(pill_frame(width, height, center_ax), false);
 }
 
 /// Create (or finalize) the window for one pill: rounded translucent
@@ -216,7 +230,7 @@ fn refit_panel(panel: &mut HudPanel, text: &str, focused: bool, screen: NSRect) 
 fn build_panel(
     mtm: MainThreadMarker,
     label: Retained<NSTextField>,
-    screen: NSRect,
+    center_ax: (f64, f64),
 ) -> Option<(Retained<NSWindow>, Retained<NSTextField>)> {
     let text_size = label.frame().size;
     let width = text_size.width + PADDING_X * 2.0;
@@ -244,7 +258,7 @@ fn build_panel(
     label.setFrameOrigin(NSPoint::new(PADDING_X, PADDING_Y));
     effect.addSubview(&label);
 
-    let frame = pill_frame(width, height, screen);
+    let frame = pill_frame(width, height, center_ax);
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -269,28 +283,28 @@ fn build_panel(
     Some((window, label.clone()))
 }
 
-/// (CG display id, AppKit-global frame) per screen — the
-/// `NSScreenNumber` device-description mapping the codebase already
-/// uses for menu-bar insets (`ns_workspace::screen_top_insets`). AppKit
-/// global frames are bottom-left-origin; the executor positions in that
-/// space directly, never converting through the AX (top-left) space.
-/// Raw `msg_send` like that helper: `NSDictionary`/`NSPredicate` trait
-/// features are not part of the daemon's foundation feature set this
-/// link can pay for.
-fn screen_frames(mtm: MainThreadMarker) -> Vec<(u32, NSRect)> {
-    let mut out = Vec::new();
-    let screens = NSScreen::screens(mtm);
-    for screen in screens.iter() {
-        let desc: Retained<objc2::runtime::NSObject> =
-            unsafe { msg_send![&screen, deviceDescription] };
-        let key = NSString::from_str("NSScreenNumber");
-        let value: Option<Retained<NSNumber>> = unsafe {
-            msg_send![&desc, objectForKey: &*key]
-        };
-        let Some(num) = value else { continue };
-        let id: u32 = unsafe { msg_send![&num, unsignedIntValue] };
-        let frame: NSRect = unsafe { msg_send![&screen, frame] };
-        out.push((id, frame));
-    }
-    out
+/// (CG display id, AX-space center of the display's usable area) per
+/// display — straight from the same `active_displays()` snapshot the
+/// tiler is built on, so pill placement and tile placement can never
+/// disagree about which monitors exist. Notably not `NSScreen`: the
+/// AppKit screen list lags CG after a hotplug (the "second monitor
+/// shows no pill" report).
+
+/// (CG display id, AX-space center of the display's usable area) per
+/// display — straight from the same `active_displays()` snapshot the
+/// tiler is built on, so pill placement and tile placement can never
+/// disagree about which monitors exist. Notably not `NSScreen`: the
+/// AppKit screen list lags CG after a hotplug (the "second monitor
+/// shows no pill" report).
+fn display_frames() -> Vec<(u32, (f64, f64))> {
+    cg_display::active_displays()
+        .iter()
+        .map(|d| {
+            let (w, h) = (d.size.0 as f64, d.size.1 as f64);
+            (
+                d.id,
+                (d.origin.0 as f64 + w / 2.0, d.origin.1 as f64 + h / 2.0),
+            )
+        })
+        .collect()
 }

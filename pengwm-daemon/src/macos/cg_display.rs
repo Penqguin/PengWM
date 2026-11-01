@@ -24,14 +24,28 @@ static LEARNED_TOP_BANDS: OnceLock<Mutex<std::collections::HashMap<u32, i32>>> =
 /// center. Called on Pinned/Drift write outcomes, where the readback is
 /// window-reported ground truth. Bands are clamped to a sane range and
 /// only ever move upward.
-pub fn learn_top_band_from_window_rect(actual: &pengwm_core::layout::Rect) {
-    let ids = match CGDisplay::active_displays() {
-        Ok(ids) => ids,
-        Err(_) => return,
-    };
+///
+/// A band is *learned* only when the top edge actually renormalized —
+/// `actual.y` differs from `target.y`. A write that pinned on width or
+/// size while its top edge landed exactly where requested carries no
+/// band information: reading `actual.y - frame.top` there would
+/// misattribute whatever offset led to the target (the inset the
+/// target was already built with, a stray half-pixel snap) into the
+/// band, at exactly the "window added → everything shifted" moment.
+/// Real bands re-teach within one write anyway, so skipping these
+/// costs nothing; misattribution is sticky (the map only ratchets
+/// upward), which is the expensive direction to get wrong.
+pub fn learn_top_band_from_write(
+    display_ids: &[u32],
+    target: &pengwm_core::layout::Rect,
+    actual: &pengwm_core::layout::Rect,
+) {
+    if actual.y == target.y {
+        return; // top edge never moved — not a band story.
+    }
     let cx = actual.x + actual.width / 2.0;
     let cy = actual.y + actual.height / 2.0;
-    for &id in &ids {
+    for &id in display_ids {
         let frame = CGDisplay::new(id).bounds();
         let contains_center = cx >= frame.origin.x
             && cx <= frame.origin.x + frame.size.width
@@ -56,14 +70,51 @@ pub fn learn_top_band_from_window_rect(actual: &pengwm_core::layout::Rect) {
             *entry = (*entry).max(band);
         }
         log::debug!(
-            "learned top band for display {}: {}px (actual y {}, frame top {})",
+            "learned top band for display {}: {}px (target y {}, actual y {}, frame top {})",
             id,
             band,
+            target.y,
             actual.y,
             frame.origin.y
         );
         return;
     }
+}
+
+/// The display set of `.active_displays()` is not re-enumerated inside
+/// the lock; the executor hands it in.
+///
+/// Prune learned bands for displays no longer in `keep`: the map only
+/// ratchets upward, so a stale entry would outlive its display forever
+/// — a reconnected monitor must re-teach from live renormalizations,
+/// not inherit its previous session's band (the plug-out/plug-in of the
+/// changed-value band showed the cost: strip sizes that vary per session
+/// would never correct downward).
+pub fn prune_learned_top_bands(keep: &[u32]) {
+    let map = LEARNED_TOP_BANDS.get_or_init(|| Mutex::new(Default::default()));
+    if let Ok(mut map) = map.lock() {
+        let before = map.len();
+        map.retain(|id, _| keep.contains(id));
+        if map.len() != before {
+            log::debug!(
+                "pruned {} stale learned top band(s); keep {:?}",
+                before - map.len(),
+                keep
+            );
+        }
+    }
+}
+
+/// Record the enforced top band for the display containing `actual`'s
+/// center. Legacy wrapper retained for the existing readback-centered
+/// probe callers.
+#[allow(dead_code)]
+pub fn learn_top_band_from_window_rect(actual: &pengwm_core::layout::Rect) {
+    let ids = match CGDisplay::active_displays() {
+        Ok(ids) => ids,
+        Err(_) => return,
+    };
+    learn_top_band_from_write(&ids, actual, actual);
 }
 
 pub fn learned_top_bands() -> std::collections::HashMap<u32, i32> {
@@ -72,6 +123,26 @@ pub fn learned_top_bands() -> std::collections::HashMap<u32, i32> {
         .lock()
         .map(|m| m.clone())
         .unwrap_or_default()
+}
+
+/// Raw CG display ids, for callers that probe bounds themselves (the
+/// band-learning path — inset-clamped `DisplayInfo` bounds would defeat
+/// the `actual.y - frame.top` read).
+pub fn raw_active_display_ids() -> Vec<u32> {
+    CGDisplay::active_displays()
+        .map(|ids| ids.into_iter().map(|id| id as u32).collect())
+        .unwrap_or_default()
+}
+
+/// The main display's raw CG height — the y-up/y-down pivot in the
+/// AX→AppKit coordinate conversion. Raw, not inset-clamped: the pivot
+/// must be the primary's actual bounds, whatever the WM tiles inside
+/// them. Verified live against `NSScreen.frame` (1180×820 display at CG
+/// y=153 next to a 1169-tall primary: frame origin.y = 1169 − 153 − 820
+/// = 196, exactly AppKit's answer).
+pub fn raw_main_height() -> f64 {
+    let main = unsafe { core_graphics::display::CGMainDisplayID() };
+    CGDisplay::new(main).bounds().size.height
 }
 
 #[doc(hidden)]
@@ -219,19 +290,31 @@ mod tests {
     }
 
     #[test]
-    fn learns_top_band_from_renormalized_readback() {
+    fn learned_top_band_lifecycle() {
+        // One serial test, deliberately: all three stages share the
+        // module-global band map, and parallel test threads clearing it
+        // under each other would flake.
         clear_learned_top_bands_for_tests();
         let id = primary_display_id();
         let frame = CGDisplay::new(id).bounds();
+
+        // --- learns from a real renormalization -------------------
         // A window the OS renormalized to frame.top + 30: its readback
-        // carries the enforced band for its display.
+        // carries the enforced band for its display. Target and actual
+        // differ on the top edge — a real y renormalization.
+        let target = pengwm_core::layout::Rect {
+            x: frame.origin.x + 10.0,
+            y: frame.origin.y,
+            width: 800.0,
+            height: 600.0,
+        };
         let renormalized = pengwm_core::layout::Rect {
             x: frame.origin.x + 10.0,
             y: frame.origin.y + 30.0,
             width: 800.0,
             height: 600.0,
         };
-        learn_top_band_from_window_rect(&renormalized);
+        learn_top_band_from_write(&[id], &target, &renormalized);
         assert_eq!(learned_top_bands().get(&id), Some(&30));
         // Only ever upward, and sane-range rejections learn nothing.
         let park_clamp = pengwm_core::layout::Rect {
@@ -240,12 +323,52 @@ mod tests {
             width: 800.0,
             height: 600.0,
         };
-        learn_top_band_from_window_rect(&park_clamp);
+        learn_top_band_from_write(&[id], &target, &park_clamp);
         assert_eq!(
             learned_top_bands().get(&id),
             Some(&30),
             "hundreds-of-px rejections are hide clamps, not top bands — band unchanged"
         );
+
+        // --- no band from a write whose top edge never moved -------
+        // The observed misattribution: a write pins on *width*
+        // (WindowServer keeps the window's existing width) while its
+        // top edge lands exactly where the target put it — sampled
+        // delta was target y == actual y == 238, frame top == 153. The
+        // old code read actual.y - frame.top as a fresh 85px band even
+        // though nothing renormalized, and bands only ratchet upward —
+        // the sticky "vertically shrink" the report showed.
+        let pinned_target = pengwm_core::layout::Rect {
+            x: frame.origin.x + 10.0,
+            y: frame.origin.y + 85.0,
+            width: 582.5,
+            height: 730.0,
+        };
+        // The pinned readback: x snapped half a pixel, width unchanged
+        // at 599, y exactly the target.
+        let pinned = pengwm_core::layout::Rect {
+            x: frame.origin.x + 9.5,
+            y: frame.origin.y + 85.0,
+            width: 599.0,
+            height: 730.0,
+        };
+        learn_top_band_from_write(&[id], &pinned_target, &pinned);
+        assert_eq!(
+            learned_top_bands().get(&id),
+            Some(&30),
+            "a width pin that left y alone must not teach anything"
+        );
+
+        // --- topology prune --------------------------------------
+        // A display that left the live CG set loses its band, so a
+        // re-plug re-teaches from live renorms instead of inheriting
+        // its previous session's value.
+        prune_learned_top_bands(&[]);
+        assert!(learned_top_bands().is_empty());
+        learn_top_band_from_write(&[id], &target, &renormalized);
+        assert_eq!(learned_top_bands().get(&id), Some(&30));
+        prune_learned_top_bands(&[id]);
+        assert_eq!(learned_top_bands().get(&id), Some(&30));
         clear_learned_top_bands_for_tests();
         assert!(learned_top_bands().is_empty(), "cleared for neighbors");
     }
