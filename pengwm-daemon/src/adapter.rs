@@ -81,6 +81,23 @@ impl WindowClass {
         }
         class
     }
+
+    /// The dialog-truth check: `AXDialog` claims are resolved against the
+    /// window's own resizable-ness. Firefox Developer Edition reports
+    /// `AXDialog` for ordinary windows (observed: the same window id read
+    /// `AXStandardWindow` in one session and lied in the next, exactly
+    /// across a display hotplug), and first-classification-wins turned
+    /// that transient lie into a permanent popup idle — windows floating
+    /// unassigned to any workspace. Genuinely modal dialogs and panels
+    /// are almost always fixed-size, so size-settable = true is the lie
+    /// signal; `size-settable = false` upholds the dialog fate.
+    pub fn refine_dialog_class(class: WindowClass, size_settable: bool) -> WindowClass {
+        if class == WindowClass::Dialog && size_settable {
+            WindowClass::Standard
+        } else {
+            class
+        }
+    }
 }
 
 /// AX role/subrole strings. Mirrors the `accessibility_sys` constants,
@@ -385,6 +402,37 @@ mod tests {
         assert_eq!(
             WindowClass::apply_level_gate(WindowClass::Unknown, Some(3)),
             WindowClass::Unknown
+        );
+    }
+
+    #[test]
+    fn dialog_claim_resolves_against_resizability() {
+        // The Firefox lie: a resizable window claiming AXDialog is an
+        // ordinary window (size-settable = true is the lie signal).
+        assert_eq!(
+            WindowClass::refine_dialog_class(WindowClass::Dialog, true),
+            WindowClass::Standard
+        );
+        // A genuinely modal, fixed-size dialog keeps its fate.
+        assert_eq!(
+            WindowClass::refine_dialog_class(WindowClass::Dialog, false),
+            WindowClass::Dialog
+        );
+        // Unreadable-settability (false default) is conservative: keep
+        // the subrole's own answer.
+        assert_eq!(
+            WindowClass::refine_dialog_class(WindowClass::Dialog, false),
+            WindowClass::Dialog
+        );
+        // Only Dialog is refined — SystemDialog/Floating/Standard pass
+        // through regardless.
+        assert_eq!(
+            WindowClass::refine_dialog_class(WindowClass::Floating, true),
+            WindowClass::Floating
+        );
+        assert_eq!(
+            WindowClass::refine_dialog_class(WindowClass::Standard, false),
+            WindowClass::Standard
         );
     }
 }

@@ -21,6 +21,18 @@
   and a zero-display guard (mid-un-plug never assembles against
   nothing). Verified by four new state tests plus the whole topology
   suite, which now heals through the same path unchanged.
+- **Fixed: Firefox's `AXDialog` lie froze ordinary windows as popups.**
+  A fresh read during the reset/boot after a topology change saw two
+  ordinary Firefox dev-edition windows claim `AXDialog` (the same
+  windows read `AXStandardWindow` in the prior session), and
+  first-classification-wins froze the lie in — windows floating
+  unassigned forever. Classification now resolves `AXDialog` claims
+  against the window's own resizable-ness (`refine_dialog_class`):
+  size-settable ⇒ ordinary window; fixed-size ⇒ dialog fate stands.
+  Verified live: both reported windows re-classified Standard and
+  routed into their config home (Browsing×2). Every fresh
+  classification also logs `classified win/id class` so an app's
+  truth-vs-lie question decodes straight from the log.
 - **Fixed: HUD never drew the second monitor after it was plugged in
   while PengWM ran.** Two layers of fix:
   - Placement read AppKit's `NSScreen` list, which lags CG after

@@ -417,14 +417,36 @@ impl MacOsAdapter {
             let class = match self.cached_class(window_id) {
                 Some(cached) => cached,
                 None => {
-                    let classified = WindowClass::apply_level_gate(
-                        unsafe { ax_element::classify(element.ptr()) },
+                    let lowered = unsafe { ax_element::classify(element.ptr()) };
+                    let classified = match lowered {
+                        // AXDialog claims resolve against resizable-ness
+                        // (see `refine_dialog_class` — the Firefox lie);
+                        // every other class passes through untouched.
+                        WindowClass::Dialog => WindowClass::refine_dialog_class(
+                            lowered,
+                            unsafe {
+                                ax_element::is_attribute_settable(
+                                    element.ptr(),
+                                    kAXSizeAttribute,
+                                )
+                            },
+                        ),
+                        lower => lower,
+                    };
+                    let gated = WindowClass::apply_level_gate(
+                        classified,
                         levels.get(&window_id).copied(),
                     );
-                    if !classified.is_manageable() {
+                    log::info!(
+                        "classified win={} pid={} class={:?}",
+                        window_id,
+                        pid,
+                        gated
+                    );
+                    if !gated.is_manageable() {
                         continue;
                     }
-                    classified
+                    gated
                 }
             };
             unsafe {
