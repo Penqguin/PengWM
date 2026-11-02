@@ -62,7 +62,7 @@ impl StateManager {
         // the gate isn't disabled, or (b) the bundle is in `float_apps`.
         // Popups are decided before the float list: the subrole answer is
         // the more specific signal.
-        let float_app = self.app_is_float_app(identity.bundle.as_deref());
+        let float_app = self.app_is_float_app(identity);
         if class == WindowClass::Untracked && self.float_level_overlays && !restricted {
             log::info!(
                 "WindowCreated untracked overlay: {} pid={} — left out of the tree",
@@ -179,14 +179,34 @@ impl StateManager {
             .any(|app| bundle.is_some_and(|b| b.eq_ignore_ascii_case(app)))
     }
 
-    /// `float_apps` semantics (ADR-0002): every window of these bundles is
+    /// `float_apps` semantics (ADR-0002): every window of these apps is
     /// untracked — never tiled, on top across workspace switches until
-    /// closed. Same case-insensitive bundle match as `restricted_apps`,
-    /// same `AppIdentity` threading.
-    pub(super) fn app_is_float_app(&self, bundle: Option<&str>) -> bool {
-        self.float_apps
+    /// closed. Matched case-insensitively against the bundle id OR the
+    /// display name (the config doc's promise; games especially have
+    /// canonical bundles absent from a real install). Two layers, per the
+    /// "permanent for all users" rule: the user's own `float_apps`
+    /// config, then the built-in game/client ignore list
+    /// (`BUILTIN_GAME_FLOAT_APPS`) that no config can remove — replace
+    /// the AppIdentity-threaded call in place of a bare-bundle ask.
+    pub(super) fn app_is_float_app(&self, identity: &AppIdentity) -> bool {
+        let bundle = identity.bundle.as_deref();
+        let name = identity.name.as_deref();
+        let matches = |list: &Vec<String>| {
+            list.iter().any(|app| {
+                bundle.is_some_and(|b| b.eq_ignore_ascii_case(app))
+                    || name.is_some_and(|n| n.eq_ignore_ascii_case(app))
+            })
+        };
+        matches(&self.float_apps) || matches(&self.builtin_game_float_apps())
+    }
+
+    /// Materialize the built-in list — a function seam rather than a
+    /// bare constant use so tests can pin the contents without a global.
+    fn builtin_game_float_apps(&self) -> Vec<String> {
+        crate::config::BUILTIN_GAME_FLOAT_APPS
             .iter()
-            .any(|app| bundle.is_some_and(|b| b.eq_ignore_ascii_case(app)))
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Route `window_id` into a workspace and retile. Prefers `preferred`,

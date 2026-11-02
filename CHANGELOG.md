@@ -2,6 +2,20 @@
 
 ## v0.6.12 — HUD hotplug + WM reset + focus truth (unreleased)
 
+- **New: the built-in game ignore layer.** Every game and game client is
+  routed untracked — never tiled, floats over workspace switches — for
+  **all users, config-independent**: a permanent layer
+  (`BUILTIN_GAME_FLOAT_APPS`) merged under the user's `[windows]
+  float_apps` (which now genuinely matches by bundle id *or* app name,
+  honoring the config doc). Launchers/clients: Steam, Epic Games
+  Launcher, GOG Galaxy, Battle.net, Riot Client, EA app, Origin, Ubisoft
+  Connect, Amazon Games, Rockstar Games, Heroic Games Launcher, GeForce
+  NOW, Moonlight, Prism Launcher. Runners: Whisky, CrossOver, PlayCover.
+  Native games: World of Warcraft, Diablo IV, Hearthstone, StarCraft II,
+  Minecraft (game + launcher), Baldur's Gate 3, Civilization VI.
+  Matching is case-insensitive; the user list covers the tail (test
+  pinned: the builtin layer survives a fully custom `float_apps`).
+
 - **New: focus follows the actually-focused window (Spec 0001 focus
   ladder).** Click/bounce storms (macOS reporting `126 → 30556 → stale
   61` with the *stale* event arriving last) used to poison the WM's

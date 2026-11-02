@@ -82,6 +82,62 @@ fn default_float_apps() -> Vec<String> {
     ]
 }
 
+/// The permanent ignore layer for games: always applied for every user,
+/// independent of (and merged into) the user's `[windows] float_apps`
+/// config. Games and game clients are the worst possible tiling victims —
+/// fullscreen canvas windows, anti-cheat-sensitive singletons, input such
+/// a category grabs — so they route untracked the same way ADR-0002
+/// float apps do. Entries match case-insensitively against the bundle id
+/// OR the application display name (the same matching the config doc
+/// already promises), so a game whose bundle is non-canonical still
+/// lands. Curated rather than exhaustive; the user list covers the tail.
+pub const BUILTIN_GAME_FLOAT_APPS: &[&str] = &[
+    // ---- launchers / clients ----
+    "com.valvesoftware.steam",
+    "Steam",
+    "com.epicgames.EpicGamesLauncher",
+    "Epic Games",
+    "Epic Games Launcher",
+    "com.gog.galaxy",
+    "GOG Galaxy",
+    "net.battle.client",
+    "Battle.net",
+    "Riot Client",
+    "com.riotgames.riotclient",
+    "com.ea.eapp",
+    "EA app",
+    "EA",
+    "Origin",
+    "com.ea.origin",
+    "Ubisoft Connect",
+    "com.ubisoft.connect",
+    "Amazon Games",
+    "Rockstar Games",
+    "Heroic Games Launcher",
+    "com.heroicgameslauncher.hgl",
+    "GeForce NOW",
+    "com.nvidia.geforcenow",
+    "Moonlight",
+    "com.caspar.moonlight",
+    "Prism Launcher",
+    // ---- runners / compatibility layers ----
+    "Whisky",
+    "com.isaacmarovitz.whisky",
+    "CrossOver",
+    "com.codeweavers.crossover",
+    "PlayCover",
+    "com.playcover.playcover",
+    // ---- widely-installed native games ----
+    "World of Warcraft",
+    "Diablo IV",
+    "Hearthstone",
+    "StarCraft II",
+    "Minecraft",
+    "Minecraft Launcher",
+    "Baldur's Gate 3",
+    "Civilization VI",
+];
+
 impl Default for WindowsConfig {
     fn default() -> Self {
         Self {

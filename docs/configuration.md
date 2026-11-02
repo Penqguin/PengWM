@@ -205,6 +205,16 @@ Two things make a window untracked:
   case-insensitive) and only applied to windows discovered after the
   config change; a reload doesn't re-route windows already in the tree.
 
+  **Games and game clients are permanently ignored** by a built-in layer
+  that applies to every user and cannot be removed by config — launchers
+  (Steam, Epic, GOG Galaxy, Battle.net, Riot Client, EA app/Origin,
+  Ubisoft Connect, Amazon Games, Rockstar, Heroic, GeForce NOW,
+  Moonlight, Prism Launcher), runners (Whisky, CrossOver, PlayCover),
+  and widely-installed native games (World of Warcraft, Diablo IV,
+  Hearthstone, StarCraft II, Minecraft, Baldur's Gate 3, Civilization
+  VI). Your `float_apps` adds to that layer; it cannot replace it. Add
+  further titles by name or bundle id here.
+
 Untracked windows are deliberately different from popups: a popup belongs to
 the workspace it appeared on (hides with it, comes back on switch-back); an
 untracked window belongs to no workspace and never hides.

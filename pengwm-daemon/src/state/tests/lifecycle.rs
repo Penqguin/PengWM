@@ -369,3 +369,55 @@ fn app_termination_evicts_every_window_of_the_pid() {
     let forgotten = handle.forgotten();
     assert!(forgotten.contains(&100) && forgotten.contains(&200));
 }
+
+// ---------------------------------------------------------------------------
+// The builtin game ignore layer (config::BUILTIN_GAME_FLOAT_APPS): games
+// and game clients route untracked for every user, config-independent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn builtin_game_list_matches_by_bundle_and_name() {
+    let (sm, _handle) = setup_with_handle(1);
+    // Bundle hit (Steam).
+    assert!(sm.app_is_float_app(&crate::adapter::AppIdentity {
+        bundle: Some("com.valvesoftware.steam".into()),
+        name: None,
+    }));
+    // Name hit — a game whose bundle is non-canonical still lands.
+    assert!(sm.app_is_float_app(&crate::adapter::AppIdentity {
+        bundle: Some("com.example.mystery".into()),
+        name: Some("battle.net".into()),
+    }));
+    // Case-insensitivity.
+    assert!(sm.app_is_float_app(&crate::adapter::AppIdentity {
+        bundle: None,
+        name: Some("GEFORCE NOW".into()),
+    }));
+    // A non-game app survives.
+    assert!(!sm.app_is_float_app(&crate::adapter::AppIdentity {
+        bundle: Some("org.mitchellh.ghostty".into()),
+        name: Some("Ghostty".into()),
+    }));
+}
+
+/// The "permanent for all users" property: the builtin layer applies even
+/// when a user fully replaces `float_apps` with their own list.
+#[test]
+fn builtin_game_list_survives_custom_float_config() {
+    let (mut sm, _handle) = setup_with_handle(1);
+    sm.set_float_apps_for_test(vec!["my.own.app".into()]);
+    assert!(sm.app_is_float_app(&crate::adapter::AppIdentity {
+        bundle: None,
+        name: Some("Minecraft".into()),
+    }));
+    // ...and the user's own entry still matches.
+    assert!(sm.app_is_float_app(&crate::adapter::AppIdentity {
+        bundle: Some("my.own.app".into()),
+        name: None,
+    }));
+    // A non-entry non-builtin app does not match.
+    assert!(!sm.app_is_float_app(&crate::adapter::AppIdentity {
+        bundle: Some("some.other.app".into()),
+        name: None,
+    }));
+}
