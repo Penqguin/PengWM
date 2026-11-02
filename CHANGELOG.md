@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.12 — HUD hotplug + WM reset + focus truth (unreleased)
+## v0.6.12 — HUD hotplug + WM reset + focus truth (2026-11-01)
 
 - **New: the built-in game ignore layer.** Every game and game client is
   routed untracked — never tiled, floats over workspace switches — for
