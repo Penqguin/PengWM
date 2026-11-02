@@ -956,10 +956,4 @@ impl StateManager {
         }
     }
 
-    /// True when the pending settle drain may run inside `now` (shared
-    /// with tests via the 300ms sleep convention).
-    #[cfg(test)]
-    pub(crate) fn force_focus_dirty(&mut self) {
-        self.focus_dirty_since = Some(Instant::now());
-    }
 }

@@ -19,7 +19,9 @@
 //! only main-thread surface that MUST touch it (NSWindow rules).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -264,19 +266,25 @@ pub fn start_main_thread_drain(slot: HudSlotRef) {
         log::warn!("hud drain not started: not on the main thread");
         return;
     };
-    let state_ref = Arc::new(Mutex::new(DrainState {
+    // The panels hold MainThreadOnly ObjC retains: no Arc/Mutex across
+    // threads, no promises the types can't keep. The drain state is
+    // owned by THIS block — which lives (and is called) only on the
+    // main thread, through the main-thread NSTimer — and the RefCell
+    // documents the single-owner single-thread access. The cross-thread
+    // leg is the HudSlot alone, whose cards are plain data.
+    let state_ref = Rc::new(RefCell::new(DrainState {
         panels: HudPanels::new(),
         applied: None,
     }));
     let slot_for_block = Arc::clone(&slot);
-    let state_for_block = Arc::clone(&state_ref);
+    let state_for_block = Rc::clone(&state_ref);
     // The generated `+scheduledTimerWithTimeInterval:repeats:block:`
     // signature takes the timer by `NonNull<NSTimer>` — the pointer is
     // only ever used to schedule, never to inspect.
     let block: RcBlock<dyn Fn(core::ptr::NonNull<NSTimer>)> =
         RcBlock::new(move |_timer: core::ptr::NonNull<NSTimer>| {
             let latest = slot_for_block.lock().unwrap().clone();
-            let mut state = state_for_block.lock().unwrap();
+            let mut state = state_for_block.borrow_mut();
             match latest {
                 HudSlot::Show(cards) => {
                     if state.applied.as_ref() != Some(&cards) {

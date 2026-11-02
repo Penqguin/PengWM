@@ -129,9 +129,7 @@ pub fn learned_top_bands() -> std::collections::HashMap<u32, i32> {
 /// band-learning path — inset-clamped `DisplayInfo` bounds would defeat
 /// the `actual.y - frame.top` read).
 pub fn raw_active_display_ids() -> Vec<u32> {
-    CGDisplay::active_displays()
-        .map(|ids| ids.into_iter().map(|id| id as u32).collect())
-        .unwrap_or_default()
+    CGDisplay::active_displays().unwrap_or_default()
 }
 
 /// The main display's raw CG height — the y-up/y-down pivot in the

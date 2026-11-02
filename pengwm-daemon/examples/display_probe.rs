@@ -18,7 +18,7 @@ fn main() {
     let mut raw_map = Vec::new();
     for &id in &ids {
         let b = CGDisplay::new(id).bounds();
-        raw_map.push((id as u32, (b.origin.x, b.origin.y), (b.size.width, b.size.height)));
+        raw_map.push((id, (b.origin.x, b.origin.y), (b.size.width, b.size.height)));
         println!(
             "raw CG bounds id={}: origin=({:?}) size=({:?})",
             id, (b.origin.x, b.origin.y), (b.size.width, b.size.height)
