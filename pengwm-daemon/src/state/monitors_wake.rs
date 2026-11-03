@@ -28,46 +28,45 @@ impl StateManager {
     /// went), park newly seatless workspaces, re-park pre-hidden workspaces
     /// whose geometry healed, re-lay out the visible set, publish the bar.
     /// A no-op answer runs no machinery at all — cheap on the tick.
+    ///
+    /// Suppressed while a wake resync is pending: the *detection* is a cheap
+    /// CG query that blackouts don't touch, but the repair is a structural
+    /// judgment — membership and the visible arrangement must survive the
+    /// change (ADR-0006), so the heal is deferred to the resync commit's
+    /// own `displays.sync`, not run mid-blackout.
+    ///
+    /// Topology changes never re-home members (ADR-0006): the heal is
+    /// incremental — reseat + relayout + park — and never calls `wm_reset`.
+    /// Reset is reserved for structural config changes or an explicit
+    /// command.
     pub fn run_topology_sync(&mut self) {
-        // The sync answer is only the *detection*: the no-op check is
-        // still the cheap CG query every 2s tick rides on. The repair,
-        // though, is no longer incremental — any actual change means
-        // the derived world (seats, bands, reseat coordinates, panel
-        // ids) has possibly rotted every corner at once, and the
-        // observed failure mode was exactly that: partial repairs that
-        // kept a stale corner alive (sticky band, left monitor showing
-        // nothing). "Reset the window manager": `state::reset`.
+        if !self.may_judge("topology sync") {
+            return;
+        }
+        // Any actual topology change is healed incrementally: reseat the
+        // affected seats, re-park newly-hidden workspaces, re-lay out the
+        // visible set. Membership and the visible arrangement are
+        // PRESERVED — a topology change never re-homes a member
+        // (ADR-0006). The seatbelt (live_placement) survives, so a
+        // window the store lost comes back to where it lives this session.
+        // Reset (wm_reset) is reserved for structural config changes or
+        // an explicit command — never an automatic topology reaction.
         let sync = self.displays.sync(&mut self.workspaces, &*self.os);
         if sync.is_noop() {
             return;
         }
         log::info!(
-            "topology changed: shown {:?}, hidden {:?}, re-parked {:?}, re-laid {:?} — resetting",
+            "topology changed: shown {:?}, hidden {:?}, re-parked {:?}, re-laid {:?} — incremental heal",
             sync.shown,
             sync.hidden,
             sync.repark,
             sync.relayout
         );
-        match self.wm_reset() {
-            Some(outcome) => {
-                log::info!(
-                    "WM reset complete: {} members re-routed into {} workspaces",
-                    outcome.members,
-                    outcome.workspaces
-                );
-            }
-            None => {
-                // Suppressed (cooldown / empty display set): fall back
-                // to the incremental repair so a settled-topology
-                // no-op never turns into a standing gap.
-                log::info!("reset suppressed — falling back to incremental sync repair");
-                self.layout_cache.clear_topology();
-                self.park_topology_changes(sync.hidden, sync.repark);
-                for idx in sync.relayout {
-                    if idx < self.workspaces.len() {
-                        self.apply_layout(idx);
-                    }
-                }
+        self.layout_cache.clear_topology();
+        self.park_topology_changes(sync.hidden, sync.repark);
+        for idx in sync.relayout {
+            if idx < self.workspaces.len() {
+                self.apply_layout(idx);
             }
         }
         self.publish_bar_state();

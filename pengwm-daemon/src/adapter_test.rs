@@ -363,6 +363,13 @@ impl TestAdapter {
 
     /// The per-window hidden verdict the batched trait method maps over.
     fn window_is_hidden(&self, window_id: WindowId) -> bool {
+        // Blackout parity with prod: an unreadable attribute reads
+        // "not hidden" (the adapter's no-element answer), never an
+        // inferred true — which is exactly the artifact that made the
+        // hidden reconcile mass-reveal parks during a wake.
+        if self.ax_blackout.get() {
+            return false;
+        }
         self.hidden_windows.borrow().contains(&window_id)
             || self
                 .window_pids
@@ -823,6 +830,11 @@ impl OsAdapter for TestAdapter {
     }
 
     fn window_is_fullscreen(&self, window_id: WindowId) -> bool {
+        // Blackout parity with prod: `AXFullScreen` is unreadable during
+        // the blackout — the probe must answer false, not stale true.
+        if self.ax_blackout.get() {
+            return false;
+        }
         self.fullscreen_windows.borrow().contains(&window_id)
     }
 

@@ -70,7 +70,7 @@ pub(super) struct LayoutWriteCache {
     /// changes. Cleared on success, target change, destroy, terminate and
     /// wake — deliberately *not* on displace: see `invalidate`.
     pin_state: HashMap<WindowId, PinState>,
-    /// Whether a wake resync is pending. Scoped by `monitors_wake.rs`
+    /// Whether a wake resync is pending. Scoped by `state::blackout`
     /// (armed with the resync, disarmed on commit/deadline) so the
     /// write-path gone grace can be patient during the post-wake AX
     /// blackout and fast the rest of the time.
@@ -88,7 +88,7 @@ impl LayoutWriteCache {
     /// blacked-out AX reports live windows gone (`kAXWindows` comes back
     /// empty for live apps right after `NSWorkspaceDidWake`), so untracking
     /// on a 250ms timer there destroys the desktop. Patient again, exactly
-    /// as long as the resync: armed and disarmed by `monitors_wake.rs`.
+    /// as long as the resync: armed and disarmed by `state::blackout`.
     /// Also the listing-diff's post-commit settle window — the resync
     /// commits on any answered listing while element reads can still be
     /// blacked out, so unreadable elements are death only after this long.
@@ -124,7 +124,7 @@ impl LayoutWriteCache {
 
     /// Scope the write-path gone grace to the wake blackout: armed when a
     /// wake resync is armed, disarmed when it commits or gives up at the
-    /// deadline. `monitors_wake.rs` owns the resync lifecycle; this only
+    /// deadline. `state::blackout` owns the resync lifecycle; this only
     /// carries the bit the grace policy reads.
     pub(super) fn note_wake_pending(&mut self, pending: bool) {
         self.wake_pending = pending;

@@ -114,17 +114,14 @@ impl StateManager {
             .or_else(|| self.routed_workspace_for(identity))
             .unwrap_or_else(|| self.active_workspace_idx());
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
-        let placed_workspace = self.add_window_to_workspace(window_id, preferred);
-        // Candidate 3: a member of a hidden workspace is offscreen. The
-        // initial hide pass ran inside `new()` while every tree was still
-        // empty — everything discovered after it (bootstrap poll, sweep,
-        // new windows) must take the same hide placement here, or it floats
-        // visibly over the active workspace until the next switch.
-        if let Some(idx) = placed_workspace {
-            if !self.displays.is_visible(idx, &self.workspaces) {
-                self.hide_window_in_workspace(window_id, idx);
-            }
-        }
+        // The shared admit funnel executes the routing tail now: a member
+        // of a hidden workspace takes the hide placement inside
+        // `add_window_to_workspace` (→ `place_admitted`). The initial
+        // hide pass ran inside `new()` while every tree was still empty —
+        // everything discovered after it (bootstrap poll, sweep, new
+        // windows) needs the same treatment, and gets it from the same
+        // seam.
+        self.add_window_to_workspace(window_id, preferred);
         // Discovery-time fast path: a window discovered already fullscreen
         // (daemon restart, or created straight into fullscreen) tiles for
         // one instant, then its refused first write would catch it anyway —
@@ -249,9 +246,11 @@ impl StateManager {
 
         ws.add_window(window_id, None);
         self.note_where(window_id);
-        if self.displays.is_visible(target, &self.workspaces) {
-            self.apply_layout(target);
-        }
+        // THE admit tail (`StateManager::place_admitted`): visible target
+        // tiles; hidden target seeds the offscreen placement. Routing
+        // births, reveals and `reveal_all` all own the "member of a
+        // hidden workspace is offscreen" invariant through this one ask.
+        self.place_admitted(window_id, target);
         Some(target)
     }
 
@@ -361,9 +360,10 @@ impl StateManager {
         let remembered = self.store.reveal(window_id);
         if let Some(entry) = remembered.filter(|e| e.popup && e.idx < self.workspaces.len()) {
             self.workspaces[entry.idx].add_popup(window_id);
-            if self.displays.is_visible(entry.idx, &self.workspaces) {
-                self.apply_layout(entry.idx);
-            }
+            // The admit tail: a popup revealed into a workspace that has
+            // since gone hidden takes the hide placement instead of
+            // floating at its macOS rect (same seam as tree reveals).
+            self.place_admitted(window_id, entry.idx);
             self.publish_bar_state();
             return;
         }
@@ -507,7 +507,7 @@ impl StateManager {
                 // Debounce: don't mutate DisplaySet::active on focus notifications
                 // that arrive immediately after an explicit workspace switch — they
                 // are stale observer events for the window that was just hidden
-                // and would drag the old workspace back into view.
+                // and could overwrite the switch's own focus choice.
                 if let Some(until) = self.switch_debounce_until {
                     if Instant::now() < until {
                         self.publish_bar_state();
@@ -516,17 +516,14 @@ impl StateManager {
                         self.switch_debounce_until = None;
                     }
                 }
-                let prev = self.displays.active_mut().insert(mon_id, i);
+                // Focus-truth bookkeeping only. The old "focus-driven
+                // switch" (hide prev + reveal_stack) was unreachable by
+                // construction: `is_visible` above pins `active[mon_id] ==
+                // i`, so a workspace switch could never be reached from
+                // here — the i3 rule comment above is the whole story.
+                // What remains live: the focused-output cell the
+                // DisplaySet planners read for multi-monitor moves.
                 self.displays.set_focused_output(mon_id);
-                if let Some(prev_idx) = prev {
-                    if prev_idx != i {
-                        self.hide_workspace(prev_idx);
-                        // Focus-driven switch: the incoming workspace is
-                        // already visible — same stacking restoration as
-                        // the explicit switch path.
-                        self.reveal_stack(Some(mon_id));
-                    }
-                }
                 self.publish_bar_state();
                 return;
             }
@@ -654,7 +651,18 @@ impl StateManager {
     /// is diffed against its tracked windows, and a tracked window the app
     /// no longer lists is untracked immediately — the fast close-detector
     /// for missed destroyed notifications (see `untrack_unlisted_windows`).
+    ///
+    /// Suppressed while a wake resync is pending, like every judgment
+    /// sweep: the sweep's poll is the listing evidence that drives both
+    /// its halves (untrack and discovery), and through the blackout a
+    /// partially answering app risks the first-call-wins routing verdict
+    /// being recorded from unreadable class reads (a real popup routed as
+    /// a tiled `Standard` sibling — a verdict a later re-read can't fix).
+    /// The resync commit runs its own discovery pass from its own poll.
     pub(super) fn sync_untracked_windows(&mut self, pids: impl IntoIterator<Item = i32>) {
+        if !self.may_judge("discovery sweep") {
+            return;
+        }
         let pids: Vec<i32> = pids
             .into_iter()
             .filter(|pid| !self.excluded_pids.contains(pid))
@@ -905,10 +913,22 @@ impl StateManager {
     /// `126 → 30556 → 61` triple put worst-last. The fallback ladder:
     /// OS focused window → the last focused window (if still a visible
     /// member) → the current workspace seat stands.
+    ///
+    /// Suppressed while a wake resync is pending: the drain's answer is an
+    /// AX read (`frontmost_pid` / the focused-window ask), and through the
+    /// blackout it reads None → ladder (b) would commit `last_focused_window`
+    /// on blackout evidence while the resync is still probing. The settle
+    /// stays armed (not consumed) and commits on the first post-commit
+    /// tick — the resync commit itself re-reads `frontmost_pid`, so the
+    /// settle's inputs are healthy by then.
     pub(in crate::state) fn commit_settled_focus(&mut self, now: Instant) {
         let Some(since) = self.focus_dirty_since else {
             return;
         };
+        if !self.may_judge("focus settle") {
+            // Armed, not consumed: the settle window resumed after wake.
+            return;
+        }
         if now.duration_since(since) < Duration::from_millis(FOCUS_SETTLE_MS) {
             return;
         }

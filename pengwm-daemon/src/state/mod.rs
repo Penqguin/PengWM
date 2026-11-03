@@ -1,7 +1,6 @@
 use crate::adapter::OsAdapter;
 use crate::bar_server::BarSender;
 use crate::config::keybinds::KeybindConfig;
-use crate::config::Settings;
 use crate::event_loop::DaemonEvent;
 use crate::prefix::{PrefixConfig, PrefixKey};
 use pengwm_core::command::{BarMessage, BarState, BarWorkspace};
@@ -149,6 +148,7 @@ pub struct StateManager {
     hud_hide_at: Option<Instant>,
     /// When the last full WM reset ran (`state::reset`) — the hotplug
     /// cooldown guard so a replug's event burst cannot reset-storm.
+    #[allow(dead_code)]
     last_wm_reset: Option<Instant>,
     /// When the last WindowFocused event arrived: click/bounce storms (the
     /// observed 126→30556→61 triple in under a second, stale event last)
@@ -229,7 +229,10 @@ impl StateManager {
         let display_infos = os.active_displays();
         let mut store = WindowStore::new();
 
-        let settings = Settings::load();
+        // The startup-shape decode (never quietly default — see
+        // `config::loader::resolve`). Keybinds are not consumed here —
+        // the running keybind Arc was built at boot.
+        let (settings, _scrape) = crate::config::loader::resolve();
         // Try session restore (topology + active + gaps) when enabled.
         // Skipped in `cargo test` so unit tests start from a deterministic
         // fresh state; session restore is exercised via `session::tests`.
@@ -503,6 +506,24 @@ impl StateManager {
         self.layout_cache.seed_hidden(placement.rect(), [window_id]);
     }
 
+    /// THE placement tail of every admit — the one place the invariant
+    /// "a member of a hidden workspace is offscreen" is executed. A
+    /// tracked window entering its workspace (routing birth, switch-back
+    /// reveal, park reveal, move-in, a `reveal_all` rescue) tiles when
+    /// its workspace is visible and takes the workspace's hide
+    /// placement when it is not — exactly what `hide_workspace` does to
+    /// the members it hides wholesale. One interface, one ask: the
+    /// funnels stop re-deriving the rule (and the funnel that forgot —
+    /// the reveal funnel — stopped floating restored windows over the
+    /// active screen until the next switch).
+    pub(super) fn place_admitted(&mut self, window_id: WindowId, workspace_idx: usize) {
+        if self.displays.is_visible(workspace_idx, &self.workspaces) {
+            self.apply_layout(workspace_idx);
+        } else {
+            self.hide_window_in_workspace(window_id, workspace_idx);
+        }
+    }
+
     fn windows_hidden_strategy(&self) -> crate::config::HiddenStrategy {
         self.windows_config_hidden_strategy()
     }
@@ -538,9 +559,11 @@ impl StateManager {
                 continue;
             }
             // Popups re-attach to their remembered workspace: no routing,
-            // no capacity.
+            // no capacity. The admit tail places them — hidden target
+            // takes the hide placement like every other member.
             if entry.popup {
                 if entry.idx < self.workspaces.len() && self.workspaces[entry.idx].add_popup(wid) {
+                    self.place_admitted(wid, entry.idx);
                     retiled = true;
                 }
                 continue;

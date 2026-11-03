@@ -27,14 +27,16 @@ impl StateManager {
         // below do (the tick is also the prefix-armed pinner — Spec 0001).
         self.hud_tick(now);
 
+        // A wake resync waits here for AX to come back, ahead of every
+        // consumer below: at commit it rebuilds the derived state the
+        // sweeps and the focus settle read, and its pending state is
+        // what each consumer's `may_judge` gate keys on. Driven first
+        // so a commit in this tick frees every gate in the same tick.
+        self.drive_wake_resync(now);
+
         // Focus-truth settle: after the click/bounce quiet window, commit
         // the OS's actually-focused window (or the fallback ladder).
         self.commit_settled_focus(now);
-
-        // A wake resync waits here for AX to come back. Driven first: the
-        // sweeps below all query AX, and running them against a blacked-out
-        // subsystem is what starts gone-grace timers on live windows.
-        self.drive_wake_resync(now);
 
         // Placement persistence: a dirty session drains to disk at most
         // once per interval. The projection reads no OS state, so this
@@ -163,7 +165,18 @@ impl StateManager {
     /// the tree in line: untile windows the OS reports as hidden, and retile
     /// ones that became visible again. Uses predicate injection so tests don't
     /// need `as_any_mut` downcast.
+    ///
+    /// Suppressed while a wake resync is pending, like every other
+    /// judgment sweep: this one is the most dangerous — the blackout
+    /// signature here is "everything reads not-hidden," which would mass-
+    /// reveal every Hide-parked window (consuming each park and re-tiling
+    /// through dead elements) exactly as the machine wakes. The wake
+    /// resync's own commit pass re-tiles every visible workspace, and the
+    /// next post-commit sweep re-derives hidden state under healthy AX.
     fn reconcile_hidden_windows(&mut self) {
+        if !self.may_judge("hidden reconcile") {
+            return;
+        }
         // One batched read for the whole sweep — but only for the windows
         // whose verdict this reconcile can act on: current tree/popup
         // members (hide candidates) and Hide-parked windows (show
@@ -253,7 +266,17 @@ impl StateManager {
     /// after placement — nothing re-centers them) via the exclusion
     /// predicate, and so is anything the user is dragging or the OS
     /// reports hidden.
+    ///
+    /// Suppressed while a wake resync is pending: the sweep's read is an
+    /// element read, so through the blackout `applied_rects` (pre-sleep
+    /// values) mismatches every target and the sweep would channel-write
+    /// into the blackout — write after failed write against elements the
+    /// resync is about to replace wholesale. The commit pass clears the
+    /// cache and re-tiles every visible workspace itself.
     fn reconcile_misplaced_windows(&mut self, now: Instant) {
+        if !self.may_judge("misplaced sweep") {
+            return;
+        }
         let drag_window = self.drag.drag_window();
         // Snapshot visible indices and the popup membership first — both are
         // read inside the sweep closure while `layout_cache` is borrowed.

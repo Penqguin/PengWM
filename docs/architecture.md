@@ -105,7 +105,8 @@ Two implementations:
 
 Thin coordinator split by responsibility (`state/mod.rs` construction +
 layout application, `lifecycle.rs` window/app lifecycle, `commands.rs`
-`Command` dispatch, `monitors_wake.rs` monitor + wake handling,
+`Command` dispatch, `monitors_wake.rs` monitor + topology handling,
+`blackout.rs` wake resync + the blackout judgment gate,
 `reconcile.rs` tick path, `layout_writer.rs` write policy):
 
 ```
@@ -135,7 +136,11 @@ monitor shows exactly one workspace. `DisplaySet` owns the assignment
 routing policy; the `Vec<Workspace>` itself stays on `StateManager`.
 
 - **Switch** (`workspace-N`, global 1-based config order): a switch to a
-  workspace shown on another monitor **swaps** it onto the focused monitor.
+  workspace shown on another monitor moves *focus* there (focus-only,
+  v0.6.10 `SwitchDecision::focus_only`); it does not swap workspaces.
+- **Topology changes** (monitor add/remove/resize, wake handshake, learned
+  band / inset drift): reseat and relayout only — never re-home members
+  or wipe the visible arrangement (ADR-0006). Manual moves survive.
 - **Focus/move across monitors** (`focus-display-*`,
   `move-window-to-display-*`): focus always lands (bookkeeping-only when
   empty); moves always land (bypassing `max_tiles`); focus stays on move.

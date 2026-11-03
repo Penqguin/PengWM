@@ -421,3 +421,74 @@ fn builtin_game_list_survives_custom_float_config() {
         name: None,
     }));
 }
+
+/// The admit seam, reveal leg: a window revealed (de-minimized) into a
+/// workspace that has since gone hidden takes the workspace's hide
+/// placement — it must not float at its macOS rect over the active
+/// workspace. (Before `place_admitted`, the reveal funnel was the one
+/// admit site that forgot the invariant routing and moves both kept.)
+#[test]
+fn reveal_into_a_hidden_workspace_seeds_the_hide_placement() {
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    // Minimize 100 (event path): parked at its workspace.
+    sm.on_window_hidden(100);
+    assert!(sm.store.is_hidden(100));
+    // Switch away: workspace 1 hides; workspace 2 comes into view.
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert_eq!(
+        sm.displays.active().get(&1),
+        Some(&1),
+        "precondition: workspace 2 is now the visible one"
+    );
+    // De-minimize: macOS shows the window, the WindowShown event reveals
+    // it through the funnel — into its REMEMBERED (now hidden) workspace.
+    sm.on_window_shown(100);
+    assert!(
+        sm.workspaces[0].find_window(100).is_some(),
+        "it returns to its remembered workspace"
+    );
+    assert!(
+        sm.workspaces[1].find_window(100).is_none(),
+        "it does not invade the active workspace"
+    );
+    // The invariant: a member of a hidden workspace is offscreen — the
+    // OS rect sits at the hide placement (bottom-right corner of the one
+    // 1920×1080 fake display; the fake keeps the size, takes x/y).
+    let rect = handle.rect(100).expect("the OS holds the window's rect");
+    assert!(
+        (rect.x - 1919.0).abs() < 0.01 && (rect.y - 1079.0).abs() < 0.01,
+        "revealed window must sit at the hidden placement, got {:?}",
+        rect
+    );
+}
+
+/// The admit seam, popup leg: a popup revealed into a workspace that has
+/// since gone hidden takes the hide placement too.
+#[test]
+fn popup_reveal_into_a_hidden_workspace_seeds_the_hide_placement() {
+    let (mut sm, handle) = setup_with_handle(1);
+    // Route the window as a popup: the fresh class read decides Dialog
+    // ⇒ popup at routing (`window_class_fresh`).
+    handle.inject_window_kind(300, crate::adapter::WindowClass::Dialog);
+    sm.on_window_created(300, 42);
+    assert!(
+        sm.workspaces[0].is_popup(300),
+        "precondition: Dialog class routes as a popup"
+    );
+    // Minimize the popup (event path): parked.
+    sm.on_window_hidden(300);
+    assert!(sm.store.is_hidden(300));
+    // Switch away, then reveal it back.
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    sm.on_window_shown(300);
+    assert!(
+        sm.workspaces[0].is_popup(300),
+        "the popup returns to its remembered popup set"
+    );
+    let rect = handle.rect(300).expect("the OS holds the popup's rect");
+    assert!(
+        (rect.x - 1919.0).abs() < 0.01 && (rect.y - 1079.0).abs() < 0.01,
+        "popup must sit at the hidden placement while its workspace is hidden"
+    );
+}

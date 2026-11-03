@@ -482,3 +482,178 @@ fn rediscovered_window_returns_to_its_last_workspace() {
         "the active workspace must not gain the window"
     );
 }
+
+#[test]
+fn hidden_reconcile_sits_out_the_blackout() {
+    // The worst blackout artifact this gate covers: with every attribute
+    // read unusable, the hidden-state reconcile's batched verdict reads
+    // "not hidden" for everything — so every Hide-parked window would
+    // mass-reveal (consume its park, re-tile through dead elements)
+    // exactly as the machine wakes. The sweep sits out the blackout; the
+    // resync's own commit pass re-tiles the visible set, and the first
+    // post-commit sweep re-derives hidden state under healthy AX.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    // Minimize 200 through the event path — the OS keeps reporting it
+    // hidden (the fake models both sides of a real minimize).
+    handle.inject_hidden_window(200);
+    sm.on_window_hidden(200);
+    assert!(
+        sm.store.is_hidden(200),
+        "precondition: the window is Hide-parked"
+    );
+
+    handle.set_ax_blackout(true);
+    sm.on_system_woke();
+    sm.store.force_reconcile_for_test();
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert!(
+        sm.store.is_hidden(200),
+        "the blackout must not consume the park"
+    );
+    assert!(
+        sm.workspaces[0].find_window(200).is_none(),
+        "the blackout must not reveal the parked window"
+    );
+
+    // AX answers; the resync commits. The sweep now runs again — 200 is
+    // genuinely still hidden, so it survives post-commit re-derivation.
+    handle.set_ax_blackout(false);
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(!sm.wake_resync_pending());
+    assert!(sm.store.is_hidden(200), "still hidden, so still parked");
+    assert!(sm.workspaces[0].find_window(200).is_none());
+
+    // The user un-minimizes: the reveal happens through the sweep or the
+    // event path the moment judgment is free.
+    handle.clear_hidden_window(200);
+    sm.store.force_reconcile_for_test();
+    sm.age_wake_committed_for_test();
+    sm.on_tick();
+    assert!(
+        !sm.store.is_hidden(200),
+        "post-blackout the sweep re-tiles the un-minimized window"
+    );
+    assert!(
+        sm.workspaces[0].find_window(200).is_some(),
+        "it returns to its remembered workspace"
+    );
+}
+
+#[test]
+fn misplaced_sweep_sits_out_the_blackout() {
+    // Through the blackout, `applied_rects` still holds pre-sleep values
+    // and every element read fails — the sweep would declare every
+    // window unsettled and channel writes into dead elements (the churn
+    // the resync defers by design). Suppressed: the commit pass clears
+    // the cache and re-tiles every visible workspace itself.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    let writes_after_tile = handle.writes();
+
+    handle.displace(100, 400.0, 0.0);
+    handle.set_ax_blackout(true);
+    sm.on_system_woke();
+    sm.force_window_sweep_for_test();
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert_eq!(
+        handle.writes(),
+        writes_after_tile,
+        "the sweep must not fight the blackout over displaced windows"
+    );
+
+    // AX answers: the resync commits and re-asserts everything.
+    handle.set_ax_blackout(false);
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(!sm.wake_resync_pending());
+    assert!(
+        handle.writes() > writes_after_tile,
+        "the committed resync re-asserts the displaced window"
+    );
+    assert!(
+        handle.rect(100).is_some(),
+        "the window's element is readable and placed again"
+    );
+}
+
+#[test]
+fn discovery_sweep_sits_out_the_blackout() {
+    // A window born during sleep is discovered by the resync commit's own
+    // poll — not by the tick sweep racing a partially answering AX,
+    // where a first-call-wins routing verdict could be recorded from an
+    // unreadable class read (a real popup frozen as a tiled sibling).
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    handle.set_ax_blackout(true);
+    handle.inject_window(42, 300);
+    sm.on_system_woke();
+    sm.force_window_sweep_for_test();
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert!(
+        !sm.store.contains(300),
+        "the discovery sweep must not route mid-blackout"
+    );
+
+    handle.set_ax_blackout(false);
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(!sm.wake_resync_pending());
+    assert!(
+        sm.workspaces.iter().any(|ws| ws.find_window(300).is_some()),
+        "the committed resync itself tiles the window born during sleep"
+    );
+}
+
+#[test]
+fn focus_settle_sits_out_the_blackout() {
+    // The settle drain's answer is an AX read; through the blackout it
+    // reads None and the fallback ladder would commit `last_focused_window`
+    // on blackout evidence. The drain stays armed (not consumed) and
+    // commits OS truth on the first post-commit tick — the resync commit
+    // itself re-reads `frontmost_pid`, so its inputs are healthy by then.
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    handle.set_frontmost(Some(42));
+    handle.set_focused_window(42, Some(200));
+    sm.on_window_focused_event(200);
+
+    // Past the settle quiet window, then sleep + wake: the drain is due
+    // but its evidence is blacked out.
+    std::thread::sleep(Duration::from_millis(300));
+    handle.set_ax_blackout(true);
+    sm.on_system_woke();
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert!(
+        sm.focus_settle_dirty(),
+        "the drain must stay armed across the blackout, not be consumed"
+    );
+
+    // AX answers: the resync commits, and the now-unlocked drain in the
+    // same tick commits the OS truth.
+    handle.set_ax_blackout(false);
+    sm.age_wake_probe_for_test();
+    sm.on_tick();
+    assert!(!sm.wake_resync_pending());
+    assert!(
+        !sm.focus_settle_dirty(),
+        "the deferred settle commits right after the resync"
+    );
+    assert_eq!(
+        sm.workspaces[0].focused_window_id(),
+        Some(200),
+        "OS truth lands once AX is healthy"
+    );
+}

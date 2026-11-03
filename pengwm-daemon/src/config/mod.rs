@@ -366,9 +366,7 @@ fn default_prefix_timeout_ms() -> u64 {
 
 fn default_hud_duration_ms() -> u64 {
     500
-}
-
-impl Default for Settings {
+}impl Default for Settings {
     fn default() -> Self {
         Self {
             gap_outer: default_gap(),
@@ -385,33 +383,6 @@ impl Default for Settings {
             prefix_timeout_ms: default_prefix_timeout_ms(),
             hud_enabled: true,
             hud_duration_ms: default_hud_duration_ms(),
-        }
-    }
-}
-
-impl Settings {
-    pub fn load() -> Self {
-        let path = config_file_path();
-        Self::load_from(&path)
-    }
-
-    pub fn load_from(path: &std::path::Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => match toml::from_str::<Settings>(&contents) {
-                Ok(settings) => settings,
-                Err(e) => {
-                    log::warn!(
-                        "Failed to parse config '{}': {}. Using defaults.",
-                        path.display(),
-                        e
-                    );
-                    Self::default()
-                }
-            },
-            Err(_) => {
-                log::info!("No config file at '{}'. Using defaults.", path.display());
-                Self::default()
-            }
         }
     }
 }

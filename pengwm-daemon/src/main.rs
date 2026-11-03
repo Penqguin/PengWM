@@ -92,8 +92,10 @@ fn daemon_main() {
     }
 
     eprintln!("[1/6] Loading config…");
-    let keybinds = Arc::new(Mutex::new(config::keybinds::KeybindConfig::load()));
-    let settings = config::Settings::load();
+    // One decode for both halves; recovery policy and logging live in
+    // `config::loader::resolve` (never quietly default).
+    let (settings, keybind_config) = config::loader::resolve();
+    let keybinds = Arc::new(Mutex::new(keybind_config));
     let prefix = Arc::new(Mutex::new(pengwm_daemon::prefix::PrefixKey::new(
         pengwm_daemon::prefix::PrefixConfig::parse_or_default(
             &settings.prefix,

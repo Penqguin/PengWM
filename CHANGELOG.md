@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.13 — Topology no longer re-homes members (unreleased)
+
+- **Fix: windows no longer migrate back to workspace 1 on their own.** A topology sync (monitor add/remove/resize, sleep/wake handshake, or geometry drift from learned top bands / AppKit insets) used to call `wm_reset`, which wiped every workspace tree, the window store, and the placement seatbelt, then re-routed all members as fresh births. Unassociated apps (no routing rule) fell through to the active seat, which after the fresh assemble was always workspace 1. Topology changes now heal incrementally (reseat + relayout + park) and never re-home members; manual moves and the visible arrangement survive. The seatbelt is preserved across resets. (ADR-0006)
+
+
 ## v0.6.12 — HUD hotplug + WM reset + focus truth (2026-11-01)
 
 - **New: the built-in game ignore layer.** Every game and game client is

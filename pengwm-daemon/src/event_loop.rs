@@ -103,7 +103,11 @@ impl EventLoop {
         tx: mpsc::Sender<DaemonEvent>,
         bar_sender: BarSender,
     ) -> (Self, mpsc::Sender<DaemonEvent>) {
-        let settings = crate::config::Settings::load();
+        // The same one decode, same recovery policy (never quietly
+        // default) — this read only drives the menubar gate; the keybinds
+        // Arc arrives already built from main's own resolve.
+        let (read_settings, _) = crate::config::loader::resolve();
+        let settings = read_settings;
         let menubar_pid = if settings.menubar.enabled && !cfg!(test) {
             spawn_menubar_process()
         } else {

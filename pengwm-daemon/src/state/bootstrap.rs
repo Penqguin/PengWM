@@ -85,6 +85,21 @@ pub fn assemble(
 
     let (gap_outer, gap_inner) = if use_session {
         let sess = maybe_session.unwrap();
+        // The session snapshot owns the boot-time gaps while
+        // `restore_last_session` is on — named out loud, because "gap
+        // config edits do nothing until reload" is exactly the sort of
+        // silently-won precedence the config lore should never repeat.
+        if (sess.gap_outer - settings.gap_outer as f64).abs() > f64::EPSILON
+            || (sess.gap_inner - settings.gap_inner as f64).abs() > f64::EPSILON
+        {
+            log::info!(
+                "Session gaps ({:.0}/{:.0}) win over config gaps ({}/{}) at boot — `pengwm reload-config` applies the config ones.",
+                sess.gap_outer,
+                sess.gap_inner,
+                settings.gap_outer,
+                settings.gap_inner
+            );
+        }
         (sess.gap_outer, sess.gap_inner)
     } else {
         (

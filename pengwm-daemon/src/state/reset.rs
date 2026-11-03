@@ -1,5 +1,13 @@
-//! The full in-process WM reset (`wm_reset`) — the hotplug answer
-//! (Spec-ref: the "reset the window manager on hotplug" decision).
+//! Rebuild all derived state from scratch and re-route members.
+//! Reserved for structural config changes or an explicit command —
+//! never an automatic topology reaction (ADR-0006). Incremental
+//! topology healing (DisplaySet::sync + re-parks) is the automatic
+//! response; this path is the nuclear option.
+//!
+//! The seatbelt (live_placement) is preserved across a reset so that
+//! ADR-0005's promise holds: a window the store lost comes back to
+//! where it lives this session. Members re-route through the birth
+//! handler, which consults the seatbelt first.
 //!
 //! Incremental topology repair (`DisplaySet::sync` + re-parks) patched
 //! member state piecemeal, and every failure this session observed was
@@ -16,14 +24,13 @@
 //! re-seat must not re-launch apps.
 //!
 //! Deliberate cost: session-level invariants (popup parking, magnify
-//! pins, manual workspace moves) do not survive a reset — members
-//! re-route as births (config routing, then the active seat). That is
-//! what "reset" means; grilling settled it.
+//! pins) do not survive a reset — members re-route as births (config
+//! routing, then the seatbelt, then the active seat). Manual workspace
+//! moves DO survive, via the preserved seatbelt (ADR-0006).
 
 use std::time::{Duration, Instant};
 
 use super::{DragState, LayoutWriteCache, StateManager, WindowStore};
-use crate::config::Settings;
 
 /// Minimum spacing between resets. A single replug produces a burst of
 /// MonitorAdded/Removed/Resized events; each one reaching
@@ -31,10 +38,12 @@ use crate::config::Settings;
 /// otherwise reset repeatedly (and mid-un-plug, with zero displays,
 /// could even mis-assemble). The cooldown is per *successful* reset:
 /// a settled topology costs a no-op sync instead.
+#[allow(dead_code)]
 const RESET_COOLDOWN: Duration = Duration::from_millis(1500);
 
 /// True once a reset just ran (so its callers can log one coordinated
 /// line instead of five).
+#[allow(dead_code)]
 pub(super) struct ResetOutcome {
     pub members: usize,
     pub workspaces: usize,
@@ -44,6 +53,7 @@ impl StateManager {
     /// Rebuild all derived state from scratch and re-route members.
     /// No-op on an empty display set (mid-un-plug) or inside the
     /// cooldown — both log, neither touches state.
+    #[allow(dead_code)]
     pub(in crate::state) fn wm_reset(&mut self) -> Option<ResetOutcome> {
         let now = Instant::now();
         if let Some(last) = self.last_wm_reset {
@@ -74,9 +84,15 @@ impl StateManager {
         // set invalidates — and must not inherit — them.
         self.layout_cache = LayoutWriteCache::new();
         crate::macos::cg_display::prune_learned_top_bands(&[]);
-        self.live_placement.clear();
+        // The seatbelt is preserved (ADR-0006 / ADR-0005): a window
+        // the store lost comes back to where it lives this session, even
+        // across a structural reset. Members re-route through the birth
+        // handler, which consults `live_placement` first.
 
-        let settings = Settings::load();
+        // The startup-shape decode (never quietly default — see
+        // `config::loader::resolve`); keybinds are not re-read by a reset:
+        // the live keybind Arc is the running truth.
+        let (settings, _) = crate::config::loader::resolve();
         let primary = self.os.primary_display_id();
         let assembled = super::bootstrap::assemble(&display_infos, primary, &settings, None);
         self.workspaces = assembled.workspaces;

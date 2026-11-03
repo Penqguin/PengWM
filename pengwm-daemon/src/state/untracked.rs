@@ -9,7 +9,7 @@ use super::StateManager;
 /// above the normal layer on its own, but a level-0 `float_apps` window
 /// (System Settings) stacks against the newly shown tree after every
 /// workspace switch. `reveal_stack` restores stacking at every visibility
-/// transition — explicit switches, focus-driven switches, `reveal_all`
+/// transition — explicit switches, `reveal_all`
 /// and the wake resync: the shown workspace's popups re-assert on top
 /// (the switch-back raise, Q9) and the untracked overlays follow, because
 /// macOS stacking after un-hide is unspecified.

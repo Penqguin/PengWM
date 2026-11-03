@@ -38,7 +38,8 @@ pengwm workspace <id>
 
 Switch to workspace `id` (1-indexed, global config order — `1` is the first
 `[[workspaces]]` entry, on any monitor). Switching to a workspace shown on
-another monitor swaps it onto the focused monitor. Hidden workspaces park
+another monitor moves focus there (focus-only); it does not swap workspaces.
+Hidden workspaces park
 their windows position-only: a 1×1 strip at their own monitor's bottom edge
 by default (`hidden_strategy = "bottom_edge"`), fully offscreen with
 `"far_offscreen"`.
