@@ -36,11 +36,13 @@ pub fn observe(event_tx: mpsc::Sender<DaemonEvent>) {
         );
         add_wake_observer(&center, ctx, NSWorkspaceDidWakeNotification);
         add_wake_observer(&center, ctx, NSWorkspaceScreensDidWakeNotification);
+        add_space_observer(&center, ctx, NSWorkspaceActiveSpaceDidChangeNotification);
     }
 }
 
 use objc2_app_kit::{
-    NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+    NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
+    NSWorkspaceDidActivateApplicationNotification,
     NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
     NSWorkspaceDidWakeNotification, NSWorkspaceScreensDidWakeNotification,
 };
@@ -161,6 +163,20 @@ fn add_wake_observer(center: &NSNotificationCenter, ctx: *mut c_void, name: &NSS
         log::info!("NSWorkspace wake notification — resyncing");
         let tx = unsafe { &*(ctx as *const mpsc::Sender<DaemonEvent>) };
         let _ = tx.try_send(DaemonEvent::SystemWoke);
+    });
+
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+    };
+    std::mem::forget(token);
+}
+
+/// A native-Space switch carries no pid — it forces the Space gate's
+/// detector refresh (ADR-0007) without waiting for the tick poll.
+fn add_space_observer(center: &NSNotificationCenter, ctx: *mut c_void, name: &NSString) {
+    let block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        let tx = unsafe { &*(ctx as *const mpsc::Sender<DaemonEvent>) };
+        let _ = tx.try_send(DaemonEvent::SpaceChanged);
     });
 
     let token = unsafe {

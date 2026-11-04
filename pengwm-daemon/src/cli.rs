@@ -67,11 +67,9 @@ pub enum CliCommand {
     MoveWindowToDisplay {
         direction: DirectionArg,
     },
-    /// Re-flash the workspace HUD pills now
-    HudToggle,
     ReloadConfig,
     State,
-    /// Stop the daemon (and the status bar with it)
+    /// Stop the daemon (and the menubar status item with it)
     Quit,
     /// Re-tile all hidden windows back into their workspaces
     RevealAll,
@@ -167,7 +165,6 @@ impl From<CliCommand> for Command {
                 direction: direction.into(),
             },
             CliCommand::ReloadConfig => Command::ReloadConfig,
-            CliCommand::HudToggle => Command::HudToggle,
             CliCommand::State => Command::QueryState,
             CliCommand::Quit => Command::Quit,
             CliCommand::RevealAll => Command::RevealAll,

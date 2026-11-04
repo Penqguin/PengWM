@@ -10,7 +10,6 @@ pub use preset::{
     clamp_main_ratio, LayoutPreset, MAIN_RATIO_MAX, MAIN_RATIO_MIN, MIN_PANE_SHARE, RESIZE_STEP,
 };
 
-use crate::layout::Rect;
 use crate::tree::{Arena, NodeId, SplitDirection, WindowId};
 use serde::{Deserialize, Serialize};
 
@@ -44,9 +43,6 @@ pub struct Workspace {
     arena: Arena,
     monitor_origin: (i32, i32),
     monitor_size: (u32, u32),
-    /// Global-coordinate region of the monitor that is off-limits to windows
-    /// (e.g. a status bar strip). Applied in `layout()` before the gap inset.
-    reserved: Option<Rect>,
 }
 
 impl Workspace {
@@ -64,7 +60,6 @@ impl Workspace {
             arena: Arena::new(),
             monitor_origin: origin,
             monitor_size: size,
-            reserved: None,
         }
     }
 }

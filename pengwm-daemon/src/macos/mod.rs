@@ -6,3 +6,4 @@ pub mod cg_display;
 pub mod cg_window_level;
 pub mod event_tap;
 pub mod ns_workspace;
+pub mod spaces;

@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::adapter::{AppIdentity, DisplayInfo, HudCard, ObserverRegistry, OsAdapter, WindowClass, WindowListing};
+use crate::adapter::{
+    AppIdentity, DisplayInfo, ObserverRegistry, OsAdapter, WindowClass, WindowListing,
+};
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
 
@@ -81,17 +83,15 @@ pub struct TestAdapter {
     pub observer_age: RefCell<HashMap<i32, Instant>>,
     /// Number of `refresh_aged_observers` triggers (pid replacements).
     pub refreshes: Cell<usize>,
-    /// HUD flash history (Spec 0001): one entry per `show_hud` call, in
-    /// order, each the full card batch. Tests assert triggering and card
-    /// contents without macOS.
-    pub hud_shows: RefCell<Vec<Vec<HudCard>>>,
-    /// Number of `hide_hud` calls, in order (always empty → count).
-    pub hud_hides: Cell<usize>,
     /// Fresh-classification overrides (per window id) — the
     /// `window_class_fresh` seam's test side: a verdict here beats the
     /// `window_classes` cache, modeling "the app reported differently
     /// the moment routing asked".
     pub fresh_window_classes: RefCell<HashMap<WindowId, WindowClass>>,
+    /// Native-Space gate snapshot: `display id → on first user desktop`.
+    /// `Some(empty)` (the default) = detector answered, all displays
+    /// allowed; `None` = detector unavailable (fail-open path).
+    pub first_desktop: RefCell<Option<HashMap<u32, bool>>>,
 }
 
 impl Default for TestAdapter {
@@ -124,9 +124,8 @@ impl Default for TestAdapter {
             pruned: RefCell::new(Vec::new()),
             observer_age: RefCell::new(HashMap::new()),
             refreshes: Cell::new(0),
-            hud_shows: RefCell::new(Vec::new()),
-            hud_hides: Cell::new(0),
             fresh_window_classes: RefCell::new(HashMap::new()),
+            first_desktop: RefCell::new(Some(HashMap::new())),
         }
     }
 }
@@ -312,6 +311,20 @@ impl TestAdapter {
         self.cached_elements.borrow_mut().insert(window_id, pid);
     }
 
+    /// Put one display on a non-first native desktop (`on_first = false`)
+    /// or back on its first. Seeds an empty answered snapshot on first use.
+    pub fn set_first_desktop(&self, display_id: u32, on_first: bool) {
+        let mut snapshot = self.first_desktop.borrow_mut();
+        snapshot
+            .get_or_insert_with(HashMap::new)
+            .insert(display_id, on_first);
+    }
+
+    /// Simulate the SkyLight detector being unavailable (fail-open path).
+    pub fn set_space_detector_unavailable(&self) {
+        *self.first_desktop.borrow_mut() = None;
+    }
+
     /// Remove a window from the fake's listing without any destroyed
     /// notification — simulates a close whose notification never arrives
     /// (the missed-notification path the sweep untrack exists for).
@@ -344,16 +357,6 @@ impl TestAdapter {
     /// `raise_window` calls in order, so tests can assert on-top behavior.
     pub fn raised(&self) -> Vec<WindowId> {
         self.raised.borrow().clone()
-    }
-
-    /// HUD flash history (Spec 0001): one full card batch per `show_hud`.
-    pub fn hud_flashes(&self) -> Vec<Vec<HudCard>> {
-        self.hud_shows.borrow().clone()
-    }
-
-    /// Number of `hide_hud` calls.
-    pub fn hud_hides(&self) -> usize {
-        self.hud_hides.get()
     }
 
     /// `forget_window` calls in order, for the eviction-on-untrack tests.
@@ -438,6 +441,20 @@ impl TestHandle {
         *self.0.display_override.borrow_mut() = Some(displays);
     }
 
+    /// Put one display on a non-first native desktop (the Space gate).
+    pub fn set_first_desktop(&self, display_id: u32, on_first: bool) {
+        self.0.set_first_desktop(display_id, on_first)
+    }
+
+    /// Simulate the SkyLight detector being unavailable (fail-open path).
+    pub fn set_space_detector_unavailable(&self) {
+        self.0.set_space_detector_unavailable()
+    }
+
+    pub fn last_focused(&self) -> Option<WindowId> {
+        self.0.last_focused.get()
+    }
+
     pub fn writes(&self) -> usize {
         self.0.writes()
     }
@@ -476,14 +493,6 @@ impl TestHandle {
 
     pub fn raised(&self) -> Vec<WindowId> {
         self.0.raised()
-    }
-
-    pub fn hud_flashes(&self) -> Vec<Vec<HudCard>> {
-        self.0.hud_flashes()
-    }
-
-    pub fn hud_hides(&self) -> usize {
-        self.0.hud_hides()
     }
 
     /// Seed the element-cache class (the first-read "frozen lie" stand-in).
@@ -590,8 +599,17 @@ impl OsAdapter for SharedTestAdapter {
         self.0.primary_display_id()
     }
 
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome {
-        self.0.set_window_rect(window_id, rect)
+    fn displays_on_first_desktop(&self) -> Option<HashMap<u32, bool>> {
+        self.0.first_desktop.borrow().clone()
+    }
+
+    fn set_window_rect(
+        &self,
+        window_id: WindowId,
+        rect: Rect,
+        _top_edge_tile: bool,
+    ) -> WriteOutcome {
+        self.0.set_window_rect(window_id, rect, false)
     }
 
     fn window_rect(&self, window_id: WindowId) -> Option<Rect> {
@@ -656,14 +674,6 @@ impl OsAdapter for SharedTestAdapter {
 
     fn app_identities(&self, pids: &[i32]) -> HashMap<i32, AppIdentity> {
         self.0.app_identities(pids)
-    }
-
-    fn show_hud(&self, cards: &[HudCard]) {
-        self.0.show_hud(cards);
-    }
-
-    fn hide_hud(&self) {
-        self.0.hide_hud();
     }
 
     fn window_class_fresh(&self, window_id: WindowId) -> Option<WindowClass> {
@@ -739,7 +749,16 @@ impl OsAdapter for TestAdapter {
         self.active_displays().first().map(|d| d.id).unwrap_or(0)
     }
 
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome {
+    fn displays_on_first_desktop(&self) -> Option<HashMap<u32, bool>> {
+        self.first_desktop.borrow().clone()
+    }
+
+    fn set_window_rect(
+        &self,
+        window_id: WindowId,
+        rect: Rect,
+        _top_edge_tile: bool,
+    ) -> WriteOutcome {
         self.set_rect_calls.set(self.set_rect_calls.get() + 1);
         if let Some(fault) = self.faults.borrow().get(&window_id).cloned() {
             // Faults serve the matching outcome without touching the OS
@@ -913,14 +932,6 @@ impl OsAdapter for TestAdapter {
                 )
             })
             .collect()
-    }
-
-    fn show_hud(&self, cards: &[HudCard]) {
-        self.hud_shows.borrow_mut().push(cards.to_vec());
-    }
-
-    fn hide_hud(&self) {
-        self.hud_hides.set(self.hud_hides.get() + 1);
     }
 
     fn window_class_fresh(&self, window_id: WindowId) -> Option<WindowClass> {

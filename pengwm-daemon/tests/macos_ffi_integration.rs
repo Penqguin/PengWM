@@ -190,3 +190,36 @@ fn active_displays_non_empty() {
         assert!(d.id > 0, "display id should be non-zero");
     }
 }
+
+#[test]
+fn native_space_snapshot_matches_active_displays() {
+    // Read-only SkyLight SPI (ADR-0007). `None` means the detector is
+    // unavailable on this macOS — the runtime fails open, so that is not
+    // a test failure.
+    let Some(states) = pengwm_daemon::macos::spaces::snapshot() else {
+        return;
+    };
+    assert!(
+        !states.is_empty(),
+        "a GUI session has at least one managed display"
+    );
+    let displays = cg_display::active_displays();
+    for state in &states {
+        assert!(
+            displays.iter().any(|d| d.id == state.display_id),
+            "space snapshot display {} must map to a live CG display {:?}",
+            state.display_id,
+            displays.iter().map(|d| d.id).collect::<Vec<_>>()
+        );
+        if state.current_type == pengwm_daemon::macos::spaces::SPACE_TYPE_USER {
+            assert!(
+                state.first_user_space.is_some(),
+                "a user desktop implies at least one type-0 space on that display"
+            );
+        }
+        eprintln!(
+            "display {}: current space {} (type {}), first user space {:?}",
+            state.display_id, state.current_space, state.current_type, state.first_user_space
+        );
+    }
+}

@@ -22,10 +22,10 @@ impl StateManager {
     pub fn on_tick(&mut self) {
         let now = Instant::now();
 
-        // HUD expiry first: it touches no AX state, and a visible flash
-        // must not outlive its window regardless of what the sweeps
-        // below do (the tick is also the prefix-armed pinner — Spec 0001).
-        self.hud_tick(now);
+        // Native-Space gate first: every consumer below must see this
+        // tick's limbo set. The poll is throttled inside; the
+        // ActiveSpaceDidChange notification forces the prompt path.
+        self.refresh_space_gate(now, false);
 
         // A wake resync waits here for AX to come back, ahead of every
         // consumer below: at commit it rebuilds the derived state the
@@ -91,9 +91,13 @@ impl StateManager {
                 drag,
                 target,
             } => {
-                let ws = &mut self.workspaces[workspace_idx];
-                if ws.swap_windows_by_id(drag, target) {
-                    self.apply_layout(workspace_idx);
+                // A drag straddling a Space change must not keep swapping
+                // tiles on the desktop the user just left.
+                if self.workspace_may_act(workspace_idx) {
+                    let ws = &mut self.workspaces[workspace_idx];
+                    if ws.swap_windows_by_id(drag, target) {
+                        self.apply_layout(workspace_idx);
+                    }
                 }
             }
             DragTickAction::SnapBack { workspace_idx } => {
@@ -205,13 +209,13 @@ impl StateManager {
         for wid in to_hide {
             // Only hide if still a member (pending set already checked, but
             // window may have been destroyed between pending calc and now).
-            if self.find_workspace_of_any(wid).is_some() {
+            if self.window_may_act(wid) && self.find_workspace_of_any(wid).is_some() {
                 self.on_window_hidden(wid);
             }
         }
         for wid in to_show {
             // Only show if hidden-tracked; pending already checked.
-            if self.store.is_hidden(wid) {
+            if self.window_may_act(wid) && self.store.is_hidden(wid) {
                 self.on_window_shown(wid);
             }
         }
@@ -289,6 +293,11 @@ impl StateManager {
         let mut affected: Vec<usize> = Vec::new();
         for idx in visible {
             if idx >= self.workspaces.len() {
+                continue;
+            }
+            // Misplaced-judgment is an OS action: a display showing a
+            // non-first desktop is left exactly as the user has it.
+            if !self.workspace_may_act(idx) {
                 continue;
             }
             let targets = self.workspaces[idx].layout(self.gap_inner, self.gap_outer);

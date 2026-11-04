@@ -6,7 +6,7 @@ use pengwm_core::workspace::Workspace;
 use crate::adapter::DisplayInfo;
 
 /// Result of pure workspace/display assembly. Caller (StateManager) owns
-/// `Vec<Workspace>` mutation and `BarReserve`/`Router` creation; this just
+/// `Vec<Workspace>` mutation and `Router` creation; this just
 /// decides which workspaces exist, where they are, and what gaps to use.
 /// No file I/O, no process spawning, no `cfg(test)` — I/O seam is the
 /// function argument.

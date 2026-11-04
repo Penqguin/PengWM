@@ -107,7 +107,8 @@ Thin coordinator split by responsibility (`state/mod.rs` construction +
 layout application, `lifecycle.rs` window/app lifecycle, `commands.rs`
 `Command` dispatch, `monitors_wake.rs` monitor + topology handling,
 `blackout.rs` wake resync + the blackout judgment gate,
-`reconcile.rs` tick path, `layout_writer.rs` write policy):
+`reconcile.rs` tick path, `layout_writer.rs` write policy,
+`space_gate.rs` native-Space gate):
 
 ```
 event → StateManager → mutate Workspace → call .layout()
@@ -118,7 +119,7 @@ StateManager does not know about `NodeId`, `Arena`, or monitor geometry.
 It orchestrates at the level of intents: "window created", "focus right",
 "switch workspace". Narrow supporting modules own their state:
 `DisplaySet` (workspace ↔ output assignment + routing), `WindowStore`
-(wid↔pid↔hidden), `BarReserve` (bar geometry gate), `DragState`
+(wid↔pid↔hidden), `DragState`
 (drag-to-swap gesture), `LayoutWriteCache` (write policy maps).
 
 ## Tree
@@ -155,6 +156,30 @@ routing policy; the `Vec<Workspace>` itself stays on `StateManager`.
 Hidden workspaces are emulated — `StateManager` sends their `all_windows()`
 to `OsAdapter::hide_windows`, which parks them position-only (bottom-edge
 strip of their own monitor by default, far offscreen if configured).
+
+## Native-Space gate
+
+PengWM manages only each display's **first user desktop** (ADR-0007).
+macOS Spaces are per display, so the gate is per display: display A on
+Desktop 2 is idle while display B on Desktop 1 stays fully managed.
+
+- **Detector:** `macos/spaces.rs` reads SkyLight's
+  `SLSCopyManagedDisplaySpaces` (read-only SPI; no SIP changes). A display
+  is gated when its current space is type `0` and is not the first type-`0`
+  space in that display's ordered list. Fullscreen (`4`) and system (`2`)
+  spaces are exempt. Detector unavailable → fail open, log once.
+- **Action gate, not membership filter:** `apply_layout`, hide placements,
+  raises, focus calls and commands are suppressed on a gated display;
+  windows stay tracked and routed so the model is intact on return.
+- **Deferred hides:** a hide that cannot be written is queued by window +
+  workspace; the return resync drains it before re-tiling. Stale entries
+  (moved/destroyed/visible workspace) are dropped.
+- **Cadence:** 100 ms tick poll, forced by
+  `NSWorkspaceActiveSpaceDidChangeNotification` and by every command.
+  Entering limbo clears drag state; leaving runs a scoped resync.
+- **Judgment shields:** listing-omission untracks, misplaced sweeps and
+  hidden-state reconciles skip windows homed to a gated display; their
+  AX evidence is ambiguous across a Space transition.
 
 ## Data Flow
 

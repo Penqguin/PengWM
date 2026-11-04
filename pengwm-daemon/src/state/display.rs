@@ -10,7 +10,7 @@ use crate::adapter::{DisplayInfo, OsAdapter};
 /// workspace index is visible per monitor) and the `workspace_entries` that
 /// define the named workspace set cloned per display. `Vec<Workspace>` itself
 /// stays on `StateManager` and is borrowed per call — so `WindowStore`,
-/// `BarReserve` and `DragState` don't need to reach through a registry.
+/// `DragState` doesn't need to reach through a registry.
 /// `active` is a `BTreeMap` so iteration order is deterministic (no HashMap
 /// random fallback in `active_workspace_idx`). Also owns the routing policy
 /// (`max_tiles` + per-monitor overflow/routing) so callers have one interface

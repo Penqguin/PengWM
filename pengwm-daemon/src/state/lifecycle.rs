@@ -113,6 +113,17 @@ impl StateManager {
             .where_should(window_id, pid)
             .or_else(|| self.routed_workspace_for(identity))
             .unwrap_or_else(|| self.active_workspace_idx());
+        log::debug!(
+            "WindowCreated tiled: {} pid={} app={:?} bundle={:?} workspace={} display={} origin={:?} size={:?}",
+            window_id,
+            pid,
+            identity.name,
+            identity.bundle,
+            preferred,
+            self.workspaces[preferred].monitor_id,
+            self.workspaces[preferred].monitor_origin(),
+            self.workspaces[preferred].monitor_size()
+        );
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
         // The shared admit funnel executes the routing tail now: a member
         // of a hidden workspace takes the hide placement inside
@@ -276,6 +287,7 @@ impl StateManager {
         }
         self.store.unregister(window_id);
         self.layout_cache.forget(window_id);
+        self.deferred_hides.remove(&window_id);
         // One funnel for OS-side eviction: destroyed notification, missed
         // notification sweep, gone-grace, and app termination all reach
         // here, so the cached element and its registrations never outlive
@@ -767,6 +779,20 @@ impl StateManager {
                             continue;
                         }
                     }
+                    // A window homed to a display showing a non-first
+                    // native desktop is off the WM's active surface: its
+                    // listing omission is as ambiguous as an off-Space
+                    // one, and the element read can fail across the
+                    // transition. Defer the death verdict to the return
+                    // resync / the write path's gone grace.
+                    if !self.window_may_act(window_id) {
+                        log::debug!(
+                            "untrack_unlisted: window {} pid {} homed to a Space-gated display — not judged",
+                            window_id,
+                            pid
+                        );
+                        continue;
+                    }
                     // An answered listing that omits a window whose
                     // element still answers is a listing artifact, not a
                     // death. macOS Space transitions make apps answer
@@ -975,5 +1001,4 @@ impl StateManager {
             }
         }
     }
-
 }

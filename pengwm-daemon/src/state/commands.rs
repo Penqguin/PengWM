@@ -18,6 +18,19 @@ impl StateManager {
     /// `tx` is `None` for fire-and-forget sources; the reply is only sent when
     /// a caller is waiting on it.
     pub fn on_command(&mut self, cmd: Command, tx: Option<mpsc::Sender<DaemonResponse>>) {
+        // Commands cannot afford the tick throttle: a swipe that just
+        // landed on Desktop 2 must refuse the next keybind immediately.
+        self.refresh_space_gate(Instant::now(), true);
+        if self.command_refused_by_space_gate(&cmd) {
+            log::info!(
+                "command {:?} refused — the acting display shows a non-first native desktop",
+                cmd
+            );
+            if let Some(tx) = tx {
+                let _ = tx.try_send(DaemonResponse::Ack);
+            }
+            return;
+        }
         match cmd {
             Command::Focus { direction } => self.focus_command(direction),
             Command::MoveWindow { direction } => self.swap_command(direction),
@@ -46,7 +59,12 @@ impl StateManager {
                         if let Some(target) = self.displays.resolve_workspace(n, &self.workspaces) {
                             let focus_first = self.focus_first_on_switch;
                             let display_snapshot = self.os.active_displays();
-                            if let Some(dec) = self.displays.plan_switch(
+                            if !self.workspace_may_act(target) {
+                                log::info!(
+                                    "Workspace switch to {} refused — its display shows a non-first native desktop",
+                                    n
+                                );
+                            } else if let Some(dec) = self.displays.plan_switch(
                                 target,
                                 &mut self.workspaces,
                                 &display_snapshot,
@@ -91,11 +109,6 @@ impl StateManager {
                                 }
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
-                                // An explicit context change — announce what
-                                // landed where (Spec 0001's explicit-only
-                                // triggers). Flash after the swaps settle so
-                                // the pills read the post-switch state.
-                                self.flash_hud();
                             }
                         } else {
                             log::debug!(
@@ -205,11 +218,6 @@ impl StateManager {
                 log::info!("RevealAll requested — retiling hidden windows");
                 self.reveal_all();
             }
-            Command::HudToggle => {
-                // The explicit re-peek: same flash the switches get, on
-                // demand (Spec 0001's `hud-toggle`).
-                self.flash_hud();
-            }
         }
         if let Some(tx) = tx {
             let _ = tx.try_send(DaemonResponse::Ack);
@@ -218,6 +226,9 @@ impl StateManager {
     }
 
     pub(super) fn focus_command(&mut self, direction: Direction) {
+        if !self.active_display_may_act() {
+            return;
+        }
         let idx = self.active_workspace_idx();
         let ws = &mut self.workspaces[idx];
         ws.focus_neighbor(direction);
@@ -236,6 +247,15 @@ impl StateManager {
     pub(super) fn move_focused_to_workspace(&mut self, target: usize) {
         let current = self.active_workspace_idx();
         if target == current {
+            return;
+        }
+        // Both ends must be managed surfaces: the source acts, and the
+        // destination would receive (and be hidden on) a gated display.
+        if !self.workspace_may_act(current) || !self.workspace_may_act(target) {
+            log::info!(
+                "move to workspace {} refused — a display shows a non-first native desktop",
+                target
+            );
             return;
         }
         let window_id = self.workspaces[current].focused_window_id();
@@ -299,11 +319,15 @@ impl StateManager {
         // Bookkeeping first: focus always lands, even on an empty workspace
         // (#2/Q9) — otherwise the next switch/move resolves on a stale output.
         let target_mon = self.workspaces[target_idx].monitor_id;
+        if !self.display_may_act(target_mon) {
+            log::info!(
+                "focus_display {:?} refused — display {} shows a non-first native desktop",
+                direction,
+                target_mon
+            );
+            return;
+        }
         self.displays.set_focused_output(target_mon);
-        // An explicit monitor focus change — announce the new mapping
-        // (Spec 0001). Focus changes which monitor is accented even when
-        // no visibility changed.
-        self.flash_hud();
         if let Some(wid) = self.workspaces[target_idx].focused_window_id() {
             log::debug!(
                 "focus_display {:?} workspace {} -> {} wid {}",
@@ -344,6 +368,15 @@ impl StateManager {
         if target_idx == current_idx {
             return;
         }
+        // The move acts on the source desktop and lands on the target's
+        // visible one: both must be managed surfaces.
+        if !self.workspace_may_act(current_idx) || !self.workspace_may_act(target_idx) {
+            log::info!(
+                "move_window_to_display {:?} refused — a display shows a non-first native desktop",
+                direction
+            );
+            return;
+        }
         let wid = match self.workspaces[current_idx].focused_window_id() {
             Some(id) => id,
             None => return,
@@ -357,5 +390,28 @@ impl StateManager {
         );
         self.move_window_between(current_idx, target_idx, wid);
         self.publish_bar_state();
+    }
+
+    /// Commands that act on the focused workspace are refused wholesale
+    /// while its display shows a non-first native desktop (Q7). Commands
+    /// with their own target resolution (`Workspace`, `FocusDisplay`,
+    /// `MoveWindowToDisplay`, `MoveWindowToWorkspace`) gate at the
+    /// resolved ends; global, model-only commands (`SetGap*`,
+    /// `RevealAll`, `ReloadConfig`, `QueryState`, `Quit`)
+    /// stay available — their OS writes are gated by the write paths.
+    fn command_refused_by_space_gate(&self, cmd: &Command) -> bool {
+        let acts_on_active = matches!(
+            cmd,
+            Command::Focus { .. }
+                | Command::MoveWindow { .. }
+                | Command::Split { .. }
+                | Command::MoveWindowToWorkspace { .. }
+                | Command::Close
+                | Command::CycleLayout
+                | Command::ToggleMagnify
+                | Command::SelectLayout { .. }
+                | Command::ResizePane { .. }
+        );
+        acts_on_active && !self.active_display_may_act()
     }
 }

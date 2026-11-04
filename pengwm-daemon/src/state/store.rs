@@ -264,6 +264,13 @@ impl WindowStore {
         self.parked.remove(&window_id)
     }
 
+    /// The workspace index a parked window remembers — read-only sibling
+    /// of `reveal`. The native-space gate homes a parked window through
+    /// this (its tree membership is gone while parked).
+    pub fn parked_idx(&self, window_id: WindowId) -> Option<usize> {
+        self.parked.get(&window_id).map(|entry| entry.idx)
+    }
+
     #[cfg(test)]
     pub fn park_insert(&mut self, window_id: WindowId, idx: usize) {
         self.parked.insert(

@@ -129,7 +129,6 @@ impl StateManager {
         self.last_window_sweep = now - Duration::from_secs(5);
         self.last_wm_reset = Some(now);
 
-        self.flash_hud();
         self.publish_bar_state();
         Some(ResetOutcome {
             members: member_count,

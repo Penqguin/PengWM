@@ -7,7 +7,7 @@ use pengwm_core::command::{BarMessage, BarState, BarWorkspace};
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::Workspace;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -17,7 +17,6 @@ pub mod bootstrap;
 pub mod commands;
 pub mod display;
 pub mod drag;
-pub mod hud;
 pub mod layout_writer;
 pub mod lifecycle;
 pub mod monitors_wake;
@@ -25,6 +24,7 @@ pub mod placement;
 pub mod reconcile;
 pub mod reset;
 pub mod session;
+pub mod space_gate;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -85,6 +85,16 @@ pub struct StateManager {
     /// `LayoutWriteCache` — `StateManager` never touches the maps directly.
     layout_cache: LayoutWriteCache,
     drag: DragState,
+    /// Native-Space gate (ADR-0007): monitors currently showing a
+    /// non-first user desktop. Empty = every display fully managed.
+    space_limbo: BTreeSet<u32>,
+    /// Hide placements deferred while the owning display was in limbo;
+    /// drained on return and on every snapshot (topology remaps).
+    deferred_hides: HashMap<WindowId, usize>,
+    /// When the space snapshot last ran (the 100 ms poll throttle).
+    space_snapshot_at: Option<Instant>,
+    /// Whether the detector-unavailable warning has been logged (once).
+    space_detector_warned: bool,
     /// Set when `Command::Quit` is handled; the event loop polls this and
     /// returns so the daemon process can exit.
     shutdown_requested: bool,
@@ -137,15 +147,6 @@ pub struct StateManager {
     /// window (`LayoutWriteCache::WAKE_GONE_GRACE` — the same patience
     /// the write path uses) has passed; the sweep re-judges after it.
     wake_committed_at: Option<Instant>,
-    /// Whether the transient workspace HUD flashes at all
-    /// (docs/specs/0001-workspace-hud.md). Reloaded with the config.
-    hud_enabled: bool,
-    /// How long one flash keeps the pills up; the HUD tick extends the
-    /// deadline while the prefix chord is armed.
-    hud_duration_ms: u64,
-    /// When the current flash expires (`None` = never drawn / hidden).
-    /// `state::hud` owns the draw/hide decisions around it.
-    hud_hide_at: Option<Instant>,
     /// When the last full WM reset ran (`state::reset`) — the hotplug
     /// cooldown guard so a replug's event burst cannot reset-storm.
     #[allow(dead_code)]
@@ -298,6 +299,10 @@ impl StateManager {
             app_labels: HashMap::new(), // pid → AppLabel (positive or timestamped negative)
             layout_cache: LayoutWriteCache::new(),
             drag: DragState::new(),
+            space_limbo: BTreeSet::new(),
+            deferred_hides: HashMap::new(),
+            space_snapshot_at: None,
+            space_detector_warned: false,
             shutdown_requested: false,
             switch_debounce_until: None,
             cached_hidden_strategy: Some(settings.windows.hidden_strategy),
@@ -324,13 +329,15 @@ impl StateManager {
                 session::session_file_path()
             },
             wake_committed_at: None,
-            hud_enabled: settings.hud_enabled,
-            hud_duration_ms: settings.hud_duration_ms,
-            hud_hide_at: None,
             last_wm_reset: None,
             focus_dirty_since: None,
             last_focused_window: None,
         };
+
+        // Arm the native-space gate before the first hide/layout: starting
+        // the daemon while a display shows Desktop 2 must not tile or hide
+        // anything there.
+        state.refresh_space_gate(Instant::now(), true);
 
         // Hide every workspace that isn't the active one for its monitor.
         // On fresh init that's all i != 0; on session restore it's the saved active set.
@@ -410,8 +417,6 @@ impl StateManager {
         self.float_level_overlays = updated_settings.windows.float_level_overlays;
         set_popup_ratio(&mut self.workspaces, updated_settings.windows.popup_ratio);
         self.focus_first_on_switch = updated_settings.focus_first_on_switch;
-        self.hud_enabled = updated_settings.hud_enabled;
-        self.hud_duration_ms = updated_settings.hud_duration_ms;
         self.displays
             .set_entries(if updated_settings.workspaces.is_empty() {
                 crate::config::default_workspaces()
@@ -430,6 +435,17 @@ impl StateManager {
     fn hide_workspace(&mut self, workspace_idx: usize) {
         let window_ids = self.workspaces[workspace_idx].all_owned();
         if window_ids.is_empty() {
+            return;
+        }
+        if !self.workspace_may_act(workspace_idx) {
+            log::debug!(
+                "hide_workspace idx={} deferred — display {} on a non-first native desktop",
+                workspace_idx,
+                self.workspaces[workspace_idx].monitor_id
+            );
+            for window_id in window_ids {
+                self.defer_hide(window_id, workspace_idx);
+            }
             return;
         }
         let placement = self.hidden_placement_for_workspace(workspace_idx);
@@ -494,6 +510,16 @@ impl StateManager {
     /// macOS gave it — floating visibly over the active workspace until
     /// the next switch.
     fn hide_window_in_workspace(&mut self, window_id: WindowId, workspace_idx: usize) {
+        if !self.workspace_may_act(workspace_idx) {
+            log::debug!(
+                "hide_window_in_workspace win={} ws={} deferred — display {} on a non-first native desktop",
+                window_id,
+                workspace_idx,
+                self.workspaces[workspace_idx].monitor_id
+            );
+            self.defer_hide(window_id, workspace_idx);
+            return;
+        }
         let placement = self.hidden_placement_for_workspace(workspace_idx);
         log::info!(
             "hide_window_in_workspace win={} ws={} placement={:?}",
@@ -630,16 +656,6 @@ impl StateManager {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_hud_duration_for_test(&mut self, ms: u64) {
-        self.hud_duration_ms = ms;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_hud_disabled_for_test(&mut self) {
-        self.hud_enabled = false;
-    }
-
-    #[cfg(test)]
     #[allow(dead_code)]
     fn set_focus_first_for_test(&mut self, v: bool) {
         self.focus_first_on_switch = v;
@@ -651,6 +667,27 @@ impl StateManager {
     /// path (removes from tree + store, re-layouts to fill the gap).
     pub(super) fn apply_layout(&mut self, workspace_idx: usize) {
         let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
+        let ws = &self.workspaces[workspace_idx];
+        let tiled_windows = ws.all_windows();
+        let top_y = tiled_windows
+            .iter()
+            .filter(|wid| ws.magnified != Some(**wid))
+            .filter_map(|wid| rects.get(wid).map(|rect| rect.y))
+            .min_by(f64::total_cmp);
+        let top_edge_tiles: HashSet<WindowId> = top_y
+            .map(|top_y| {
+                tiled_windows
+                    .iter()
+                    .filter(|wid| ws.magnified != Some(**wid))
+                    .filter(|wid| {
+                        rects
+                            .get(wid)
+                            .is_some_and(|rect| (rect.y - top_y).abs() <= 1.0)
+                    })
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
         // Drag hit-testing must never target a popup: popups are not tree
         // members, and swapping a tile with an overlay is meaningless. The
         // write plan below still sees the full map (popups ride it).
@@ -678,6 +715,16 @@ impl StateManager {
             );
         }
 
+        let monitor = self.workspaces[workspace_idx].monitor_id;
+        if !self.display_may_act(monitor) {
+            log::debug!(
+                "apply_layout ws={} mon={} deferred — display on a non-first native desktop",
+                workspace_idx,
+                monitor
+            );
+            return;
+        }
+
         // The actual read is `plan_writes`' claim input, consumed only
         // for windows with no applied entry — an existing entry either
         // matches its target (skip, read never consulted) or mismatches
@@ -698,7 +745,9 @@ impl StateManager {
         // self-heal included) instead of the caller re-branching on
         // `WriteOutcome` shapes.
         for (window_id, target) in self.layout_cache.plan_writes(&rects, &actuals) {
-            let outcome = self.os.set_window_rect(window_id, target);
+            let outcome =
+                self.os
+                    .set_window_rect(window_id, target, top_edge_tiles.contains(&window_id));
             match self.layout_cache.record_failure(window_id, target, outcome) {
                 AfterWrite::Keep => {}
                 AfterWrite::ProbeFullscreen => pinned_fullscreen.push(window_id),

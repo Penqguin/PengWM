@@ -8,88 +8,179 @@ use crate::adapter::DisplayInfo;
 use crate::event_loop::DaemonEvent;
 use crate::macos::ns_workspace;
 
-/// Displays whose placement carries a top band WindowServer enforces over
-/// and above what AppKit's `visibleFrame` reports. AppKit cannot tell the
-/// truth about auto-hidden menu bars: an AirPlay Sidecar panel reports a
-/// full visible frame while *every* AX geometry write that requests a top
-/// edge inside the band gets renormalized below it. The band is learned
-/// empirically from renormalizations (`learn_top_band_from_window_rect` —
-/// the OS is the only authority that knows) and merged on top of the
-/// AppKit inset, so tile targets are born convergent instead of pinned
-/// and renormalized forever.
-static LEARNED_TOP_BANDS: OnceLock<Mutex<std::collections::HashMap<u32, i32>>> =
+/// Per-display extra inset confirmed by top-row tiled-window writes.
+static LEARNED_TOP_BANDS: OnceLock<Mutex<std::collections::HashMap<u32, i32>>> = OnceLock::new();
+const MIN_BAND_CORRECTION: f64 = 8.0;
+const MAX_BAND_CORRECTION: f64 = 200.0;
+const CONSISTENT_BAND_EPSILON: i32 = 4;
+const REQUIRED_BAND_OBSERVATIONS: u8 = 2;
+
+#[derive(Clone, Copy)]
+struct PendingBandEvidence {
+    candidate: i32,
+    observations: u8,
+}
+
+static PENDING_BAND_EVIDENCE: OnceLock<Mutex<std::collections::HashMap<u32, PendingBandEvidence>>> =
     OnceLock::new();
 
-/// Record the enforced top band for the display containing `actual`'s
-/// center. Called on Pinned/Drift write outcomes, where the readback is
-/// window-reported ground truth. Bands are clamped to a sane range and
-/// only ever move upward.
-///
-/// A band is *learned* only when the top edge actually renormalized —
-/// `actual.y` differs from `target.y`. A write that pinned on width or
-/// size while its top edge landed exactly where requested carries no
-/// band information: reading `actual.y - frame.top` there would
-/// misattribute whatever offset led to the target (the inset the
-/// target was already built with, a stray half-pixel snap) into the
-/// band, at exactly the "window added → everything shifted" moment.
-/// Real bands re-teach within one write anyway, so skipping these
-/// costs nothing; misattribution is sticky (the map only ratchets
-/// upward), which is the expensive direction to get wrong.
+#[derive(Clone, Copy)]
+struct PhysicalDisplayGeometry {
+    raw_origin: (i32, i32),
+    raw_size: (u32, u32),
+    appkit_inset: f64,
+}
+
+static LAST_PHYSICAL_GEOMETRY: OnceLock<
+    Mutex<std::collections::HashMap<u32, PhysicalDisplayGeometry>>,
+> = OnceLock::new();
+#[derive(Clone, Copy, PartialEq)]
+struct DisplayGeometryInputs {
+    raw_origin: (i32, i32),
+    raw_size: (u32, u32),
+    appkit_inset: f64,
+    learned_band: i32,
+}
+
+static LAST_DISPLAY_GEOMETRY: OnceLock<
+    Mutex<std::collections::HashMap<u32, DisplayGeometryInputs>>,
+> = OnceLock::new();
+
+/// Learn an extra display inset only from a top-row tiled window and
+/// repeated, WindowServer-verified downward clamps. `target` already
+/// includes the current AppKit/learned inset and outer gap, so add only
+/// the measured correction to the current inset.
 pub fn learn_top_band_from_write(
     display_ids: &[u32],
     target: &pengwm_core::layout::Rect,
     actual: &pengwm_core::layout::Rect,
 ) {
-    if actual.y == target.y {
-        return; // top edge never moved — not a band story.
+    let insets = ns_workspace::screen_top_insets();
+    let correction = actual.y - target.y;
+    if !(MIN_BAND_CORRECTION..=MAX_BAND_CORRECTION).contains(&correction) {
+        clear_band_evidence_at(display_ids, target);
+        return;
     }
-    let cx = actual.x + actual.width / 2.0;
-    let cy = actual.y + actual.height / 2.0;
-    for &id in display_ids {
+    let target_center = (
+        target.x + target.width / 2.0,
+        target.y + target.height / 2.0,
+    );
+    let Some(id) = display_ids.iter().copied().find(|&id| {
         let frame = CGDisplay::new(id).bounds();
-        let contains_center = cx >= frame.origin.x
-            && cx <= frame.origin.x + frame.size.width
-            && cy >= frame.origin.y
-            && cy <= frame.origin.y + frame.size.height;
-        if !contains_center {
-            continue;
+        target_center.0 >= frame.origin.x
+            && target_center.0 <= frame.origin.x + frame.size.width
+            && target_center.1 >= frame.origin.y
+            && target_center.1 <= frame.origin.y + frame.size.height
+    }) else {
+        return;
+    };
+    let frame = CGDisplay::new(id).bounds();
+    let actual_center = (
+        actual.x + actual.width / 2.0,
+        actual.y + actual.height / 2.0,
+    );
+    if actual_center.0 < frame.origin.x
+        || actual_center.0 > frame.origin.x + frame.size.width
+        || actual_center.1 < frame.origin.y
+        || actual_center.1 > frame.origin.y + frame.size.height
+    {
+        clear_band_evidence_at(display_ids, target);
+        return;
+    }
+
+    let base_inset = insets
+        .iter()
+        .find(|(display_id, _)| *display_id == id)
+        .map(|(_, inset)| *inset)
+        .unwrap_or(0.0);
+    let learned = learned_top_bands().get(&id).copied().unwrap_or(0) as f64;
+    let candidate = base_inset.max(learned) + correction;
+    if !(0.0..=MAX_BAND_CORRECTION).contains(&candidate) {
+        clear_band_evidence_at(display_ids, target);
+        return;
+    }
+
+    let candidate = candidate.round() as i32;
+    let evidence = PENDING_BAND_EVIDENCE.get_or_init(|| Mutex::new(Default::default()));
+    let observations = if let Ok(mut evidence) = evidence.lock() {
+        let entry = evidence.entry(id).or_insert(PendingBandEvidence {
+            candidate,
+            observations: 0,
+        });
+        if (entry.candidate - candidate).abs() <= CONSISTENT_BAND_EPSILON {
+            entry.observations = entry.observations.saturating_add(1);
+            entry.candidate = (entry.candidate + candidate) / 2;
+        } else {
+            *entry = PendingBandEvidence {
+                candidate,
+                observations: 1,
+            };
         }
-        let band = (actual.y - frame.origin.y).round() as i32;
-        if !(0..=200).contains(&band) {
-            // Not a top-band story: hides clamp whole windows (hundreds
-            // of px), cross-display drops report the old frame — out of
-            // scope. The band is for *renormalized top edges*.
-            return;
-        }
-        if band <= 0 {
-            return;
-        }
-        let map = LEARNED_TOP_BANDS.get_or_init(|| Mutex::new(Default::default()));
-        if let Ok(mut map) = map.lock() {
-            let entry = map.entry(id).or_insert(0);
-            *entry = (*entry).max(band);
-        }
+        entry.observations
+    } else {
+        return;
+    };
+    if observations < REQUIRED_BAND_OBSERVATIONS {
         log::debug!(
-            "learned top band for display {}: {}px (target y {}, actual y {}, frame top {})",
+            "top-band candidate for display {}: {}px total after observation {}/{}",
             id,
-            band,
-            target.y,
-            actual.y,
-            frame.origin.y
+            candidate,
+            observations,
+            REQUIRED_BAND_OBSERVATIONS
         );
         return;
+    }
+
+    let band = if let Ok(mut evidence) = evidence.lock() {
+        evidence
+            .remove(&id)
+            .map(|entry| entry.candidate)
+            .unwrap_or(candidate)
+    } else {
+        candidate
+    };
+    let map = LEARNED_TOP_BANDS.get_or_init(|| Mutex::new(Default::default()));
+    if let Ok(mut map) = map.lock() {
+        map.insert(id, band);
+    }
+    log::info!(
+        "learned top band for display {}: {}px from {} consistent top-row tile readbacks (target y {}, actual y {}, correction {:.1}px)",
+        id,
+        band,
+        REQUIRED_BAND_OBSERVATIONS,
+        target.y,
+        actual.y,
+        correction
+    );
+}
+
+/// An attempt without a fresh measured clamp breaks the evidence sequence,
+/// so pending samples cannot combine across unrelated write outcomes.
+pub fn clear_top_band_evidence_for_target(display_ids: &[u32], target: &pengwm_core::layout::Rect) {
+    clear_band_evidence_at(display_ids, target);
+}
+
+fn clear_band_evidence_at(display_ids: &[u32], rect: &pengwm_core::layout::Rect) {
+    let cx = rect.x + rect.width / 2.0;
+    let cy = rect.y + rect.height / 2.0;
+    let display = display_ids.iter().find(|&&id| {
+        let frame = CGDisplay::new(id).bounds();
+        cx >= frame.origin.x
+            && cx <= frame.origin.x + frame.size.width
+            && cy >= frame.origin.y
+            && cy <= frame.origin.y + frame.size.height
+    });
+    if let (Some(&id), Some(evidence)) = (display, PENDING_BAND_EVIDENCE.get()) {
+        if let Ok(mut evidence) = evidence.lock() {
+            evidence.remove(&id);
+        }
     }
 }
 
 /// The display set of `.active_displays()` is not re-enumerated inside
 /// the lock; the executor hands it in.
 ///
-/// Prune learned bands for displays no longer in `keep`: the map only
-/// ratchets upward, so a stale entry would outlive its display forever
-/// — a reconnected monitor must re-teach from live renormalizations,
-/// not inherit its previous session's band (the plug-out/plug-in of the
-/// changed-value band showed the cost: strip sizes that vary per session
-/// would never correct downward).
+/// Prune learned values and incomplete evidence for displays no longer live.
 pub fn prune_learned_top_bands(keep: &[u32]) {
     let map = LEARNED_TOP_BANDS.get_or_init(|| Mutex::new(Default::default()));
     if let Ok(mut map) = map.lock() {
@@ -103,18 +194,80 @@ pub fn prune_learned_top_bands(keep: &[u32]) {
             );
         }
     }
+    if let Some(evidence) = PENDING_BAND_EVIDENCE.get() {
+        if let Ok(mut evidence) = evidence.lock() {
+            evidence.retain(|id, _| keep.contains(id));
+        }
+    }
 }
 
-/// Record the enforced top band for the display containing `actual`'s
-/// center. Legacy wrapper retained for the existing readback-centered
-/// probe callers.
-#[allow(dead_code)]
-pub fn learn_top_band_from_window_rect(actual: &pengwm_core::layout::Rect) {
-    let ids = match CGDisplay::active_displays() {
-        Ok(ids) => ids,
-        Err(_) => return,
-    };
-    learn_top_band_from_write(&ids, actual, actual);
+fn refresh_physical_geometry(ids: &[u32], insets: &[(u32, f64)]) {
+    let current: std::collections::HashMap<u32, PhysicalDisplayGeometry> = ids
+        .iter()
+        .map(|&id| {
+            let frame = CGDisplay::new(id).bounds();
+            let inset = insets
+                .iter()
+                .find(|(display_id, _)| *display_id == id)
+                .map(|(_, inset)| *inset)
+                .unwrap_or(0.0);
+            (
+                id,
+                PhysicalDisplayGeometry {
+                    raw_origin: (frame.origin.x as i32, frame.origin.y as i32),
+                    raw_size: (frame.size.width as u32, frame.size.height as u32),
+                    appkit_inset: inset,
+                },
+            )
+        })
+        .collect();
+    let state = LAST_PHYSICAL_GEOMETRY.get_or_init(|| Mutex::new(Default::default()));
+    let mut reset = Vec::new();
+    if let Ok(mut state) = state.lock() {
+        for (&id, geometry) in &current {
+            let changed = state.get(&id).is_some_and(|previous| {
+                previous.raw_origin != geometry.raw_origin
+                    || previous.raw_size != geometry.raw_size
+                    || (previous.appkit_inset - geometry.appkit_inset).abs() > 0.5
+            });
+            if changed {
+                reset.push(id);
+            }
+        }
+        state.retain(|id, _| current.contains_key(id));
+        state.extend(current);
+    }
+    if !reset.is_empty() {
+        if let Some(bands) = LEARNED_TOP_BANDS.get() {
+            if let Ok(mut bands) = bands.lock() {
+                for id in &reset {
+                    bands.remove(id);
+                }
+            }
+        }
+        if let Some(evidence) = PENDING_BAND_EVIDENCE.get() {
+            if let Ok(mut evidence) = evidence.lock() {
+                for id in &reset {
+                    evidence.remove(id);
+                }
+            }
+        }
+        log::info!(
+            "cleared learned top-band evidence after physical geometry changed on displays {:?}",
+            reset
+        );
+    }
+    let keep: Vec<u32> = ids.to_vec();
+    if let Some(bands) = LEARNED_TOP_BANDS.get() {
+        if let Ok(mut bands) = bands.lock() {
+            bands.retain(|id, _| keep.contains(id));
+        }
+    }
+    if let Some(evidence) = PENDING_BAND_EVIDENCE.get() {
+        if let Ok(mut evidence) = evidence.lock() {
+            evidence.retain(|id, _| keep.contains(id));
+        }
+    }
 }
 
 pub fn learned_top_bands() -> std::collections::HashMap<u32, i32> {
@@ -150,6 +303,11 @@ pub fn clear_learned_top_bands_for_tests() {
             m.clear();
         }
     }
+    if let Some(evidence) = PENDING_BAND_EVIDENCE.get() {
+        if let Ok(mut evidence) = evidence.lock() {
+            evidence.clear();
+        }
+    }
 }
 
 pub fn active_displays() -> Vec<DisplayInfo> {
@@ -163,14 +321,17 @@ pub fn active_displays() -> Vec<DisplayInfo> {
     // pin/jitter loop on Sidecar displays). Insets read each screen's own
     // `visibleFrame`; the main display is just the one CG calls primary.
     let base = ns_workspace::screen_top_insets();
+    refresh_physical_geometry(&ids, &base);
     let learned = learned_top_bands();
 
     ids.iter()
         .map(|&id| {
             let display = CGDisplay::new(id);
             let bounds = display.bounds();
-            let mut origin = (bounds.origin.x as i32, bounds.origin.y as i32);
-            let mut size = (bounds.size.width as u32, bounds.size.height as u32);
+            let raw_origin = (bounds.origin.x as i32, bounds.origin.y as i32);
+            let raw_size = (bounds.size.width as u32, bounds.size.height as u32);
+            let mut origin = raw_origin;
+            let mut size = raw_size;
 
             // Account for the macOS menu bar on *any* display that has one —
             // the inset is read from that screen's own `visibleFrame` — and
@@ -186,6 +347,24 @@ pub fn active_displays() -> Vec<DisplayInfo> {
             if inset > 0.0 {
                 origin.1 += inset as i32;
                 size.1 = size.1.saturating_sub(inset as u32);
+            }
+
+            let snapshot = DisplayGeometryInputs {
+                raw_origin,
+                raw_size,
+                appkit_inset: appkit,
+                learned_band: band as i32,
+            };
+            let last = LAST_DISPLAY_GEOMETRY.get_or_init(|| Mutex::new(Default::default()));
+            if let Ok(mut last) = last.lock() {
+                if let Some(previous) = last.insert(id, snapshot) {
+                    if previous != snapshot {
+                        log::info!(
+                            "display {} geometry inputs changed: raw={:?}+{:?}, visibleFrame top inset={:.1}px, learned top band={}px; tile area={:?}+{:?}",
+                            id, raw_origin, raw_size, appkit, band, origin, size
+                        );
+                    }
+                }
             }
 
             DisplayInfo { id, origin, size }
@@ -329,10 +508,9 @@ mod tests {
         let id = primary_display_id();
         let frame = CGDisplay::new(id).bounds();
 
-        // --- learns from a real renormalization -------------------
-        // A window the OS renormalized to frame.top + 30: its readback
-        // carries the enforced band for its display. Target and actual
-        // differ on the top edge — a real y renormalization.
+        // --- requires repeated evidence from a real renormalization --
+        // The learned value includes the existing AppKit inset plus the
+        // extra displacement. One observation remains pending.
         let target = pengwm_core::layout::Rect {
             x: frame.origin.x + 10.0,
             y: frame.origin.y,
@@ -346,8 +524,16 @@ mod tests {
             height: 600.0,
         };
         learn_top_band_from_write(&[id], &target, &renormalized);
-        assert_eq!(learned_top_bands().get(&id), Some(&30));
-        // Only ever upward, and sane-range rejections learn nothing.
+        assert!(!learned_top_bands().contains_key(&id));
+        learn_top_band_from_write(&[id], &target, &renormalized);
+        let base_inset = ns_workspace::screen_top_insets()
+            .into_iter()
+            .find(|(display_id, _)| *display_id == id)
+            .map(|(_, inset)| inset)
+            .unwrap_or(0.0);
+        let learned = (base_inset + 30.0).round() as i32;
+        assert_eq!(learned_top_bands().get(&id), Some(&learned));
+        // Out-of-range corrections clear pending evidence and teach nothing.
         let park_clamp = pengwm_core::layout::Rect {
             x: frame.origin.x + 10.0,
             y: frame.origin.y + 500.0,
@@ -357,7 +543,7 @@ mod tests {
         learn_top_band_from_write(&[id], &target, &park_clamp);
         assert_eq!(
             learned_top_bands().get(&id),
-            Some(&30),
+            Some(&learned),
             "hundreds-of-px rejections are hide clamps, not top bands — band unchanged"
         );
 
@@ -386,7 +572,7 @@ mod tests {
         learn_top_band_from_write(&[id], &pinned_target, &pinned);
         assert_eq!(
             learned_top_bands().get(&id),
-            Some(&30),
+            Some(&learned),
             "a width pin that left y alone must not teach anything"
         );
 
@@ -397,9 +583,11 @@ mod tests {
         prune_learned_top_bands(&[]);
         assert!(learned_top_bands().is_empty());
         learn_top_band_from_write(&[id], &target, &renormalized);
-        assert_eq!(learned_top_bands().get(&id), Some(&30));
+        assert!(learned_top_bands().is_empty());
+        learn_top_band_from_write(&[id], &target, &renormalized);
+        assert_eq!(learned_top_bands().get(&id), Some(&learned));
         prune_learned_top_bands(&[id]);
-        assert_eq!(learned_top_bands().get(&id), Some(&30));
+        assert_eq!(learned_top_bands().get(&id), Some(&learned));
         clear_learned_top_bands_for_tests();
         assert!(learned_top_bands().is_empty(), "cleared for neighbors");
     }

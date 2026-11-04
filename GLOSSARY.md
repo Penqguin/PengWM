@@ -5,6 +5,10 @@ behind them; code and docs should use these words exactly. Architecture
 vocabulary (module, interface, seam, adapter, depth, leverage, locality)
 comes from the design skill, not this file.
 
+- **Native-Space gate / Space limbo** — The per-display boundary between
+  the first user desktop, which PengWM manages, and later user desktops,
+  where it preserves window membership but pauses management actions.
+
 - **Routing verdict** — The store's durable answer to "what is this window
   to me": `Tiled`, `Popup`, or `Untracked`. Recorded once at routing in
   `WindowStore` (`note_routed`, first-call-wins) so window identity

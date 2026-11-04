@@ -49,6 +49,7 @@ pub trait OsAdapter: ObserverRegistry {
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;
+    fn displays_on_first_desktop(&self) -> Option<HashMap<u32, bool>>;  // native-Space gate: per display "on its first user desktop"; None = detector unavailable (fail open); read-only SkyLight
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome;  // &self interior (WindowElementCache); position/size/position x3 with readback; typed outcome, never string-matched
     fn window_rect(&self, window_id: WindowId) -> Option<Rect>;  // readback seam for verify-and-retry + tests
     fn window_kind(&self, window_id: WindowId) -> Option<WindowClass>;  // typed classification; replaces the binary is_manageable gate
@@ -70,6 +71,8 @@ pub trait OsAdapter: ObserverRegistry {
 ```
 
 `MacOsAdapter::with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self` is an inherent constructor (not on the trait) and the observer callback is `Box<dyn Fn(DaemonEvent) + Send>` not a hard-coded mpsc sender. No `as_any_mut` — tests use `OsAdapter::inject_*` instead of downcasting to `TestAdapter`.
+
+**Native-Space gate / Space limbo** — PengWM manages only the **first user desktop** (first SkyLight space of type `0` in that display's ordered list) of every display (ADR-0007). A display whose current space is a different type-`0` desktop is in **limbo**: its OS-visible actions are frozen (`apply_layout`, hides, raises, focus, commands) while model bookkeeping continues. Fullscreen (`type 4`) and system (`type 2`) spaces are exempt. The gate is **per display** — a first-desktop display stays fully managed while its neighbor is in limbo. Entering limbo clears the drag state; leaving runs a scoped **return resync** (drain deferred hides, re-tile the visible workspace, restore stacking). Hides that could not be written while away are **deferred hides** (window → workspace index) and drain on return or when a topology remap moves their workspace to an allowed display. The detector is a read-only SkyLight query (`macos/spaces.rs`); unavailable → fail open (all displays managed), once-logged, auto-recovering. Always on; no config key. _Avoid_: "space filter" for a membership model — the gate never drops membership.
 
 Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturizedNotification` / app-level `kAXApplicationHiddenNotification` fire immediately, and a ~1s `on_tick` reconcile queries `window_is_hidden` per tracked window as a fallback for missed notifications. Both untile the window (like a close) while keeping pid tracking so `on_window_shown` can retile it where it came from.
 
@@ -143,16 +146,10 @@ excluded from tiling by pid) and pushes the UI state to it:
   marker + split direction) and `Exit`. The push server (`bar_server.rs`)
   caches the last `State` and replays it to a reconnecting menubar; `Exit`
   tells the menubar to terminate immediately on a clean `pengwm quit`.
-- The status bar (egui strip + `[bar]` config + `BarReserve` reservation
-  machinery) was **removed** in v0.5.2 — the menubar icon is the only
-  *persistent* UI surface. The transient workspace HUD (Spec 0001,
-  `docs/specs/0001-workspace-hud.md`: per-monitor pills, flash on
-  explicit switches + `hud-toggle`, prefix-armed pin) is drawn
-  **in-process** by the daemon behind the `OsAdapter::show_hud` /
-  `hide_hud` seam, planner in `state::hud`. The core keeps
-  `BarPosition` / `bar_strip_rect` /
-  `Workspace::set_reserved_rect` as tested pure vocabulary so a future
-  screen-strip can be re-introduced without reinventing the geometry.
+- The custom status bar and transient workspace HUD have both been
+  removed. The menubar icon is the only PengWM UI surface; workspace
+  layout uses the display bounds supplied by macOS and has no custom
+  bar reservation.
 
 ## Command Vocabulary
 

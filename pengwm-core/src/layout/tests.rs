@@ -1,5 +1,4 @@
 use super::*;
-use crate::config::BarPosition;
 use crate::tree::{Arena, NodeData, NodeId, SplitDirection};
 use std::collections::HashMap;
 
@@ -481,69 +480,6 @@ fn window_at_point_ignores_excluded_and_misses() {
     rects.insert(2, Rect::new(100.0, 0.0, 100.0, 100.0));
     assert_eq!(window_at_point(&rects, 150.0, 50.0, 1), Some(2));
     assert_eq!(window_at_point(&rects, 250.0, 50.0, 1), None);
-}
-
-#[test]
-fn bar_strip_rect_on_every_edge() {
-    let (origin, size) = ((1440, 0), (1920u32, 1080u32));
-    assert_eq!(
-        bar_strip_rect(origin, size, BarPosition::Top, 32),
-        Rect::new(1440.0, 0.0, 1920.0, 32.0)
-    );
-    assert_eq!(
-        bar_strip_rect(origin, size, BarPosition::Bottom, 32),
-        Rect::new(1440.0, 1080.0 - 32.0, 1920.0, 32.0)
-    );
-    assert_eq!(
-        bar_strip_rect(origin, size, BarPosition::Left, 24),
-        Rect::new(1440.0, 0.0, 24.0, 1080.0)
-    );
-    assert_eq!(
-        bar_strip_rect(origin, size, BarPosition::Right, 24),
-        Rect::new(1440.0 + 1920.0 - 24.0, 0.0, 24.0, 1080.0)
-    );
-}
-
-#[test]
-fn bar_strip_rect_clamps_thickness_to_one() {
-    assert_eq!(
-        bar_strip_rect((0, 0), (100, 100), BarPosition::Top, 0),
-        Rect::new(0.0, 0.0, 100.0, 1.0)
-    );
-}
-
-#[test]
-fn subtract_strip_top_cuts_correctly() {
-    let monitor = Rect::new(0.0, 0.0, 1920.0, 1080.0);
-    let strip = Rect::new(0.0, 0.0, 1920.0, 32.0);
-    assert_eq!(
-        subtract_strip(monitor, strip),
-        Rect::new(0.0, 32.0, 1920.0, 1048.0)
-    );
-}
-
-#[test]
-fn subtract_strip_bottom_and_side() {
-    let monitor = Rect::new(0.0, 0.0, 100.0, 100.0);
-    assert_eq!(
-        subtract_strip(monitor, Rect::new(0.0, 90.0, 100.0, 10.0)),
-        Rect::new(0.0, 0.0, 100.0, 90.0)
-    );
-    assert_eq!(
-        subtract_strip(monitor, Rect::new(0.0, 0.0, 10.0, 100.0)),
-        Rect::new(10.0, 0.0, 90.0, 100.0)
-    );
-    assert_eq!(
-        subtract_strip(monitor, Rect::new(90.0, 0.0, 10.0, 100.0)),
-        Rect::new(0.0, 0.0, 90.0, 100.0)
-    );
-}
-
-#[test]
-fn subtract_strip_ignores_non_edge() {
-    let monitor = Rect::new(0.0, 0.0, 100.0, 100.0);
-    let mid = Rect::new(10.0, 10.0, 10.0, 10.0);
-    assert_eq!(subtract_strip(monitor, mid), monitor);
 }
 
 #[test]

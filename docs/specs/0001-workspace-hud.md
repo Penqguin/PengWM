@@ -1,5 +1,8 @@
 # Spec 0001: Transient Workspace HUD
 
+> **Retired:** The workspace HUD was removed. This document is retained as
+> a historical record; none of its behavior or configuration is current.
+
 Date: 2026-11-01
 Status: Accepted (decided in a grilling session, 2026-11-01)
 
@@ -36,11 +39,14 @@ monitor truth requires overlays that live at the monitors.
 A **transient per-monitor HUD** — tmux-flavored, drawn by the daemon
 process:
 
-1. **One pill per monitor.** Small dark translucent rounded pill,
+1. **One pill per managed monitor.** Small dark translucent rounded pill,
    dead-center of each monitor, monospaced text: `2 · Browsing`.
    The focused monitor's pill is accented (brighter text). Pills are
    click-through, non-activating, floating-level, and join all spaces
-   (they overlay native-fullscreen workspaces too).
+   (they overlay native-fullscreen workspaces too). ADR-0007 suppresses
+   pills on displays in Space limbo. A pill is removed when its display
+   enters limbo; it returns only on a later explicit HUD trigger, and
+   removing it does not re-flash pills on other displays.
 2. **Explicit triggers only.** Pills flash on:
    - `workspace-N` switch / swap (the `Command::Workspace` path),
    - monitor focus change (`Command::FocusDisplay`),

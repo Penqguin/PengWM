@@ -16,8 +16,6 @@ apply on save (or via `pengwm reload-config`).
 | `main_ratio`           | float  | `0.6`   | Share of the split the first window takes in the `main-horizontal` / `main-vertical` presets (clamped to 0.2–0.8) |
 | `prefix`               | string | `"alt-space"` | Chord that arms the tmux-style prefix window, e.g. `"ctrl-b"` |
 | `prefix_timeout_ms`    | int    | `1000`  | How long the prefix stays armed for follow-ups, in milliseconds |
-| `hud_enabled`          | bool   | `true`  | Transient workspace HUD: pills flash on workspace switches, monitor focus changes and `hud-toggle` — never on background routing |
-| `hud_duration_ms`      | int    | `500`   | How long the HUD pills stay up; extended while the prefix chord is armed |
 
 ```toml
 gap_outer = 8
@@ -27,8 +25,6 @@ restricted_apps = ["com.whatever.floating-app"]
 main_ratio = 0.65
 prefix = "alt-space"
 prefix_timeout_ms = 1000
-hud_enabled = true
-hud_duration_ms = 500
 ```
 
 ## Workspaces
@@ -138,6 +134,16 @@ hidden_strategy = "bottom_edge" # or "far_offscreen"
 fullscreen = "park"             # or "tile"
 popup_ratio = 0.75
 ```
+
+### Native Spaces
+
+PengWM manages only the first user desktop of each display; later native
+Spaces are left untouched (per display, so a first-desktop monitor stays
+fully managed while another is away). Fullscreen spaces are exempt. This
+is always on and has no config key — see
+[ADR-0007](adr/0007-native-space-gate.md). The detector is a read-only
+SkyLight query; if it is unavailable the WM fails open and manages every
+display.
 
 ### Fullscreen
 
@@ -317,7 +323,6 @@ alt-shift-2 = "move-window-to-workspace-2"
 # Layout
 alt-t = "cycle-layout"
 alt-m = "toggle-magnify"
-alt-w = "hud-toggle"
 cmd-shift-r = "reload-config"
 
 # tmux-style presets and resizing

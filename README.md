@@ -57,6 +57,9 @@ curl -fsSL https://pengwm.penqguin.com/uninstall.sh | bash -s -- --yes
    terminal / the `pengwm` binary directly)
 3. **Displays have separate Spaces:** System Settings → Desktop & Dock → turn on
    _Displays have separate Spaces_
+4. **First desktop per display:** PengWM manages only each display's first
+   desktop (Space 1); other native Spaces are intentionally left alone.
+   Fullscreen spaces are exempt. See [ADR-0007](docs/adr/0007-native-space-gate.md).
 
 ## Configuration
 

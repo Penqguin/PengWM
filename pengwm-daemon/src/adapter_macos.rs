@@ -4,8 +4,8 @@ use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use crate::adapter::{
-    AppIdentity, DisplayInfo, HudCard, ObserverRegistry as AdapterObserverRegistry, OsAdapter,
-    WindowClass, WindowListing,
+    AppIdentity, DisplayInfo, ObserverRegistry as AdapterObserverRegistry, OsAdapter, WindowClass,
+    WindowListing,
 };
 use crate::event_loop::DaemonEvent;
 use crate::macos::ax_element;
@@ -44,8 +44,6 @@ pub struct MacOsAdapter {
     /// (`forget_pid` — notification or dead-pid sweep), so an app
     /// relaunch never writes through a dead app's element.
     app_elements: RefCell<HashMap<i32, CFRef<AXUIElementRef>>>,
-    /// HUD pushes ride the bar channel — the menubar process renders.
-    bar_sender: Option<crate::bar_server::BarSender>,
 }
 
 /// The identity memo: one resolved `AppIdentity` per pid, timestamped.
@@ -56,10 +54,7 @@ struct IdentityMemo {
 }
 
 impl MacOsAdapter {
-    pub fn with_callback(
-        callback: Box<dyn Fn(DaemonEvent) + Send>,
-        bar_sender: Option<crate::bar_server::BarSender>,
-    ) -> Self {
+    pub fn with_callback(callback: Box<dyn Fn(DaemonEvent) + Send>) -> Self {
         Self {
             observer_registry: AxObserverRegistry::new(),
             ctx: Box::new(ObserverContext::new(callback)),
@@ -67,7 +62,6 @@ impl MacOsAdapter {
                 entries: HashMap::new(),
             }),
             app_elements: RefCell::new(HashMap::new()),
-            bar_sender,
         }
     }
 
@@ -616,7 +610,29 @@ impl OsAdapter for MacOsAdapter {
         cg_display::primary_display_id()
     }
 
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome {
+    fn displays_on_first_desktop(&self) -> Option<HashMap<u32, bool>> {
+        let states = crate::macos::spaces::snapshot()?;
+        // An empty answer on a GUI session means every display entry was
+        // skipped (UUID→id mapping or dictionary shape): treat it as the
+        // detector being unavailable so the state layer warns and fails
+        // open instead of silently deciding there is nothing to gate.
+        if states.is_empty() {
+            return None;
+        }
+        Some(
+            states
+                .into_iter()
+                .map(|state| (state.display_id, state.on_first_desktop()))
+                .collect(),
+        )
+    }
+
+    fn set_window_rect(
+        &self,
+        window_id: WindowId,
+        rect: Rect,
+        top_edge_tile: bool,
+    ) -> WriteOutcome {
         let (element, pid) = match self.resolve_element(window_id) {
             Some(v) => v,
             None => {
@@ -644,19 +660,26 @@ impl OsAdapter for MacOsAdapter {
         let outcome = self.cg_ground_outcome(window_id, pid, rect, outcome);
         let enhanced_was_on = enhanced_ui.was_enabled();
         drop(enhanced_ui);
-        // The readback is ground truth the CG/AppKit APIs can't provide:
-        // when a write's renormalization settles a window visibly lower
-        // than requested, the delta is the display's enforced top band
-        // (auto-hidden menu bars report no AppKit inset but are still
-        // reserved). Learning it here turns the next layout's targets
-        // convergent — this is the Sidecar renorm/pin loop, fixed at the
-        // root instead of managing its symptoms. Only a *top-edge*
-        // renormalization teaches: see `learn_top_band_from_write`.
-        match &outcome {
-            WriteOutcome::Pinned { target, actual } | WriteOutcome::Drift { target, actual } => {
-                cg_display::learn_top_band_from_write(&cg_display::raw_active_display_ids(), target, actual)
+        // A failed top-row tile write may contribute WindowServer-grounded
+        // evidence for an extra enforced inset. Popup and overlay writes
+        // never enter this path.
+        if top_edge_tile {
+            let display_ids = cg_display::raw_active_display_ids();
+            if matches!(
+                &outcome,
+                WriteOutcome::Pinned { .. } | WriteOutcome::Drift { .. }
+            ) {
+                // Take a fresh WindowServer readback. AX's reported rect can
+                // be stale or aliased, and only CG-grounded, top-row tile
+                // evidence may change display-wide geometry.
+                if let Some(actual) = window_cg_frame(window_id) {
+                    cg_display::learn_top_band_from_write(&display_ids, &rect, &actual);
+                } else {
+                    cg_display::clear_top_band_evidence_for_target(&display_ids, &rect);
+                }
+            } else {
+                cg_display::clear_top_band_evidence_for_target(&display_ids, &rect);
             }
-            _ => {}
         }
         log::debug!(
             "set_window_rect win={} pid={} took {:?} outcome={} enhanced_ui={}",
@@ -833,24 +856,6 @@ impl OsAdapter for MacOsAdapter {
         self.resolved_identities(std::slice::from_ref(&pid))
             .remove(&pid)
             .and_then(|identity| identity.name)
-    }
-
-    /// Push the HUD pills to the menubar process — which owns the real
-    /// windows (Spec 0001 amendment: pill rendering lives where AppKit's
-    /// screen-list maintenance works; the daemon plans and pushes). A
-    /// missing bar sender (no server was wired) drops the ask.
-    fn show_hud(&self, cards: &[HudCard]) {
-        if let Some(sender) = &self.bar_sender {
-            sender.send(pengwm_core::command::BarMessage::Hud {
-                cards: cards.to_vec(),
-            });
-        }
-    }
-
-    fn hide_hud(&self) {
-        if let Some(sender) = &self.bar_sender {
-            sender.send(pengwm_core::command::BarMessage::HudHide);
-        }
     }
 
     fn window_class_fresh(&self, window_id: WindowId) -> Option<WindowClass> {

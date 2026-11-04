@@ -136,11 +136,6 @@ pub enum WindowListing {
     NoAnswer,
 }
 
-/// One monitor's transient HUD pill (Spec 0001). Re-exported from
-/// `pengwm-core` (the wire owner); see that definition for the
-/// center-precomputation rationale.
-pub use pengwm_core::command::HudCard;
-
 pub trait OsAdapter: ObserverRegistry {
     fn running_app_pids(&self) -> Vec<i32>;
     fn frontmost_pid(&self) -> Option<i32>;
@@ -163,7 +158,16 @@ pub trait OsAdapter: ObserverRegistry {
     fn focused_window_for_pid(&self, pid: i32) -> Option<WindowId>;
     fn active_displays(&self) -> Vec<DisplayInfo>;
     fn primary_display_id(&self) -> u32;
-    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> WriteOutcome;
+    /// Per-display native-Space gate: `display id → on its first user
+    /// desktop`. `None` when the private detector is unavailable — the
+    /// state layer then leaves every display fully managed (fail open).
+    /// Read-only SkyLight query; see `macos::spaces` and ADR-0007.
+    fn displays_on_first_desktop(&self) -> Option<HashMap<u32, bool>>;
+    /// Write a layout rect. `top_edge_tile` marks a normal tiled window
+    /// placed on the workspace's top row; adapters may use it for display
+    /// boundary diagnostics, never for popups or overlays.
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect, top_edge_tile: bool)
+        -> WriteOutcome;
     /// Read back the current OS rect. Lets verify-and-retry policy and tests
     /// observe whether a write landed without reaching through FFI.
     fn window_rect(&self, window_id: WindowId) -> Option<Rect>;
@@ -247,15 +251,6 @@ pub trait OsAdapter: ObserverRegistry {
             .remove(&pid)
             .unwrap_or_default()
     }
-    /// Draw the transient HUD pills for the flash (Spec 0001). One card
-    /// per monitor; replaces the whole content/pillar set each call, so
-    /// the executor never diff-tracks pill text. Idempotent per content
-    /// (re-flash updates labels and re-arms ordering). No-op cost when
-    /// the HUD is disabled — the caller never queues an empty ask.
-    fn show_hud(&self, cards: &[HudCard]);
-    /// Order the HUD pills out (flash expired, chord disarmed + grace
-    /// passed). Idempotent — hiding hidden pills is a no-op.
-    fn hide_hud(&self);
     /// Fresh classification, ignoring the element cache: the routing
     /// moment decides popup-vs-tile on the app's *current* subrole, so
     /// a burst-read Dialog lie (e.g. a display hotplug relabels Firefox's

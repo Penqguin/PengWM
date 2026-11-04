@@ -130,8 +130,8 @@ impl Rect {
 
 /// The centered tmux-popup overlay inside `usable`: `ratio` of each
 /// dimension, centered. One computation for both overlays — the magnified
-/// pin and workspace-bound popups — so bar reservation, gap inset and
-/// centering cannot drift between them. The caller passes the
+/// pin and workspace-bound popups — so gap inset and centering cannot
+/// drift between them. The caller passes the
 /// already-inset usable rect; coordinates stay local to the monitor.
 pub fn centered_overlay_rect(usable: Rect, ratio: f64) -> Rect {
     let w = usable.width * ratio;

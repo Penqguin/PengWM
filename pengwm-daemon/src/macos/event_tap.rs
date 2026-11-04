@@ -173,10 +173,6 @@ unsafe extern "C" fn event_tap_callback(
         find_keybind(kc, md, &keybinds)
     }) {
         PrefixOutcome::Armed => {
-            // Tell the state the chord armed (HUD prefix fusion — Spec 0001):
-            // fail-open, the swallow happens regardless of whether the
-            // message landed.
-            let _ = ctx.event_tx.try_send(DaemonEvent::PrefixArmed);
             return std::ptr::null_mut();
         }
         PrefixOutcome::Fire(command) => {

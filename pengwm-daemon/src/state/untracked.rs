@@ -21,12 +21,27 @@ impl StateManager {
     /// globally unset). Previously only the explicit-switch path raised
     /// popups; the other transitions left them buried under the tree.
     pub(super) fn reveal_stack(&mut self, monitor: Option<u32>) {
+        if let Some(monitor) = monitor {
+            if !self.display_may_act(monitor) {
+                log::debug!(
+                    "reveal_stack: display {} on a non-first native desktop — deferred",
+                    monitor
+                );
+                return;
+            }
+        }
         // Popups of the workspace(s) coming into view are raised first,
         // then the untracked overlays — overlays end above popups, as the
         // explicit switch path always stacked them.
         let shown: Vec<usize> = match monitor {
             Some(mon) => self.displays.visible_on(mon).into_iter().collect(),
-            None => self.displays.active().values().copied().collect(),
+            None => self
+                .displays
+                .active()
+                .iter()
+                .filter(|(mon, _)| self.display_may_act(**mon))
+                .map(|(_, idx)| *idx)
+                .collect(),
         };
         for idx in shown {
             for wid in self.workspaces[idx].popup_ids() {
@@ -46,6 +61,11 @@ impl StateManager {
     /// evicts on stale elements and the fallback re-classifies — an
     /// ADR-0002 untracked overlay must stay untracked regardless.
     pub(super) fn raise_untracked_windows(&mut self, monitor: Option<u32>) {
+        if let Some(monitor) = monitor {
+            if !self.display_may_act(monitor) {
+                return;
+            }
+        }
         let untracked: Vec<WindowId> = self
             .store
             .all_window_pids()
@@ -58,13 +78,26 @@ impl StateManager {
         }
         let displays = self.os.active_displays();
         for wid in untracked {
-            if let Some(monitor) = monitor {
-                let Some(rect) = self.os.window_rect(wid) else {
-                    continue;
-                };
-                if display_containing_point(&displays, rect) != Some(monitor) {
-                    continue;
+            let skip = match monitor {
+                Some(monitor) => {
+                    let Some(rect) = self.os.window_rect(wid) else {
+                        continue;
+                    };
+                    display_containing_point(&displays, rect) != Some(monitor)
                 }
+                // Global raise (wake / reveal_all): an overlay sitting on
+                // a Space-gated display must not be re-stacked either.
+                None if self.space_limbo.is_empty() => false,
+                None => {
+                    let Some(rect) = self.os.window_rect(wid) else {
+                        continue;
+                    };
+                    display_containing_point(&displays, rect)
+                        .is_some_and(|monitor| !self.display_may_act(monitor))
+                }
+            };
+            if skip {
+                continue;
             }
             log::debug!("raising untracked window {} (visibility changed)", wid);
             self.os.raise_window(wid);

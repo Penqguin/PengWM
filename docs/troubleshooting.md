@@ -138,6 +138,19 @@ hide and re-tile can strand them there.
 hide strip also stays visible in Mission Control as an escape hatch: you
 can drag a stranded window back by hand.
 
+## "PengWM doesn't manage my other desktops"
+
+**Expected behavior** (ADR-0007). PengWM is functional only on the first
+desktop (Space 1) of each display. While a display shows any later user
+desktop, the WM performs no layout writes, hides, raises, focus changes
+or window commands there; windows stay tracked so everything is intact
+when you switch back. Fullscreen spaces are exempt. This is per display:
+another monitor on its first desktop stays fully managed.
+
+**Fix:** none — switch the display back to its first desktop. There is no
+config key; the gate is always on. The detector is a read-only SkyLight
+query and fails open (manages every display) if the OS does not expose it.
+
 ## "Displays have separate Spaces" keeps coming up
 
 **Cause:** macOS Spaces constrains one display's layout to affect the

@@ -13,7 +13,7 @@ impl Workspace {
     /// Compute global-coordinate rects for every window using the stored monitor
     /// geometry. Tiling is always computed underneath; when `magnified` is set
     /// the magnified window is overwritten with a centered 75%x75% overlay
-    /// (tmux-popup style) inside the bar reservation + outer gap. Popup
+    /// (tmux-popup style) inside the display bounds + outer gap. Popup
     /// members are emitted into the same map — tracked but never tiled, each
     /// a centered overlay above the tiling.
     pub fn layout(&self, gap_inner: f64, gap_outer: f64) -> HashMap<WindowId, Rect> {
@@ -23,8 +23,7 @@ impl Workspace {
             self.monitor_size.0 as f64,
             self.monitor_size.1 as f64,
         );
-        let usable = self.usable_rect(monitor_rect);
-        let inset = crate::layout::inset_rect(usable, gap_outer);
+        let inset = crate::layout::inset_rect(monitor_rect, gap_outer);
         let mut output = HashMap::new();
 
         if let Some(root) = self.root {
@@ -110,28 +109,4 @@ impl Workspace {
         self.monitor_size = size;
     }
 
-    /// Reserve a region of the monitor (in global coordinates) that windows
-    /// must avoid — used for the bar strip. `None` clears the reservation.
-    pub fn set_reserved_rect(&mut self, global: Option<Rect>) {
-        self.reserved = global;
-    }
-
-    pub fn reserved_rect(&self) -> Option<Rect> {
-        self.reserved
-    }
-
-    /// Subtract the reserved region (an edge strip spanning the monitor) from
-    /// the full monitor rect, producing the tiling area.
-    pub(super) fn usable_rect(&self, monitor: Rect) -> Rect {
-        let Some(reserved) = self.reserved else {
-            return monitor;
-        };
-        let local = Rect::new(
-            reserved.x - self.monitor_origin.0 as f64,
-            reserved.y - self.monitor_origin.1 as f64,
-            reserved.width,
-            reserved.height,
-        );
-        crate::layout::subtract_strip(monitor, local)
-    }
 }

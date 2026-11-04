@@ -39,6 +39,11 @@ pub enum DaemonEvent {
     /// changed, observers may be dead. `StateManager` resyncs everything.
     SystemWoke,
 
+    /// The user switched native Spaces (swipe, Ctrl-←/→, fullscreen
+    /// transition): re-read the Space gate immediately instead of waiting
+    /// for the throttled tick poll.
+    SpaceChanged,
+
     /// A `Command` from any source. `Some(tx)` when the caller expects a
     /// `DaemonResponse` (the CLI/IPC client); `None` for fire-and-forget
     /// sources (keybinds, config watcher) that don't get a reply slot.
@@ -46,11 +51,6 @@ pub enum DaemonEvent {
         pengwm_core::command::Command,
         Option<mpsc::Sender<pengwm_core::command::DaemonResponse>>,
     ),
-    /// The prefix chord just armed (`PrefixOutcome::Armed`, observed by the
-    /// event tap). Draws the workspace HUD pills with their armed marker
-    /// and keeps them up while the chord stays armed (Spec 0001's prefix
-    /// fusion — the HUD is the previously invisible prefix indicator).
-    PrefixArmed,
 }
 
 pub struct EventLoop {
@@ -65,15 +65,12 @@ impl EventLoop {
     ) -> (Self, mpsc::Sender<DaemonEvent>) {
         let (tx, rx) = mpsc::channel(256);
         let event_tx = tx.clone();
-        // One bar server for the whole app: the menubar's UI state and
-        // the HUD pill pushes ride the same channel (the menubar-side
-        // rendering decision — see state/hud + bar_server docs).
+        // One state channel server for the menubar's workspace status.
         let bar_sender = crate::bar_server::spawn_bar_server();
         let os: Box<dyn OsAdapter> = Box::new(MacOsAdapter::with_callback(
             Box::new(move |event| {
                 let _ = event_tx.try_send(event);
             }),
-            Some(bar_sender.clone()),
         ));
         Self::assemble(keybinds, prefix, os, rx, tx.clone(), bar_sender)
     }
@@ -173,8 +170,8 @@ impl EventLoop {
             DaemonEvent::MonitorRemoved(id) => self.state.on_monitor_removed(id),
             DaemonEvent::MonitorResized(id) => self.state.on_monitor_resized(id),
             DaemonEvent::SystemWoke => self.state.on_system_woke(),
+            DaemonEvent::SpaceChanged => self.state.on_space_changed(),
             DaemonEvent::Command(cmd, rtx) => self.state.on_command(cmd, rtx),
-            DaemonEvent::PrefixArmed => self.state.on_prefix_armed(),
         }
     }
 }

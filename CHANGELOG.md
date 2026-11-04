@@ -1,6 +1,20 @@
 # Changelog
 
-## v0.6.13 — Topology no longer re-homes members (unreleased)
+## v0.6.14 — Native Space gating and geometry fixes (2026-11-03)
+
+- **New: native Space gating per display.** PengWM manages each display's
+  first user desktop and pauses OS writes on its other user desktops while
+  preserving window membership. Returning to the managed desktop runs a
+  scoped resync (ADR-0007).
+- **Removed: workspace HUD and custom bar reservation.** The menubar status
+  item remains; tiled windows no longer reserve a strip for the retired bar.
+- **Fixed: dialogs could create a display-wide top gap.** Only top-row tiled
+  windows with repeated, WindowServer-verified downward clamps can teach an
+  extra inset. The inset adds only the correction beyond the current macOS
+  `visibleFrame` area, and its evidence resets when physical display geometry
+  changes (Spec 0002).
+
+## v0.6.13 — Topology no longer re-homes members (2026-11-03)
 
 - **Fix: windows no longer migrate back to workspace 1 on their own.** A topology sync (monitor add/remove/resize, sleep/wake handshake, or geometry drift from learned top bands / AppKit insets) used to call `wm_reset`, which wiped every workspace tree, the window store, and the placement seatbelt, then re-routed all members as fresh births. Unassociated apps (no routing rule) fell through to the active seat, which after the fresh assemble was always workspace 1. Topology changes now heal incrementally (reseat + relayout + park) and never re-home members; manual moves and the visible arrangement survive. The seatbelt is preserved across resets. (ADR-0006)
 
