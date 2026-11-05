@@ -113,10 +113,7 @@ pub fn window_cg_frame(window_id: WindowId) -> Option<pengwm_core::layout::Rect>
                 continue;
             };
             return Some(pengwm_core::layout::Rect::new(
-                x as f64,
-                y as f64,
-                w as f64,
-                h as f64,
+                x as f64, y as f64, w as f64, h as f64,
             ));
         }
     }

@@ -108,5 +108,4 @@ impl Workspace {
         self.monitor_origin = origin;
         self.monitor_size = size;
     }
-
 }

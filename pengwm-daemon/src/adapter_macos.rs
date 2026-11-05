@@ -110,20 +110,9 @@ impl MacOsAdapter {
         if !missing.is_empty() {
             let live = ns_workspace::running_app_identities();
             for &pid in &missing {
-                let (bundle, name) = live
-                    .get(&pid)
-                    .cloned()
-                    .unwrap_or((None, None));
-                memo.entries.insert(
-                    pid,
-                    (
-                        AppIdentity {
-                            bundle,
-                            name,
-                        },
-                        now,
-                    ),
-                );
+                let (bundle, name) = live.get(&pid).cloned().unwrap_or((None, None));
+                memo.entries
+                    .insert(pid, (AppIdentity { bundle, name }, now));
             }
             memo.entries.retain(|pid, _| live.contains_key(pid));
         }
@@ -414,18 +403,23 @@ impl MacOsAdapter {
                 match retry {
                     WriteOutcome::Ok => match window_cg_frame(window_id) {
                         Some(cg)
-                            if (cg.x - target.x).abs() < 4.0
-                                && (cg.y - target.y).abs() < 4.0 =>
+                            if (cg.x - target.x).abs() < 4.0 && (cg.y - target.y).abs() < 4.0 =>
                         {
                             WriteOutcome::Ok
                         }
                         Some(cg) => WriteOutcome::Pinned { target, actual: cg },
-                        None => WriteOutcome::Pinned { target, actual: fallback_actual },
+                        None => WriteOutcome::Pinned {
+                            target,
+                            actual: fallback_actual,
+                        },
                     },
                     other => other,
                 }
             }
-            None => WriteOutcome::Pinned { target, actual: fallback_actual },
+            None => WriteOutcome::Pinned {
+                target,
+                actual: fallback_actual,
+            },
         }
     }
 }
@@ -505,21 +499,14 @@ impl MacOsAdapter {
                     // (`window_class_fresh`), so a burst read here can
                     // be corrected later without freezing.
                     let lowered = unsafe { ax_element::classify(element.ptr()) };
-                    let gated = WindowClass::apply_level_gate(
-                        lowered,
-                        levels.get(&window_id).copied(),
-                    );
+                    let gated =
+                        WindowClass::apply_level_gate(lowered, levels.get(&window_id).copied());
                     // One line per *manageable* classification — the
                     // log-level signal the Firefox-dialog work needs.
                     // Unmanageable (sheets/unknowns) re-arrive on every
                     // sweep forever (never cached): debug only.
                     if gated.is_manageable() {
-                        log::info!(
-                            "classified win={} pid={} class={:?}",
-                            window_id,
-                            pid,
-                            gated
-                        );
+                        log::info!("classified win={} pid={} class={:?}", window_id, pid, gated);
                     } else {
                         log::debug!(
                             "classified win={} pid={} class={:?} (unmanageable, uncached)",

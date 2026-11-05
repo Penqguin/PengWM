@@ -760,14 +760,7 @@ mod tests {
         for strike in 1..=5 {
             assert!(cache.should_write(7, t, None), "cycle {strike}");
             assert_eq!(
-                cache.record_failure(
-                    7,
-                    t,
-                    WriteOutcome::Pinned {
-                        target: t,
-                        actual
-                    }
-                ),
+                cache.record_failure(7, t, WriteOutcome::Pinned { target: t, actual }),
                 AfterWrite::ProbeFullscreen
             );
             cache.age_pin_for_test(7, Duration::from_secs(30));
@@ -1109,8 +1102,7 @@ mod tests {
         // 9 has no entry: unsettled the same way (apply_layout reads it).
         let targets: HashMap<WindowId, Rect> =
             [(7, t), (8, t), (9, t), (10, t)].into_iter().collect();
-        let (needs_read, unsettled) =
-            cache.sweep_plan(&targets, Instant::now(), |wid| wid == 10);
+        let (needs_read, unsettled) = cache.sweep_plan(&targets, Instant::now(), |wid| wid == 10);
         assert_eq!(needs_read, vec![7], "only the at-target window is read");
         assert!(unsettled, "8's stale target and 9's missing entry re-apply");
     }
@@ -1123,8 +1115,7 @@ mod tests {
         // grace window, so the read buys nothing this sweep.
         cache.record_success(7, t);
         let targets: HashMap<WindowId, Rect> = [(7, t)].into_iter().collect();
-        let (needs_read, unsettled) =
-            cache.sweep_plan(&targets, Instant::now(), |_| false);
+        let (needs_read, unsettled) = cache.sweep_plan(&targets, Instant::now(), |_| false);
         assert!(needs_read.is_empty());
         assert!(!unsettled);
     }

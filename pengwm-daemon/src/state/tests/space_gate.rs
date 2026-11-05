@@ -236,4 +236,3 @@ fn detector_unavailable_fails_open_and_resyncs() {
         "the cleared gate resyncs the display it was suppressing"
     );
 }
-

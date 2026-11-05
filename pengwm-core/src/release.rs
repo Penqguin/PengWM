@@ -64,7 +64,13 @@ pub fn check(current: &str) -> UpdateCheck {
 /// Fetch the latest-release JSON via the system curl.
 fn fetch() -> Result<String, String> {
     let output = Command::new("/usr/bin/curl")
-        .args(["-fsSL", "--max-time", "30", "-H", "Accept: application/vnd.github+json"])
+        .args([
+            "-fsSL",
+            "--max-time",
+            "30",
+            "-H",
+            "Accept: application/vnd.github+json",
+        ])
         .arg(RELEASES_URL)
         .output()
         .map_err(|e| format!("curl failed to start: {e}"))?;
@@ -159,8 +165,14 @@ mod tests {
 
     #[test]
     fn availability_convenience() {
-        assert!(UpdateCheck::UpdateAvailable { latest: "v1.0.0".into() }.is_update_available());
-        assert!(!UpdateCheck::UpToDate { latest: "v0.6.1".into() }.is_update_available());
+        assert!(UpdateCheck::UpdateAvailable {
+            latest: "v1.0.0".into()
+        }
+        .is_update_available());
+        assert!(!UpdateCheck::UpToDate {
+            latest: "v0.6.1".into()
+        }
+        .is_update_available());
         assert!(!UpdateCheck::Failed { reason: "x".into() }.is_update_available());
     }
 }

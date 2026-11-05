@@ -67,11 +67,10 @@ impl EventLoop {
         let event_tx = tx.clone();
         // One state channel server for the menubar's workspace status.
         let bar_sender = crate::bar_server::spawn_bar_server();
-        let os: Box<dyn OsAdapter> = Box::new(MacOsAdapter::with_callback(
-            Box::new(move |event| {
+        let os: Box<dyn OsAdapter> =
+            Box::new(MacOsAdapter::with_callback(Box::new(move |event| {
                 let _ = event_tx.try_send(event);
-            }),
-        ));
+            })));
         Self::assemble(keybinds, prefix, os, rx, tx.clone(), bar_sender)
     }
 

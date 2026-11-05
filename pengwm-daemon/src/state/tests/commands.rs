@@ -108,7 +108,13 @@ fn pill_configuration_updates_duration_and_dismisses_when_disabled() {
     sm.on_command(Command::Workspace { id: 1 }, None);
     let messages: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
     assert!(messages.into_iter().any(|message| {
-        matches!(message, BarMessage::Pill { duration_ms: 1200, .. })
+        matches!(
+            message,
+            BarMessage::Pill {
+                duration_ms: 1200,
+                ..
+            }
+        )
     }));
 
     sm.configure_pills(false, 500);
@@ -119,9 +125,8 @@ fn pill_configuration_updates_duration_and_dismisses_when_disabled() {
 
     sm.configure_pills(true, 0);
     sm.on_command(Command::Workspace { id: 1 }, None);
-    assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|message| {
-        matches!(message, BarMessage::Pill { duration_ms: 1, .. })
-    }));
+    assert!(std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|message| { matches!(message, BarMessage::Pill { duration_ms: 1, .. }) }));
 }
 
 #[test]
@@ -138,9 +143,9 @@ fn space_exclusion_removes_only_the_affected_display_pill() {
     assert!(messages.iter().any(|message| {
         matches!(message, BarMessage::PillRetain { display_ids } if display_ids == &[1])
     }));
-    assert!(!messages.iter().any(|message| {
-        matches!(message, BarMessage::Pill { .. } | BarMessage::PillHide)
-    }));
+    assert!(!messages
+        .iter()
+        .any(|message| { matches!(message, BarMessage::Pill { .. } | BarMessage::PillHide) }));
 
     handle.set_first_desktop(2, true);
     sm.refresh_space_gate_for_test();
@@ -163,9 +168,9 @@ fn monitor_disconnect_preserves_other_pills_and_reconnect_does_not_flash() {
     assert!(messages.iter().any(|message| {
         matches!(message, BarMessage::PillRetain { display_ids } if display_ids == &[1])
     }));
-    assert!(!messages.iter().any(|message| {
-        matches!(message, BarMessage::Pill { .. } | BarMessage::PillHide)
-    }));
+    assert!(!messages
+        .iter()
+        .any(|message| { matches!(message, BarMessage::Pill { .. } | BarMessage::PillHide) }));
 
     handle.set_displays(make_adapter(2).displays);
     sm.on_monitor_added(2);

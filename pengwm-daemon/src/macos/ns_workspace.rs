@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::collections::HashMap;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -42,9 +42,9 @@ pub fn observe(event_tx: mpsc::Sender<DaemonEvent>) {
 
 use objc2_app_kit::{
     NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
-    NSWorkspaceDidActivateApplicationNotification,
-    NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
-    NSWorkspaceDidWakeNotification, NSWorkspaceScreensDidWakeNotification,
+    NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
+    NSWorkspaceDidTerminateApplicationNotification, NSWorkspaceDidWakeNotification,
+    NSWorkspaceScreensDidWakeNotification,
 };
 
 pub fn running_app_pids() -> Vec<i32> {
@@ -223,19 +223,16 @@ pub fn screen_top_insets() -> Vec<(u32, f64)> {
             }
             let count: usize = msg_send![screens, count];
             for i in 0..count {
-                let screen: *mut objc2::runtime::AnyObject =
-                    msg_send![screens, objectAtIndex: i];
+                let screen: *mut objc2::runtime::AnyObject = msg_send![screens, objectAtIndex: i];
                 if screen.is_null() {
                     continue;
                 }
-                let desc: *mut objc2::runtime::AnyObject =
-                    msg_send![screen, deviceDescription];
+                let desc: *mut objc2::runtime::AnyObject = msg_send![screen, deviceDescription];
                 if desc.is_null() {
                     continue;
                 }
                 let key = NSString::from_str("NSScreenNumber");
-                let value: Option<Retained<NSNumber>> =
-                    msg_send![desc, objectForKey: &*key];
+                let value: Option<Retained<NSNumber>> = msg_send![desc, objectForKey: &*key];
                 let Some(num) = value else { continue };
                 let display_id: u32 = msg_send![&num, unsignedIntValue];
                 let frame: objc2_foundation::NSRect = msg_send![screen, frame];

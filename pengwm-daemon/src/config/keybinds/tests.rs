@@ -298,7 +298,12 @@ cmd-h = "focus-left"
     let value: toml::Value = toml::from_str(toml_str).unwrap();
     let config = try_from_toml_value(&value).unwrap();
     assert_eq!(config.bindings.len(), 1);
-    assert!(matches!(&config.bindings[0].action, Command::Focus { direction: Direction::Left }));
+    assert!(matches!(
+        &config.bindings[0].action,
+        Command::Focus {
+            direction: Direction::Left
+        }
+    ));
 }
 
 #[test]

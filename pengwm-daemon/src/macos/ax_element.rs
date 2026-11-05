@@ -148,11 +148,7 @@ pub unsafe fn set_window_position_raw(
     )) else {
         anyhow::bail!("AXValueCreate failed for position");
     };
-    let err = AXUIElementSetAttributeValue(
-        element,
-        pos_name,
-        pos_value.ptr() as CFTypeRef,
-    );
+    let err = AXUIElementSetAttributeValue(element, pos_name, pos_value.ptr() as CFTypeRef);
     if err != kAXErrorSuccess {
         anyhow::bail!(
             "AXUIElementSetAttributeValue position error: {}",
@@ -177,11 +173,7 @@ pub unsafe fn set_window_size_raw(
     )) else {
         anyhow::bail!("AXValueCreate failed for size");
     };
-    let err = AXUIElementSetAttributeValue(
-        element,
-        size_name,
-        size_value.ptr() as CFTypeRef,
-    );
+    let err = AXUIElementSetAttributeValue(element, size_name, size_value.ptr() as CFTypeRef);
     if err != kAXErrorSuccess {
         anyhow::bail!(
             "AXUIElementSetAttributeValue size error: {}",
@@ -363,16 +355,14 @@ pub unsafe fn get_window_rect(element: AXUIElementRef) -> Option<Rect> {
     let size_name = intern(kAXSizeAttribute);
 
     let mut pos_raw: CFTypeRef = ptr::null();
-    let err_pos =
-        AXUIElementCopyAttributeValue(element, pos_name, &mut pos_raw);
+    let err_pos = AXUIElementCopyAttributeValue(element, pos_name, &mut pos_raw);
     if err_pos != kAXErrorSuccess {
         return None;
     }
     let pos_val = CFRef::from_create(pos_raw)?;
 
     let mut size_raw: CFTypeRef = ptr::null();
-    let err_size =
-        AXUIElementCopyAttributeValue(element, size_name, &mut size_raw);
+    let err_size = AXUIElementCopyAttributeValue(element, size_name, &mut size_raw);
     if err_size != kAXErrorSuccess {
         // pos_val drops here — the failure path releases what it owns.
         return None;
@@ -408,7 +398,9 @@ fn activate_app(pid: i32) -> bool {
     use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
     objc2::rc::autoreleasepool(|_pool| {
         match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
-            Some(app) => app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows),
+            Some(app) => {
+                app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows)
+            }
             None => false,
         }
     })
@@ -436,21 +428,13 @@ pub unsafe fn focus_window(element: AXUIElementRef, pid: i32) {
     AXUIElementPerformAction(element, raise_name);
 
     let main_name = intern(kAXMainAttribute);
-    AXUIElementSetAttributeValue(
-        element,
-        main_name,
-        kCFBooleanTrue as CFTypeRef,
-    );
+    AXUIElementSetAttributeValue(element, main_name, kCFBooleanTrue as CFTypeRef);
 
     let Some(app) = create_app_element(pid) else {
         return;
     };
     let focused_name = intern(kAXFocusedWindowAttribute);
-    AXUIElementSetAttributeValue(
-        app.ptr(),
-        focused_name,
-        element as CFTypeRef,
-    );
+    AXUIElementSetAttributeValue(app.ptr(), focused_name, element as CFTypeRef);
 }
 
 /// # Safety
@@ -611,11 +595,7 @@ pub unsafe fn set_window_position(element: AXUIElementRef, x: f64, y: f64) -> an
     )) else {
         anyhow::bail!("AXValueCreate failed for position");
     };
-    let err = AXUIElementSetAttributeValue(
-        element,
-        pos_name,
-        pos_value.ptr() as CFTypeRef,
-    );
+    let err = AXUIElementSetAttributeValue(element, pos_name, pos_value.ptr() as CFTypeRef);
     if err != kAXErrorSuccess {
         anyhow::bail!(
             "AXUIElementSetAttributeValue position error: {}",
@@ -699,8 +679,7 @@ unsafe fn set_bool_attribute(element: AXUIElementRef, attribute: &'static str, v
     } else {
         core_foundation::boolean::kCFBooleanFalse
     };
-    let err =
-        AXUIElementSetAttributeValue(element, name, cf_value as CFTypeRef);
+    let err = AXUIElementSetAttributeValue(element, name, cf_value as CFTypeRef);
     if err != kAXErrorSuccess {
         log::debug!("set {}={} failed: {}", attribute, value, error_string(err));
     }

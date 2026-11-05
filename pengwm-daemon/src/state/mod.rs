@@ -405,7 +405,10 @@ impl StateManager {
             *keybinds = updated_keybinds;
             log::info!("Config reloaded ({} bindings)", keybinds.bindings.len());
         }
-        self.configure_pills(updated_settings.pill_enabled, updated_settings.pill_duration_ms);
+        self.configure_pills(
+            updated_settings.pill_enabled,
+            updated_settings.pill_duration_ms,
+        );
         self.gap_outer = updated_settings.gap_outer.max(0) as f64;
         self.gap_inner = updated_settings.gap_inner.max(0) as f64;
         self.main_ratio = pengwm_core::workspace::clamp_main_ratio(updated_settings.main_ratio);

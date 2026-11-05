@@ -4,7 +4,7 @@
 //! per-display top insets the WM folds into tiling, and any learned top
 //! bands. Run from the repo root: `cargo run -p pengwm-daemon --example display_probe`
 
-use core_graphics::display::{CGDisplay};
+use core_graphics::display::CGDisplay;
 
 fn main() {
     let ids = match CGDisplay::active_displays() {
@@ -21,7 +21,9 @@ fn main() {
         raw_map.push((id, (b.origin.x, b.origin.y), (b.size.width, b.size.height)));
         println!(
             "raw CG bounds id={}: origin=({:?}) size=({:?})",
-            id, (b.origin.x, b.origin.y), (b.size.width, b.size.height)
+            id,
+            (b.origin.x, b.origin.y),
+            (b.size.width, b.size.height)
         );
     }
 
@@ -47,12 +49,14 @@ fn main() {
     }
 
     println!("---- primary ----");
-    println!("CGMainDisplayID: {:?}", unsafe { core_graphics::display::CGMainDisplayID() });
+    println!("CGMainDisplayID: {:?}", unsafe {
+        core_graphics::display::CGMainDisplayID()
+    });
 }
 
 fn crate_ns_screens() {
-    use objc2::runtime::{AnyClass, NSObject, AnyObject};
-    use objc2::{msg_send};
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, NSObject};
     objc2::rc::autoreleasepool(|_| {
         let cls = match AnyClass::get(c"NSScreen") {
             Some(c) => c,

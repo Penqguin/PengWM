@@ -1008,8 +1008,14 @@ mod tests {
             .plan_switch(1, &mut wss, &test_displays_two(), false)
             .unwrap();
         assert_eq!(dec.show, 1);
-        assert!(dec.hide.is_empty(), "nothing to hide: both keep their seats");
-        assert!(dec.relayout.is_empty(), "nothing to re-seat: no rect rewrites");
+        assert!(
+            dec.hide.is_empty(),
+            "nothing to hide: both keep their seats"
+        );
+        assert!(
+            dec.relayout.is_empty(),
+            "nothing to re-seat: no rect rewrites"
+        );
         assert!(dec.focus_only);
         assert_eq!(ds.focused_output(), Some(2));
         // active map and seats are untouched.

@@ -322,8 +322,7 @@ fn hidden_workspace_focus_cannot_flip_active_even_past_the_debounce() {
     // reverse-switch ran. The i3 visibility rule closes it: a window on a
     // hidden workspace can never hold real focus, so the event is stale
     // no matter when it arrives.
-    sm.switch_debounce_until =
-        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    sm.switch_debounce_until = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     sm.on_window_focused(777);
     assert_eq!(
         sm.displays.active().get(&1),

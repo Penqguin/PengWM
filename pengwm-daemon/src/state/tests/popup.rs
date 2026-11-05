@@ -257,10 +257,7 @@ fn fresh_dialog_read_stays_popup() {
 
     sm.on_window_created(100, 42);
 
-    let poped = sm
-        .workspaces
-        .iter()
-        .any(|ws| ws.popup_ids().contains(&100));
+    let poped = sm.workspaces.iter().any(|ws| ws.popup_ids().contains(&100));
     assert!(poped, "a dialog whose fresh read agrees stays a popup");
     assert!(
         sm.workspaces.iter().all(|ws| ws.find_window(100).is_none()),
@@ -278,9 +275,6 @@ fn unreadable_fresh_read_falls_back_to_cache() {
 
     sm.on_window_created(100, 42);
 
-    let poped = sm
-        .workspaces
-        .iter()
-        .any(|ws| ws.popup_ids().contains(&100));
+    let poped = sm.workspaces.iter().any(|ws| ws.popup_ids().contains(&100));
     assert!(poped, "cache-only path keeps the dialog fate");
 }

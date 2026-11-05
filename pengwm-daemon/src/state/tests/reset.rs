@@ -9,9 +9,9 @@
 use std::time::{Duration, Instant};
 
 use crate::adapter::DisplayInfo;
-use crate::config::keybinds::KeybindConfig;
-use crate::bar_server::BarSender;
 use crate::adapter_test::TestHandle;
+use crate::bar_server::BarSender;
+use crate::config::keybinds::KeybindConfig;
 use crate::state::StateManager;
 use tokio::sync::mpsc;
 
@@ -21,7 +21,11 @@ fn display(id: u32, origin: (i32, i32), size: (u32, u32)) -> DisplayInfo {
     DisplayInfo { id, origin, size }
 }
 
-fn setup_two_displays() -> (StateManager, TestHandle, tokio::sync::mpsc::Sender<crate::event_loop::DaemonEvent>) {
+fn setup_two_displays() -> (
+    StateManager,
+    TestHandle,
+    tokio::sync::mpsc::Sender<crate::event_loop::DaemonEvent>,
+) {
     let (tx, _rx) = mpsc::channel(64);
     let keybinds = std::sync::Arc::new(std::sync::Mutex::new(KeybindConfig::default()));
     let mut adapter = make_adapter(2);
@@ -59,13 +63,19 @@ fn reset_preserves_members_and_rebuilds_derivation() {
     // survivor, with survivor geometry.
     assert!(!sm.displays.active().contains_key(&2));
     assert!(sm.workspaces.iter().all(|ws| ws.monitor_id == 1));
-    assert!(sm.workspaces.iter().all(|ws| ws.monitor_size() == (1920, 1080)));
+    assert!(sm
+        .workspaces
+        .iter()
+        .all(|ws| ws.monitor_size() == (1920, 1080)));
 
     // Members preserved: both windows tracked, and each lives in some
     // fresh tree (a birth routes config-first; no id is dropped by
     // the reset itself).
     let shapes: Vec<(bool, bool)> = (300..=400)
-        .filter(|&wid| handle.rect(wid).is_some() || sm.workspaces.iter().any(|ws| ws.find_window(wid).is_some()))
+        .filter(|&wid| {
+            handle.rect(wid).is_some()
+                || sm.workspaces.iter().any(|ws| ws.find_window(wid).is_some())
+        })
         .map(|_| (true, true))
         .collect();
     assert_eq!(shapes.len(), 2, "both members still managed");
@@ -115,7 +125,11 @@ fn reset_cooldown_suppresses_the_burst_but_stays_consistent() {
         display(8, (-1180, 153), (1180, 820)),
     ]);
     sm.run_topology_sync();
-    assert_eq!(sm.displays.active().len(), 2, "late change disrespecting the cooldown must reset");
+    assert_eq!(
+        sm.displays.active().len(),
+        2,
+        "late change disrespecting the cooldown must reset"
+    );
     assert!(sm.displays.active().contains_key(&8));
 }
 
@@ -132,7 +146,10 @@ fn empty_display_snapshot_is_untouched_by_reset() {
     sm.run_topology_sync();
 
     assert_eq!(
-        sm.workspaces.iter().map(|ws| ws.name.clone()).collect::<Vec<_>>(),
+        sm.workspaces
+            .iter()
+            .map(|ws| ws.name.clone())
+            .collect::<Vec<_>>(),
         names,
         "mid-un-plug snapshots the world as it was"
     );
@@ -155,7 +172,10 @@ fn reset_settles_into_a_noop() {
         sm.run_topology_sync();
         assert_eq!(sm.displays.active(), &active, "settled");
         assert_eq!(
-            sm.workspaces.iter().map(|ws| ws.name.clone()).collect::<Vec<_>>(),
+            sm.workspaces
+                .iter()
+                .map(|ws| ws.name.clone())
+                .collect::<Vec<_>>(),
             names,
             "settled"
         );

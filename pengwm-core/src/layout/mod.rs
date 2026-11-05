@@ -8,9 +8,8 @@ mod write;
 pub use hide::{far_offscreen_rect, hidden_rect, HidePlacement};
 pub use query::window_at_point;
 pub use rect::{
-    calculate_layout, centered_overlay_rect, rects_close, rects_displaced,
-    rects_displaced_of_tile, Rect, DISPLACE_GRACE, MIN_WIDTH_WEDGE_PX,
-    LAYOUT_EPSILON,
+    calculate_layout, centered_overlay_rect, rects_close, rects_displaced, rects_displaced_of_tile,
+    Rect, DISPLACE_GRACE, LAYOUT_EPSILON, MIN_WIDTH_WEDGE_PX,
 };
 pub(crate) use rect::{inset_rect, screen_local_to_global};
 pub use write::WriteOutcome;

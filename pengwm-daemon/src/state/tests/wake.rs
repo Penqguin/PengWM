@@ -509,7 +509,10 @@ fn hidden_reconcile_sits_out_the_blackout() {
     sm.store.force_reconcile_for_test();
     sm.age_wake_probe_for_test();
     sm.on_tick();
-    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert!(
+        sm.wake_resync_pending(),
+        "precondition: still in the blackout"
+    );
     assert!(
         sm.store.is_hidden(200),
         "the blackout must not consume the park"
@@ -562,7 +565,10 @@ fn misplaced_sweep_sits_out_the_blackout() {
     sm.force_window_sweep_for_test();
     sm.age_wake_probe_for_test();
     sm.on_tick();
-    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert!(
+        sm.wake_resync_pending(),
+        "precondition: still in the blackout"
+    );
     assert_eq!(
         handle.writes(),
         writes_after_tile,
@@ -598,7 +604,10 @@ fn discovery_sweep_sits_out_the_blackout() {
     sm.force_window_sweep_for_test();
     sm.age_wake_probe_for_test();
     sm.on_tick();
-    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert!(
+        sm.wake_resync_pending(),
+        "precondition: still in the blackout"
+    );
     assert!(
         !sm.store.contains(300),
         "the discovery sweep must not route mid-blackout"
@@ -635,7 +644,10 @@ fn focus_settle_sits_out_the_blackout() {
     sm.on_system_woke();
     sm.age_wake_probe_for_test();
     sm.on_tick();
-    assert!(sm.wake_resync_pending(), "precondition: still in the blackout");
+    assert!(
+        sm.wake_resync_pending(),
+        "precondition: still in the blackout"
+    );
     assert!(
         sm.focus_settle_dirty(),
         "the drain must stay armed across the blackout, not be consumed"

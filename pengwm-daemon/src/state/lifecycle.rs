@@ -974,7 +974,7 @@ impl StateManager {
         let window = frontmost.and_then(|pid| self.os.focused_window_for_pid(pid));
         match window {
             Some(window_id) => {
-                        self.last_focused_window = Some(window_id);
+                self.last_focused_window = Some(window_id);
                 self.on_window_focused(window_id);
             }
             None => {
@@ -997,7 +997,9 @@ impl StateManager {
                 // Ladder (c): no windows visible (or the last focus went
                 // hidden) — the focused workspace *seat* is the memory:
                 // nothing to change, nothing to cross-check.
-                log::debug!("focus settle: no OS focus and no visible last window — workspace seat stands");
+                log::debug!(
+                    "focus settle: no OS focus and no visible last window — workspace seat stands"
+                );
             }
         }
     }

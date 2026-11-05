@@ -923,13 +923,7 @@ impl OsAdapter for TestAdapter {
                     .get(&pid)
                     .cloned()
                     .or_else(|| bundle.clone());
-                (
-                    pid,
-                    AppIdentity {
-                        bundle,
-                        name,
-                    },
-                )
+                (pid, AppIdentity { bundle, name })
             })
             .collect()
     }

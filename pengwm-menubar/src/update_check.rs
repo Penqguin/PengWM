@@ -50,7 +50,10 @@ fn check(latest: &Mutex<Option<String>>) {
             }
         }
         release::UpdateCheck::UpToDate { latest } => {
-            log::debug!("no newer release than {} (latest {latest})", env!("CARGO_PKG_VERSION"));
+            log::debug!(
+                "no newer release than {} (latest {latest})",
+                env!("CARGO_PKG_VERSION")
+            );
         }
         release::UpdateCheck::Failed { reason } => {
             log::debug!("update check failed: {reason}");
@@ -83,7 +86,8 @@ fn read_skipped_tag() -> Option<String> {
 pub fn write_skipped_tag(tag: &str) -> Result<(), String> {
     let path = skip_file_path().ok_or("PENGWM_HOME/HOME not resolvable")?;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
     }
     std::fs::write(&path, format!("{tag}\n"))
         .map_err(|e| format!("failed to write {}: {e}", path.display()))

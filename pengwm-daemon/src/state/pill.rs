@@ -12,10 +12,16 @@ impl StateManager {
     }
 
     pub(super) fn retain_workspace_pills(&self) {
-        let display_ids = self.os.active_displays().into_iter()
-            .filter(|display| self.displays.active().contains_key(&display.id)
-                && !self.space_limbo.contains(&display.id))
-            .map(|display| display.id).collect();
+        let display_ids = self
+            .os
+            .active_displays()
+            .into_iter()
+            .filter(|display| {
+                self.displays.active().contains_key(&display.id)
+                    && !self.space_limbo.contains(&display.id)
+            })
+            .map(|display| display.id)
+            .collect();
         self.bar_sender.send(BarMessage::PillRetain { display_ids });
     }
 

@@ -57,15 +57,10 @@ pub fn load_from(path: &Path) -> Result<(Settings, KeybindConfig), ConfigError> 
 /// `[keybinds]` section while the startup scrape saw the whole file, so a
 /// `reload-config` silently replaced every documented top-level bind with
 /// defaults. Now both shapes are one behavior wherever the file is read.
-pub fn keybinds_from_value(
-    path: &Path,
-    value: &toml::Value,
-) -> Result<KeybindConfig, ConfigError> {
+pub fn keybinds_from_value(path: &Path, value: &toml::Value) -> Result<KeybindConfig, ConfigError> {
     // The docs' primary convention is top-level `key = "action"` rows.
-    let mut config =
-        crate::config::keybinds::try_from_toml_value(value).map_err(|e| {
-            ConfigError(format!("Invalid keybinds in '{}': {}", path.display(), e))
-        })?;
+    let mut config = crate::config::keybinds::try_from_toml_value(value)
+        .map_err(|e| ConfigError(format!("Invalid keybinds in '{}': {}", path.display(), e)))?;
     // The optional `[keybinds]` table adds its own rows on top.
     if let Some(section) = value.get("keybinds") {
         let extra = crate::config::keybinds::try_from_toml_value(section).map_err(|e| {
@@ -157,16 +152,17 @@ alt-1 = "workspace-1"
         assert_eq!(settings.gap_outer, 5);
         let bindings = &keybinds.bindings;
         assert!(
-            bindings
-                .iter()
-                .any(|b| b.action == Command::Focus { direction: Direction::Left }),
+            bindings.iter().any(|b| b.action
+                == Command::Focus {
+                    direction: Direction::Left
+                }),
             "top-level alt-h = focus-left decoded"
         );
         assert_eq!(
-            bindings.iter().find(|b| matches!(b.action, Command::Workspace { .. })).map(|b| matches!(
-                b.action,
-                Command::Workspace { id: 1 }
-            )),
+            bindings
+                .iter()
+                .find(|b| matches!(b.action, Command::Workspace { .. }))
+                .map(|b| matches!(b.action, Command::Workspace { id: 1 })),
             Some(true),
             "top-level alt-1 = workspace-1 decoded"
         );
@@ -187,17 +183,17 @@ alt-j = "focus-down"
         );
         let (_, keybinds) = load_from(&path).expect("both shapes decode");
         assert!(
-            keybinds
-                .bindings
-                .iter()
-                .any(|b| b.action == Command::Focus { direction: Direction::Left }),
+            keybinds.bindings.iter().any(|b| b.action
+                == Command::Focus {
+                    direction: Direction::Left
+                }),
             "the top-level row decoded"
         );
         assert!(
-            keybinds
-                .bindings
-                .iter()
-                .any(|b| b.action == Command::Focus { direction: Direction::Down }),
+            keybinds.bindings.iter().any(|b| b.action
+                == Command::Focus {
+                    direction: Direction::Down
+                }),
             "the [keybinds] row decoded"
         );
         let _ = std::fs::remove_file(&path);
@@ -236,10 +232,8 @@ alt-j = "focus-down"
 
     #[test]
     fn missing_file_is_defaults_and_keybind_defaults() {
-        let path = std::env::temp_dir().join(format!(
-            "pengwm-loader-missing-{}.toml",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("pengwm-loader-missing-{}.toml", std::process::id()));
         let (settings, keybinds) = load_from(&path).expect("clean-install state");
         assert_eq!(settings.gap_outer, 10);
         assert!(

@@ -349,7 +349,9 @@ pub enum BarMessage {
     },
     PillHide,
     /// Remove ineligible displays without extending surviving pills.
-    PillRetain { display_ids: Vec<u32> },
+    PillRetain {
+        display_ids: Vec<u32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
