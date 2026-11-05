@@ -45,7 +45,7 @@ curl -fsSL https://pengwm.penqguin.com/uninstall.sh | bash -s -- --yes
 > ```bash
 > ./install.sh --from-source
 > # or manually:
-> cargo build --release
+> ./build.sh --release
 > PENGWM_DEV=1 ./target/release/pengwm
 > ```
 
@@ -204,7 +204,7 @@ This runs the full suite covering:
 For visual testing against a real display, build and run the daemon with debug logging:
 
 ```bash
-cargo build && RUST_LOG=debug ./target/debug/pengwm
+./build.sh && RUST_LOG=debug ./target/debug/pengwm
 ```
 
 In another terminal, send commands through the CLI to see windows
