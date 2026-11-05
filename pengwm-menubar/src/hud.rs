@@ -286,7 +286,7 @@ struct DrainState {
 
 /// The main-thread tick: what the repeating NSTimer runs. Drains the
 /// shared slot into panel updates; identical card sets are skipped, so
-/// an idle HUD costs one lock + one compare per beat. The interval
+/// live display identity and geometry are checked each beat. The interval
 /// bounds pill latency; the renderer expires the latest flash locally.
 pub fn start_main_thread_drain(slot: HudSlotRef) {
     let Some(_) = MainThreadMarker::new() else {
@@ -311,25 +311,32 @@ pub fn start_main_thread_drain(slot: HudSlotRef) {
     // only ever used to schedule, never to inspect.
     let block: RcBlock<dyn Fn(core::ptr::NonNull<NSTimer>)> =
         RcBlock::new(move |_timer: core::ptr::NonNull<NSTimer>| {
-            let latest = slot_for_block.lock().unwrap().clone();
+            let mtm = MainThreadMarker::new().expect("HUD timer runs on main thread");
+            let geometry: Vec<_> = NSScreen::screens(mtm)
+                .iter()
+                .map(|screen| {
+                    let description: *mut objc2::runtime::AnyObject =
+                        unsafe { msg_send![&*screen, deviceDescription] };
+                    let key = NSString::from_str("NSScreenNumber");
+                    let number: Option<Retained<NSNumber>> =
+                        unsafe { msg_send![description, objectForKey: &*key] };
+                    let id: u32 = number
+                        .map(|number| unsafe { msg_send![&*number, unsignedIntValue] })
+                        .unwrap_or(0);
+                    (id, screen.frame())
+                })
+                .collect();
+            // Prune this flash permanently: a replug must wait for a new request.
+            // Hold the slot lock through pruning and cloning so a newer flash
+            // cannot be overwritten by an older snapshot.
+            let latest = {
+                let mut slot = slot_for_block.lock().unwrap();
+                slot.retain_displays(&geometry.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+                slot.clone()
+            };
             let mut state = state_for_block.borrow_mut();
             match latest.visible_cards(Instant::now()) {
                 Some(cards) => {
-                    let mtm = MainThreadMarker::new().expect("HUD timer runs on main thread");
-                    let geometry: Vec<_> = NSScreen::screens(mtm)
-                        .iter()
-                        .map(|screen| {
-                            let description: *mut objc2::runtime::AnyObject =
-                                unsafe { msg_send![&*screen, deviceDescription] };
-                            let key = NSString::from_str("NSScreenNumber");
-                            let number: Option<Retained<NSNumber>> =
-                                unsafe { msg_send![description, objectForKey: &*key] };
-                            let id: u32 = number
-                                .map(|number| unsafe { msg_send![&*number, unsignedIntValue] })
-                                .unwrap_or(0);
-                            (id, screen.frame())
-                        })
-                        .collect();
                     if state.applied.as_deref() != Some(cards) || state.geometry != geometry {
                         state.geometry = geometry;
                         state.applied = Some(cards.to_vec());

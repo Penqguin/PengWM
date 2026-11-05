@@ -152,3 +152,26 @@ mod hud_tests {
         assert!(slot.visible_cards(now).is_none());
     }
 }
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn replug_does_not_restore_a_pruned_flash() {
+        let now = Instant::now();
+        let mut slot = HudSlot::Show {
+            cards: vec![PillCard {
+                display_id: 2,
+                number: 1,
+                name: "one".into(),
+                focused: true,
+                center: (0.0, 0.0),
+            }],
+            expires: now + std::time::Duration::from_millis(500),
+        };
+        slot.retain_displays(&[]);
+        slot.retain_displays(&[2]);
+        assert!(slot.visible_cards(now).is_none());
+    }
+}
