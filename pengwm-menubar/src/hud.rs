@@ -316,13 +316,20 @@ pub fn start_main_thread_drain(slot: HudSlotRef) {
             match latest.visible_cards(Instant::now()) {
                 Some(cards) => {
                     let mtm = MainThreadMarker::new().expect("HUD timer runs on main thread");
-                    let geometry: Vec<_> = NSScreen::screens(mtm).iter().map(|screen| {
-                        let description: *mut objc2::runtime::AnyObject = unsafe { msg_send![&*screen, deviceDescription] };
-                        let key = NSString::from_str("NSScreenNumber");
-                        let number: Option<Retained<NSNumber>> = unsafe { msg_send![description, objectForKey: &*key] };
-                        let id: u32 = number.map(|number| unsafe { msg_send![number, unsignedIntValue] }).unwrap_or(0);
-                        (id, screen.frame())
-                    }).collect();
+                    let geometry: Vec<_> = NSScreen::screens(mtm)
+                        .iter()
+                        .map(|screen| {
+                            let description: *mut objc2::runtime::AnyObject =
+                                unsafe { msg_send![&*screen, deviceDescription] };
+                            let key = NSString::from_str("NSScreenNumber");
+                            let number: Option<Retained<NSNumber>> =
+                                unsafe { msg_send![description, objectForKey: &*key] };
+                            let id: u32 = number
+                                .map(|number| unsafe { msg_send![&*number, unsignedIntValue] })
+                                .unwrap_or(0);
+                            (id, screen.frame())
+                        })
+                        .collect();
                     if state.applied.as_deref() != Some(cards) || state.geometry != geometry {
                         state.geometry = geometry;
                         state.applied = Some(cards.to_vec());
