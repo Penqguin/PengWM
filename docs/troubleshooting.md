@@ -8,8 +8,8 @@ diagnose.
 
 **Cause:** missing Accessibility permissions, or they were granted to the
 wrong binary (e.g. your terminal instead of `pengwm`, or a stale build
-after `cargo build` replaced the binary — macOS ties the grant to the
-binary, so every rebuild re-prompts).
+after `cargo build` replaced the binary — macOS may require a new grant
+after a rebuild).
 
 **Fix:** System Settings → Privacy & Security → Accessibility → add the
 `pengwm` binary (or your terminal, if you launch it from there). The daemon
@@ -18,10 +18,9 @@ lines.
 
 ## PengWM was open before, and now won't open after an update
 
-**Cause:** none, mostly — stable-signature prebuilt releases keep one
-Accessibility grant across updates, and that grant surviving is now the
-norm. The one legit failure path is a detached TCC entry (macOS upgrades
-and TCC database resets detach it). The tell: the menubar shows "PengWM
+**Cause:** macOS may require a new Accessibility grant after an update, or
+the existing grant may have been withdrawn (for example, after an OS upgrade
+or TCC database reset). The tell: the menubar shows "PengWM
 needs Accessibility" instead of the workspace list, or the daemon exits
 with "needs Accessibility permissions" in its first log lines.
 
@@ -35,10 +34,9 @@ tccutil reset Accessibility
 ```
 
 then System Settings → Privacy & Security → Accessibility → add the
-installed binary (`~/.pengwm/bin/pengwm`). Note that with ad-hoc signed
-releases, **every update costs one re-grant** — that is expected behavior,
-not a bug (ADR-0001). After granting, updates between launches keep
-working until the next binary replacement.
+installed binary (`~/.pengwm/bin/pengwm`). Ad-hoc signed releases may
+require a re-grant after a binary update (ADR-0001). The daemon checks
+permission at startup and prompts if access is missing.
 
 ## Two copies won't install / update
 

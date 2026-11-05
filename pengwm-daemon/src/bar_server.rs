@@ -130,6 +130,7 @@ pub fn spawn_bar_server_with_path(socket_path: &str) -> BarSender {
                 BarMessage::State(_) => {
                     *last_state.lock().unwrap() = Some(payload.clone());
                 }
+                BarMessage::Pill { .. } | BarMessage::PillHide | BarMessage::PillRetain { .. } => {}
                 BarMessage::Exit => {}
             }
 

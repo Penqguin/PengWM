@@ -13,7 +13,7 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 use pengwm_core::command::{BarState, Command};
 use pengwm_core::ipc::send_command;
 
-use crate::{TrustedState, UpdateState};
+use crate::{HudSlotRef, TrustedState, UpdateState};
 
 /// How often the trust poller re-checks Accessibility trust while the daemon
 /// is unreachable. Cheap: a single FFI call, no UI work.
@@ -192,10 +192,12 @@ pub fn run(
     state: Arc<Mutex<Option<BarState>>>,
     trusted: TrustedState,
     update: UpdateState,
+    hud: HudSlotRef,
 ) {
     let mtm = MainThreadMarker::new().expect("run() must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+    crate::hud::start_main_thread_drain(hud);
 
     spawn_trust_watcher(Arc::clone(&state), Arc::clone(&trusted));
 

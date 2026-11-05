@@ -93,22 +93,18 @@ impl StateManager {
                                 // they showed. ADR-0002's raise funnel
                                 // covers every said monitor.
                                 if !dec.focus_only {
-                                    self.reveal_stack(Some(
-                                        self.workspaces[dec.show].monitor_id,
-                                    ));
-                                    if let Some(other) = dec
-                                        .relayout
-                                        .iter()
-                                        .copied()
-                                        .find(|&i| i != dec.show)
+                                    self.reveal_stack(Some(self.workspaces[dec.show].monitor_id));
+                                    if let Some(other) =
+                                        dec.relayout.iter().copied().find(|&i| i != dec.show)
                                     {
-                                        self.reveal_stack(Some(
-                                            self.workspaces[other].monitor_id,
-                                        ));
+                                        self.reveal_stack(Some(self.workspaces[other].monitor_id));
                                     }
                                 }
                                 self.switch_debounce_until =
                                     Some(Instant::now() + Duration::from_millis(150));
+                                self.flash_workspace_pills();
+                            } else if target == current_idx {
+                                self.flash_workspace_pills();
                             }
                         } else {
                             log::debug!(

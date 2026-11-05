@@ -343,6 +343,28 @@ pub enum BarMessage {
     /// immediately instead of waiting out its disconnect grace.
     Exit,
     State(BarState),
+    Pill {
+        cards: Vec<PillCard>,
+        duration_ms: u64,
+    },
+    PillHide,
+    /// Remove ineligible displays without extending surviving pills.
+    PillRetain { display_ids: Vec<u32> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PillCard {
+    pub display_id: u32,
+    pub number: usize,
+    pub name: String,
+    pub focused: bool,
+    pub center: (f64, f64),
+}
+
+impl PillCard {
+    pub fn label(&self) -> String {
+        format!("{} · {}", self.number, self.name)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -17,12 +17,12 @@ Homebrew cask.
 Two constraints make that bundle hard to justify:
 
 1. **The project is certificate-less** (no Apple Developer Program). Under
-   ad-hoc signing, TCC's designated requirement degrades to a bare cdhash —
-   a hash of the binary contents. Every ad-hoc rebuild/update is a
-   brand-new program to TCC, and the bundle identifier never enters the DR
+   ad-hoc signing, TCC's designated requirement can degrade to a bare cdhash —
+   a hash of the binary contents. An ad-hoc rebuild/update may be treated as
+   a new program by TCC, and the bundle identifier never enters the DR
    for ad-hoc binaries. Measured consequence (already conceded in
-   `docs/distribution.md`): *every update of the ad-hoc bundle re-prompts
-   for Accessibility anyway*. The bundle's headline benefit — "a grant made
+   `docs/distribution.md`): ad-hoc updates may require a new Accessibility
+   grant. The bundle's headline benefit — "a grant made
    once survives every update" — is only available with a Developer ID
    certificate, which we have decided not to buy.
 2. **PengWM is a terminal-native tiling WM.** Its users install via
@@ -47,10 +47,10 @@ Distribute **bare, ad-hoc-signed binaries** and retire the `.app` bundle:
   outside the blessed install root (or a Homebrew Cellar pengwm path), so
   exactly one daemon copy ever fights for the IPC socket. `PENGWM_DEV=1`
   still opts dev checkouts in.
-- **Accepted cost, documented loudly:** with no signing certificate, every
-  release update — and every `brew upgrade` — costs each user **one
-  Accessibility re-grant**. This is parity, not regression: the ad-hoc
-  bundle re-prompts per update too. The installer prints the warning;
+- **Possible cost, documented clearly:** with no signing certificate, a
+  release update or `brew upgrade` may require an Accessibility re-grant.
+  The daemon checks permission at startup and prompts when access is missing.
+  The installer prints this possibility;
   README and this ADR record it.
 - **Homebrew:** the real Formula returns (`bin.install` both binaries);
   the cask and its tombstone formula are retired.

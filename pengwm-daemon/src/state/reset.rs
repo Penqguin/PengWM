@@ -58,7 +58,10 @@ impl StateManager {
         let now = Instant::now();
         if let Some(last) = self.last_wm_reset {
             if now.duration_since(last) < RESET_COOLDOWN {
-                log::debug!("wm_reset suppressed inside cooldown ({} since last)", now.duration_since(last).as_millis());
+                log::debug!(
+                    "wm_reset suppressed inside cooldown ({} since last)",
+                    now.duration_since(last).as_millis()
+                );
                 return None;
             }
         }
@@ -101,6 +104,7 @@ impl StateManager {
         self.gap_inner = assembled.gap_inner;
         super::set_popup_ratio(&mut self.workspaces, settings.windows.popup_ratio);
         self.main_ratio = pengwm_core::workspace::clamp_main_ratio(settings.main_ratio);
+        self.configure_pills(settings.pill_enabled, settings.pill_duration_ms);
         self.store = WindowStore::new();
         // Members re-route as births: the same handler the boot poll
         // feeds, run synchronously (house pattern — `apply_layout` also

@@ -55,6 +55,7 @@ impl StateManager {
         if sync.is_noop() {
             return;
         }
+        self.retain_workspace_pills();
         log::info!(
             "topology changed: shown {:?}, hidden {:?}, re-parked {:?}, re-laid {:?} — incremental heal",
             sync.shown,

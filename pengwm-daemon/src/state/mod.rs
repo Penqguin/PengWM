@@ -20,6 +20,7 @@ pub mod drag;
 pub mod layout_writer;
 pub mod lifecycle;
 pub mod monitors_wake;
+mod pill;
 pub mod placement;
 pub mod reconcile;
 pub mod reset;
@@ -108,6 +109,8 @@ pub struct StateManager {
     /// machinery); `Tile` disables every probe and parks nothing.
     cached_fullscreen_strategy: Option<crate::config::FullscreenStrategy>,
     focus_first_on_switch: bool,
+    pill_enabled: bool,
+    pill_duration_ms: u64,
     /// Last time `on_tick` swept `poll_windows_for_pid` for windows whose
     /// `WindowCreated` notification was missed (Firefox tear-offs / incognito:
     /// no AX notification, or a transient non-manageable subrole at creation).
@@ -308,6 +311,8 @@ impl StateManager {
             cached_hidden_strategy: Some(settings.windows.hidden_strategy),
             cached_fullscreen_strategy: Some(settings.windows.fullscreen),
             focus_first_on_switch: settings.focus_first_on_switch,
+            pill_enabled: settings.pill_enabled,
+            pill_duration_ms: settings.pill_duration_ms,
             // Force an immediate background sweep on the first tick: login-time
             // Firefox is often still transient (not manageable / not resizable)
             // during the bootstrap poll, and `ns_workspace::observe` registers
@@ -400,6 +405,7 @@ impl StateManager {
             *keybinds = updated_keybinds;
             log::info!("Config reloaded ({} bindings)", keybinds.bindings.len());
         }
+        self.configure_pills(updated_settings.pill_enabled, updated_settings.pill_duration_ms);
         self.gap_outer = updated_settings.gap_outer.max(0) as f64;
         self.gap_inner = updated_settings.gap_inner.max(0) as f64;
         self.main_ratio = pengwm_core::workspace::clamp_main_ratio(updated_settings.main_ratio);
@@ -490,10 +496,7 @@ impl StateManager {
                     .max_by_key(|d| d.origin.0 as i64 + d.size.0 as i64)
                     .map(|d| pengwm_core::layout::hidden_rect(d.origin, d.size))
                     .unwrap_or_else(|| {
-                        pengwm_core::layout::hidden_rect(
-                            ws.monitor_origin(),
-                            ws.monitor_size(),
-                        )
+                        pengwm_core::layout::hidden_rect(ws.monitor_origin(), ws.monitor_size())
                     });
                 pengwm_core::layout::HidePlacement::BottomEdge(park)
             }

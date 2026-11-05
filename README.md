@@ -8,7 +8,7 @@ required — uses only public Apple APIs (Accessibility & Core Graphics).
 ```bash
 # Install the latest release — bare binaries in ~/.pengwm/bin:
 #   ~/.pengwm/bin/{pengwm,pengwm-menubar} + a `pengwm` CLI symlink on PATH
-# Releases are ad-hoc signed: expect one Accessibility re-grant per update
+# macOS may require an Accessibility re-grant after an update
 # (docs/adr/0001-bare-binary-distribution.md).
 curl -fsSL https://pengwm.penqguin.com/install.sh | bash
 
@@ -35,9 +35,9 @@ curl -fsSL https://pengwm.penqguin.com/uninstall.sh | bash -s -- --yes
 ```
 
 > **Developers only:** `--from-source` builds from a checkout with cargo.
-> Source builds are ad-hoc signed — macOS treats every rebuild as a new
-> binary, so **every rebuild costs one Accessibility re-grant**, and so
-> does every prebuilt release update (there is no signing certificate;
+> Source builds are ad-hoc signed — macOS may require an Accessibility
+> re-grant after a rebuild or prebuilt release update (there is no signing
+> certificate;
 > see [docs/adr/0001-bare-binary-distribution.md](docs/adr/0001-bare-binary-distribution.md)).
 > Tip: run dev builds from your terminal — TCC attributes them to the
 > terminal app, which usually already has the grant.

@@ -7,16 +7,16 @@ auto-updater, no `.app` bundle, no Homebrew (ADR-0004).
 
 > **Why no bundle:** the project is certificate-less, and under ad-hoc
 > signing a bundle buys nothing — TCC's designated requirement for an
-> ad-hoc signature degrades to a per-build cdhash, so *every update
-> re-prompts for Accessibility regardless of layout*. ADR-0001
+> ad-hoc signature can degrade to a per-build cdhash, so an update may
+> require a new Accessibility grant. ADR-0001
 > (`docs/adr/0001-bare-binary-distribution.md`) records the full reasoning
-> and the accepted trade-off: **one Accessibility re-grant per update,
-> documented loudly**. A Developer ID certificate would remove that cost
+> and this possibility. A Developer ID certificate would provide a stable
+> signing identity and can preserve grants across updates
 > and re-enable notarization; the signing checklist below is ready if that
 > decision is ever revisited.
 
 Source builds (`--from-source`, developers only) are ad-hoc signed the same
-way: every rebuild costs one re-grant. Running a dev build from a terminal
+way: macOS may require a new grant after a rebuild. Running a dev build from a terminal
 does not re-prompt because TCC attributes terminal-launched binaries to the
 terminal app — don't use that to predict launchd behavior, where the daemon
 stands alone. Dev checkouts run outside the blessed install root and must
@@ -62,7 +62,7 @@ sidecar, `codesign --verify` each binary (hard fail), and soft-warns when
 | Secrets configured | `codesign` behavior | User experience |
 |---|---|---|
 | `APPLE_CERTIFICATE_P12` + `APPLE_DEVELOPER_IDENTITY` | Developer ID, `--options runtime --timestamp` | Stable identity, grant survives updates. |
-| none | ad-hoc (`codesign -s -`) | Installs and runs, but every update looks like a new binary → **one Accessibility re-grant per update** (accepted by ADR-0001). |
+| none | ad-hoc (`codesign -s -`) | Installs and runs; macOS may require a new Accessibility grant after an update. |
 
 No special entitlements are needed for AX/CGEventTap — those are TCC grants
 in System Settings, not entitlements. (The old `packaging/entitlements.plist`
@@ -101,9 +101,9 @@ removed (skipped under `PENGWM_DEV=1`), and reports a daemon running from a
 non-target path (typically started by hand or an IDE from a checkout).
 `PENGWM_DEV=1` suppresses checkout warnings for developer rebuilds.
 
-Support-burden note: migrating from the bundle layout costs **one
-Accessibility re-grant** (the TCC entry is bound per layout: bundle id vs
-binary path). Same grant count as a signing-identity change.
+Support-burden note: migrating from the bundle layout may require an
+Accessibility re-grant (the TCC entry is bound per layout: bundle id vs
+binary path), as can a signing-identity change.
 
 ## No Homebrew
 
@@ -118,7 +118,7 @@ stay runnable and updatable in place via `pengwm update`.
 
 `cargo build` users and bundle installs just re-run `./install.sh`. The
 `pengwm` CLI path (`$PREFIX/pengwm`) stays a symlink — it now points into
-`$PENGWM_HOME/bin` — and the signing mode is unchanged (ad-hoc), so **one
-Accessibility re-grant** is expected (System Settings → Accessibility → add
-`~/.pengwm/bin/pengwm`). After that, every update keeps costing exactly
-that one re-grant.
+`$PENGWM_HOME/bin` — and the signing mode is unchanged (ad-hoc). macOS may
+require an Accessibility re-grant for the migration or a future update
+(System Settings → Accessibility → add `~/.pengwm/bin/pengwm`); the daemon
+checks permission at startup and prompts if it is missing.

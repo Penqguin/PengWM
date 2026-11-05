@@ -106,13 +106,15 @@ Hidden/minimized windows are detected two ways: per-window `kAXWindowMiniaturize
 
 **ObserverAgeBound** — AX accumulates per-registration records for an observer's lifetime (no per-notification removal); each window-open registers up to four notifications and each poll up to two per listed window. Replacing the observer is the only reset, previously only on wake resync or app relaunch. The 1s reconcile now replaces any observer attached longer than `OBSERVER_MAX_AGE` (15 min) via `refresh_aged_observers(older_than)` — `attach` builds the replacement *before* tearing the old one down, so a failed rebuild (blackout AX) keeps the old observer running instead of trading a working observer for nothing. The per-observer `registered` set and AX's records are bounded by `OBSERVER_MAX_AGE` regardless of whether the machine ever sleeps.
 
-**InstalledLocation** — The one-copy policy (`pengwm-daemon/src/location.rs`): the daemon refuses to run (exit 0, so `KeepAlive` doesn't resurrect a loser) from outside the blessed install root — `$PENGWM_HOME/bin` (default `~/.pengwm/bin`; `PENGWM_HOME` is the layout seam, persisted into the LaunchAgent's `EnvironmentVariables` by `install.sh --home`) or a Homebrew `Cellar/pengwm/...` path (grandfathered — brew distribution was dropped 2026-10-13, ADR-0004, but existing Cellar copies still run and update in place). `PENGWM_DEV=1` opts dev checkouts back in. Protects the IPC sockets from two daemons stealing them from each other (windows tiled twice, historically). `pengwm update` enforces the same policy. Distribution is bare binaries (ADR-0001): ad-hoc signed, `.tar.gz` + `.sha256` per arch, curl-installer only; one Accessibility re-grant per update is the accepted, documented cost.
+**InstalledLocation** — The one-copy policy (`pengwm-daemon/src/location.rs`): the daemon refuses to run (exit 0, so `KeepAlive` doesn't resurrect a loser) from outside the blessed install root — `$PENGWM_HOME/bin` (default `~/.pengwm/bin`; `PENGWM_HOME` is the layout seam, persisted into the LaunchAgent's `EnvironmentVariables` by `install.sh --home`) or a Homebrew `Cellar/pengwm/...` path (grandfathered — brew distribution was dropped 2026-10-13, ADR-0004, but existing Cellar copies still run and update in place). `PENGWM_DEV=1` opts dev checkouts back in. Protects the IPC sockets from two daemons stealing them from each other (windows tiled twice, historically). `pengwm update` enforces the same policy. Distribution is bare binaries (ADR-0001): ad-hoc signed, `.tar.gz` + `.sha256` per arch, curl-installer only; macOS may require an Accessibility re-grant after an update.
 
 ## Architecture Boundaries
 
 **Pure/dirty split** — `pengwm-core` is pure Rust, no macOS deps, testable on any platform. `pengwm-daemon` holds all macOS FFI. The layout pipeline crosses this boundary: `Workspace.layout()` produces global-coordinate rects so `StateManager` can blindly pass them to `OsAdapter::set_window_rect` without monitor math. Drag-overlap hit-testing is the same shape: `layout::window_at_point(rects, x, y, exclude)` answers "which other window is under this point" so `StateManager` never does rect containment itself.
 
 ## Shared Daemon↔Menubar Contract
+
+**Workspace pill** — A transient, centered label identifying the workspace visible on each managed monitor after an explicit workspace request. The destination monitor's pill is highlighted.
 
 One definition, one consumer. The daemon spawns `pengwm-menubar` (NSStatusItem,
 excluded from tiling by pid) and pushes the UI state to it:
@@ -143,13 +145,12 @@ excluded from tiling by pid) and pushes the UI state to it:
   the CLI recovers within one poll instead of hitting `ECONNREFUSED`
   forever against an unlinked vnode (the old ghost-daemon state).
 - **`BarMessage`** — `State(BarState)` (workspace names/window counts/active
-  marker + split direction) and `Exit`. The push server (`bar_server.rs`)
-  caches the last `State` and replays it to a reconnecting menubar; `Exit`
-  tells the menubar to terminate immediately on a clean `pengwm quit`.
-- The custom status bar and transient workspace HUD have both been
-  removed. The menubar icon is the only PengWM UI surface; workspace
-  layout uses the display bounds supplied by macOS and has no custom
-  bar reservation.
+  marker + split direction), transient `Pill` / `PillHide` / `PillRetain`, and `Exit`.
+  The push server (`bar_server.rs`) caches and replays only the last `State`.
+  `Exit` tells the menubar to terminate on a clean `pengwm quit`.
+- The custom status bar remains removed. The menubar icon and transient
+  workspace pills are PengWM's UI surfaces; workspace layout uses display
+  bounds supplied by macOS and has no custom bar reservation.
 
 ## Command Vocabulary
 

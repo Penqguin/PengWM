@@ -435,3 +435,34 @@ fn bar_socket_receives_cached_state_on_connect() {
 
     let _ = std::fs::remove_file(TEST_BAR_SOCKET);
 }
+
+#[test]
+fn bar_reconnect_replays_state_without_transient_pills() {
+    use std::io::{BufRead, BufReader};
+    let path = format!("/tmp/pengwm-pill-replay-{}.sock", std::process::id());
+    let _ = std::fs::remove_file(&path);
+    let sender = pengwm_daemon::bar_server::spawn_bar_server_with_path(&path);
+    wait_for_socket(&path, Duration::from_secs(5));
+    sender.send(BarMessage::State(BarState { workspaces: vec![], active_workspace: 0, split_direction: None }));
+    let stream = connect_with_retry(&path, Duration::from_secs(2)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(matches!(serde_json::from_str::<BarMessage>(&line).unwrap(), BarMessage::State(_)));
+    sender.send(BarMessage::Pill { cards: vec![], duration_ms: 500 });
+    line.clear();
+    reader.read_line(&mut line).unwrap();
+    assert!(matches!(serde_json::from_str::<BarMessage>(&line).unwrap(), BarMessage::Pill { .. }));
+    drop(reader);
+    let stream = connect_with_retry(&path, Duration::from_secs(2)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let mut reader = BufReader::new(stream);
+    line.clear();
+    reader.read_line(&mut line).unwrap();
+    assert!(matches!(serde_json::from_str::<BarMessage>(&line).unwrap(), BarMessage::State(_)));
+    line.clear();
+    let error = reader.read_line(&mut line).expect_err("a reconnect must not replay the flash");
+    assert!(matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut));
+    let _ = std::fs::remove_file(&path);
+}

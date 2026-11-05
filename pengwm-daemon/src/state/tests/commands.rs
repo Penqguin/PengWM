@@ -6,6 +6,174 @@ use pengwm_core::workspace::LayoutPreset;
 use tokio::sync::mpsc;
 
 #[test]
+fn workspace_pills_identify_all_displays_and_latest_focus() {
+    let mut sm = setup(2);
+    let (tx, mut rx) = mpsc::channel(64);
+    sm.bar_sender = BarSender::from_channel(tx);
+
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    let messages: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    let cards = messages
+        .into_iter()
+        .find_map(|message| match message {
+            BarMessage::Pill { cards, duration_ms } => {
+                assert_eq!(duration_ms, 500);
+                Some(cards)
+            }
+            _ => None,
+        })
+        .expect("workspace request should flash");
+    assert_eq!(cards.len(), 2);
+    assert_eq!(cards.iter().filter(|card| card.focused).count(), 1);
+    assert_eq!(cards.iter().find(|card| card.focused).unwrap().number, 2);
+
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|message| matches!(message, BarMessage::Pill { .. })));
+}
+
+#[test]
+fn workspace_pills_cover_three_displays_and_an_empty_destination() {
+    let displays = (1..=3)
+        .map(|id| crate::adapter::DisplayInfo {
+            id,
+            origin: ((id as i32 - 1) * 1920, 0),
+            size: (1920, 1080),
+        })
+        .collect();
+    let (mut sm, _) = setup_with_display_layout(displays);
+    let (tx, mut rx) = mpsc::channel(64);
+    sm.bar_sender = BarSender::from_channel(tx);
+
+    sm.on_command(Command::Workspace { id: 3 }, None);
+    let cards = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|message| match message {
+            BarMessage::Pill { cards, .. } => Some(cards),
+            _ => None,
+        })
+        .expect("explicit empty workspace request should flash");
+    let mut ids: Vec<_> = cards.iter().map(|card| card.display_id).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2, 3]);
+    let focused: Vec<_> = cards.iter().filter(|card| card.focused).collect();
+    assert_eq!(focused.len(), 1);
+    assert_eq!(focused[0].number, 3);
+    assert_eq!(focused[0].display_id, 3);
+}
+
+#[test]
+fn workspace_pills_exclude_gated_displays_and_refused_requests() {
+    let (mut sm, handle) = setup_with_handle(2);
+    handle.set_first_desktop(2, false);
+    sm.refresh_space_gate_for_test();
+    let (tx, mut rx) = mpsc::channel(64);
+    sm.bar_sender = BarSender::from_channel(tx);
+
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    let cards = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|message| match message {
+            BarMessage::Pill { cards, .. } => Some(cards),
+            _ => None,
+        })
+        .expect("allowed display should flash");
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].display_id, 1);
+
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert!(!std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|message| matches!(message, BarMessage::Pill { .. })));
+}
+
+#[test]
+fn background_window_changes_do_not_flash_workspace_pills() {
+    let mut sm = setup(2);
+    let (tx, mut rx) = mpsc::channel(64);
+    sm.bar_sender = BarSender::from_channel(tx);
+    sm.on_window_created(100, 42);
+    sm.on_window_created(200, 42);
+    sm.on_command(Command::MoveWindowToWorkspace { id: 2 }, None);
+    sm.on_window_destroyed(100);
+    assert!(!std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|message| matches!(message, BarMessage::Pill { .. })));
+}
+
+#[test]
+fn pill_configuration_updates_duration_and_dismisses_when_disabled() {
+    let mut sm = setup(1);
+    let (tx, mut rx) = mpsc::channel(64);
+    sm.bar_sender = BarSender::from_channel(tx);
+
+    // The shared settings application path is used by reload and reset.
+    sm.configure_pills(true, 1200);
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    let messages: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(messages.into_iter().any(|message| {
+        matches!(message, BarMessage::Pill { duration_ms: 1200, .. })
+    }));
+
+    sm.configure_pills(false, 500);
+    assert!(matches!(rx.try_recv().unwrap(), BarMessage::PillHide));
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    assert!(!std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|message| matches!(message, BarMessage::Pill { .. })));
+
+    sm.configure_pills(true, 0);
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|message| {
+        matches!(message, BarMessage::Pill { duration_ms: 1, .. })
+    }));
+}
+
+#[test]
+fn space_exclusion_removes_only_the_affected_display_pill() {
+    let (mut sm, handle) = setup_with_handle(2);
+    let (tx, mut rx) = mpsc::channel(64);
+    sm.bar_sender = BarSender::from_channel(tx);
+    sm.on_command(Command::Workspace { id: 1 }, None);
+    while rx.try_recv().is_ok() {}
+
+    handle.set_first_desktop(2, false);
+    sm.refresh_space_gate_for_test();
+    let messages: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(messages.iter().any(|message| {
+        matches!(message, BarMessage::PillRetain { display_ids } if display_ids == &[1])
+    }));
+    assert!(!messages.iter().any(|message| {
+        matches!(message, BarMessage::Pill { .. } | BarMessage::PillHide)
+    }));
+
+    handle.set_first_desktop(2, true);
+    sm.refresh_space_gate_for_test();
+    assert!(!std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|message| matches!(message, BarMessage::Pill { .. })));
+}
+
+#[test]
+fn monitor_disconnect_preserves_other_pills_and_reconnect_does_not_flash() {
+    let (mut sm, handle) = setup_with_handle(2);
+    let (tx, mut rx) = mpsc::channel(64);
+    sm.bar_sender = BarSender::from_channel(tx);
+    handle.set_displays(vec![crate::adapter::DisplayInfo {
+        id: 1,
+        origin: (0, 0),
+        size: (1920, 1080),
+    }]);
+    sm.on_monitor_removed(2);
+    let messages: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(messages.iter().any(|message| {
+        matches!(message, BarMessage::PillRetain { display_ids } if display_ids == &[1])
+    }));
+    assert!(!messages.iter().any(|message| {
+        matches!(message, BarMessage::Pill { .. } | BarMessage::PillHide)
+    }));
+
+    handle.set_displays(make_adapter(2).displays);
+    sm.on_monitor_added(2);
+    assert!(!std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|message| matches!(message, BarMessage::Pill { .. })));
+}
+
+#[test]
 fn focus_command_delegates_to_workspace() {
     let mut sm = setup(1);
     sm.on_window_created(100, 42);

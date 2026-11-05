@@ -183,6 +183,10 @@ pub struct Settings {
     /// focused window is preserved (MRU).
     #[serde(default)]
     pub focus_first_on_switch: bool,
+    #[serde(default = "default_true")]
+    pub pill_enabled: bool,
+    #[serde(default = "default_pill_duration_ms")]
+    pub pill_duration_ms: u64,
     /// Share of the split the first window takes in the `main-horizontal` /
     /// `main-vertical` presets. Clamped to 0.2–0.8 at use.
     #[serde(default = "default_main_ratio")]
@@ -355,6 +359,10 @@ fn default_prefix_timeout_ms() -> u64 {
     1000
 }
 
+fn default_pill_duration_ms() -> u64 {
+    500
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -367,6 +375,8 @@ impl Default for Settings {
             workspaces: default_workspaces(),
             restore_last_session: true,
             focus_first_on_switch: false,
+            pill_enabled: true,
+            pill_duration_ms: default_pill_duration_ms(),
             main_ratio: default_main_ratio(),
             prefix: default_prefix(),
             prefix_timeout_ms: default_prefix_timeout_ms(),

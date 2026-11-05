@@ -85,6 +85,9 @@ impl StateManager {
             .collect();
         self.space_limbo = next;
 
+        if !entered.is_empty() {
+            self.retain_workspace_pills();
+        }
         for monitor in entered {
             log::info!(
                 "display {} entered a non-first native desktop — WM idle there until it returns",

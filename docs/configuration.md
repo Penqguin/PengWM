@@ -16,6 +16,8 @@ apply on save (or via `pengwm reload-config`).
 | `main_ratio`           | float  | `0.6`   | Share of the split the first window takes in the `main-horizontal` / `main-vertical` presets (clamped to 0.2–0.8) |
 | `prefix`               | string | `"alt-space"` | Chord that arms the tmux-style prefix window, e.g. `"ctrl-b"` |
 | `prefix_timeout_ms`    | int    | `1000`  | How long the prefix stays armed for follow-ups, in milliseconds |
+| `pill_enabled`         | bool   | `true`  | Show centered workspace pills after explicit workspace requests |
+| `pill_duration_ms`     | int    | `500`   | How long workspace pills remain visible, in milliseconds |
 
 ```toml
 gap_outer = 8
@@ -25,6 +27,8 @@ restricted_apps = ["com.whatever.floating-app"]
 main_ratio = 0.65
 prefix = "alt-space"
 prefix_timeout_ms = 1000
+pill_enabled = true
+pill_duration_ms = 500
 ```
 
 ## Workspaces
@@ -48,7 +52,7 @@ windows from unlisted apps go to the currently focused workspace.
 The list replaces the defaults entirely — define your own five (or three, or
 twelve). Workspaces are created at startup, so changing the list requires a
 daemon restart. Switching (`workspace-N`, global 1-based config order) to a
-workspace shown on another monitor **swaps** it onto the focused monitor.
+workspace shown on another monitor focuses that monitor.
 `focus-display` / `move-window-to-display` move focus and windows between
 monitors; moves always land, even on full workspaces.
 

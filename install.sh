@@ -9,9 +9,8 @@ set -euo pipefail
 # that runs the installed daemon. Re-running this script updates in place.
 #
 # ---------------------------------------------------------------------------
-# Signing note (ADR-0001): releases are AD-HOC SIGNED — macOS treats every
-# update as a brand-new binary, so **every update costs one Accessibility
-# re-grant** (a fresh re-prompt in System Settings). This is the standing
+# Signing note (ADR-0001): releases are AD-HOC SIGNED — macOS may require
+# an Accessibility re-grant after an update. This is the standing
 # trade-off of staying certificate-less; the same was true of the old
 # PengWM.app bundle. A Developer ID certificate would remove this cost —
 # see docs/distribution.md "Signing" for the ready-made checklist.
@@ -61,8 +60,8 @@ Options:
 The binaries install to \$PENGWM_HOME/bin (default ~/.pengwm/bin) and the
 daemon is configured to start at login via a launchd LaunchAgent
 ($AGENT_LABEL). Re-running this script updates the binaries in place.
-Releases are ad-hoc signed: expect one Accessibility re-grant after every
-update (see docs/adr/0001-bare-binary-distribution.md).
+Releases are ad-hoc signed: macOS may require an Accessibility re-grant
+after an update (see docs/adr/0001-bare-binary-distribution.md).
 EOF
 }
 
@@ -336,7 +335,7 @@ install_binaries() {
   done
   if spctl -a -t exec -vv "$source_dir/pengwm" 2>&1 | grep -q "rejected"; then
     echo "Warning: Gatekeeper does not trust this build (ad-hoc signed, not notarized)."
-    echo "It will still run, but expect one Accessibility re-grant after every update."
+    echo "It will still run; macOS may require an Accessibility re-grant after an update."
   fi
   retire_old_bundle
   check_copies
@@ -478,8 +477,7 @@ print_next_steps() {
   echo "  1. Grant Accessibility to PengWM:"
   echo "     System Settings -> Privacy & Security -> Accessibility"
   echo "     Add $BIN_DIR/pengwm"
-  echo "     (Releases are ad-hoc signed: every update costs one re-grant"
-  echo "      — see docs/adr/0001-bare-binary-distribution.md.)"
+  echo "     (macOS may require a new grant after an update; see docs/adr/0001-bare-binary-distribution.md.)"
   echo "  2. Logs: $AGENT_LOG"
   echo "  3. Control it: pengwm focus left"
 }
