@@ -103,6 +103,7 @@ impl StateManager {
         self.gap_outer = assembled.gap_outer;
         self.gap_inner = assembled.gap_inner;
         super::set_popup_ratio(&mut self.workspaces, settings.windows.popup_ratio);
+        super::set_magnify_ratio(&mut self.workspaces, settings.windows.magnify_ratio);
         self.main_ratio = pengwm_core::workspace::clamp_main_ratio(settings.main_ratio);
         self.configure_pills(settings.pill_enabled, settings.pill_duration_ms);
         self.store = WindowStore::new();

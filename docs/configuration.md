@@ -131,12 +131,14 @@ Visibility and lifecycle settings scoped under `[windows]`.
 | `hidden_strategy` | string | `"bottom_edge"` | Where inactive-workspace windows are parked: `"bottom_edge"` (1×1 at bottom-right, dark clamped strip visible in Mission Control as daemon-down escape hatch) or `"far_offscreen"` (legacy `-100k`, fully invisible) |
 | `fullscreen`      | string | `"park"`       | Native-fullscreen handling: `"park"` removes the window from the tree while fullscreened (siblings reflow; on unfullscreen it re-enters its remembered workspace, overflowing when full) or `"tile"` (legacy: the tree keeps the slot and writes are refused — the pin backoff absorbs the storm) |
 | `popup_ratio`     | float  | `0.75`         | Share of the usable area a popup overlay takes (clamped to 0.1–1.0). See [Popups](#popups).    |
+| `magnify_ratio`   | float  | `0.75`         | Share of the usable area used by `toggle-magnify` (clamped to 0.1–1.0).                         |
 
 ```toml
 [windows]
 hidden_strategy = "bottom_edge" # or "far_offscreen"
 fullscreen = "park"             # or "tile"
 popup_ratio = 0.75
+magnify_ratio = 0.75
 ```
 
 ### Native Spaces

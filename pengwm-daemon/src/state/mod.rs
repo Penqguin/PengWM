@@ -43,6 +43,12 @@ fn set_popup_ratio(workspaces: &mut [Workspace], ratio: f64) {
     }
 }
 
+fn set_magnify_ratio(workspaces: &mut [Workspace], ratio: f64) {
+    for ws in workspaces.iter_mut() {
+        ws.magnify_ratio = ratio;
+    }
+}
+
 pub struct StateManager {
     workspaces: Vec<Workspace>,
     displays: DisplaySet,
@@ -260,6 +266,7 @@ impl StateManager {
         let (gap_outer, gap_inner) = (assembled.gap_outer, assembled.gap_inner);
         let mut workspaces = workspaces;
         set_popup_ratio(&mut workspaces, settings.windows.popup_ratio);
+        set_magnify_ratio(&mut workspaces, settings.windows.magnify_ratio);
 
         if !use_session && !cfg!(test) {
             crate::state::bootstrap::maybe_autostart(&entries, use_session);
@@ -425,6 +432,7 @@ impl StateManager {
         self.float_apps = updated_settings.windows.float_apps.clone();
         self.float_level_overlays = updated_settings.windows.float_level_overlays;
         set_popup_ratio(&mut self.workspaces, updated_settings.windows.popup_ratio);
+        set_magnify_ratio(&mut self.workspaces, updated_settings.windows.magnify_ratio);
         self.focus_first_on_switch = updated_settings.focus_first_on_switch;
         self.displays
             .set_entries(if updated_settings.workspaces.is_empty() {

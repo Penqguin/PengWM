@@ -5,10 +5,6 @@ use crate::tree::WindowId;
 
 use super::{Workspace, POPUP_RATIO_MIN};
 
-/// Fixed overlay share for the magnified pin. Popups use the configurable
-/// `popup_ratio` instead.
-const MAGNIFY_RATIO: f64 = 0.75;
-
 impl Workspace {
     /// Compute global-coordinate rects for every window using the stored monitor
     /// geometry. Tiling is always computed underneath; when `magnified` is set
@@ -33,7 +29,10 @@ impl Workspace {
             if output.contains_key(&mag) {
                 output.insert(
                     mag,
-                    crate::layout::centered_overlay_rect(inset, MAGNIFY_RATIO),
+                    crate::layout::centered_overlay_rect(
+                        inset,
+                        self.magnify_ratio.clamp(POPUP_RATIO_MIN, 1.0),
+                    ),
                 );
             }
         }

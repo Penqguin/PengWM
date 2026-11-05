@@ -47,6 +47,10 @@ pub struct WindowsConfig {
     /// apps — render centered at this ratio; magnify keeps its own 0.75.
     #[serde(default = "default_popup_ratio")]
     pub popup_ratio: f64,
+    /// Share of the usable area the magnified window takes (0.1–1.0,
+    /// clamped at use).
+    #[serde(default = "default_magnify_ratio")]
+    pub magnify_ratio: f64,
     /// Bundles whose every window is untracked — never tiled, never parked,
     /// on top across workspace switches until the user closes them
     /// (ADR-0002). Matched like `restricted_apps` (bundle id or app name,
@@ -144,6 +148,7 @@ impl Default for WindowsConfig {
             hidden_strategy: HiddenStrategy::default(),
             fullscreen: FullscreenStrategy::default(),
             popup_ratio: default_popup_ratio(),
+            magnify_ratio: default_magnify_ratio(),
             float_apps: default_float_apps(),
             float_level_overlays: true,
         }
@@ -152,6 +157,10 @@ impl Default for WindowsConfig {
 
 fn default_popup_ratio() -> f64 {
     pengwm_core::workspace::POPUP_RATIO_DEFAULT
+}
+
+fn default_magnify_ratio() -> f64 {
+    pengwm_core::workspace::MAGNIFY_RATIO_DEFAULT
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
