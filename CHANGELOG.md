@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.18 — Membership and focus internals (2026-11-12)
+
+- **Refactored: membership transitions.** Admission, transfers, parking,
+  return, and removal share one implementation while preserving workspace
+  ownership, overflow intent, placement ordering, and Native-Space gating.
+- **Refactored: focus timing and acceptance.** One private module owns quiet
+  work, switch protection, and settled focus memory. Each decision uses one
+  timestamp throughout; existing focus delays and fallback rules remain.
+- **Testing:** deterministic focus deadline and lifecycle regressions, plus
+  native fixture checks for focus correction, hidden-workspace rejection,
+  empty-output selection, transfers, minimize/return, and restart recovery.
+
 ## v0.6.17 — Workspace placement and recovery (2026-11-12)
 
 - **New: local overflow overlays.** Windows opened on a full workspace wait
