@@ -1,22 +1,13 @@
-//! The focus-truth rule (Spec 0001 amendment): WM focus memory follows
+//! Focus settling (docs/specs/0005-focus-timing.md): WM focus memory follows
 //! the actually-focused window — click or keybind — via a settle re-read,
 //! never last-arrival; with no OS focus it falls back to the last focused
 //! window (visible member), otherwise the workspace seat stands. The
 //! observed poisoning case: `126 → 30556 → 61` click-bounce with the
 //! stale event arriving last.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::common::setup_with_handle;
-
-fn drain_settle(sm: &mut super::super::StateManager) {
-    // The settle window is a compile-time 250ms; sleep past it and let
-    // the tick run (few tests call this — the suite stays fast).
-    std::thread::sleep(Duration::from_millis(FOCUS_SETTLE_SLEEP));
-    sm.on_tick();
-}
-
-const FOCUS_SETTLE_SLEEP: u64 = 300;
 
 /// The poisoning case: three focused events inside the storm (the last
 /// is the stale one), frontmost app's actual focus = 126. After settle,
@@ -32,11 +23,11 @@ fn click_bounce_commits_os_truth_not_last_arrival() {
 
     // The click storm: real (200), drift (100), stale (100 again) —
     // every one of them dispatch-marked.
-    sm.on_window_focused_event(200);
-    sm.on_window_focused_event(100);
-    sm.on_window_focused_event(100);
-
-    drain_settle(&mut sm);
+    let now = Instant::now();
+    sm.on_window_focused_event_at(200, now);
+    sm.on_window_focused_event_at(100, now + Duration::from_millis(10));
+    sm.on_window_focused_event_at(100, now + Duration::from_millis(20));
+    sm.commit_settled_focus(now + Duration::from_millis(270));
 
     assert_eq!(
         sm.workspaces[0].focused_window_id(),
@@ -58,14 +49,15 @@ fn no_os_focus_falls_back_to_last_focused_window() {
     // the settle commits it and owns the last-focused memory).
     handle.set_frontmost(Some(42));
     handle.set_focused_window(42, Some(200));
-    sm.on_window_focused_event(200);
-    drain_settle(&mut sm);
+    let now = Instant::now();
+    sm.on_window_focused_event_at(200, now);
+    sm.commit_settled_focus(now + Duration::from_millis(250));
 
     // Now everything falls out of focus: no frontmost app, no window.
     handle.set_frontmost(None);
     // A stale focus event still arrives (the pre-settle 100 noise):
-    sm.on_window_focused_event(100);
-    drain_settle(&mut sm);
+    sm.on_window_focused_event_at(100, now + Duration::from_millis(300));
+    sm.commit_settled_focus(now + Duration::from_millis(550));
 
     assert_eq!(
         sm.workspaces[0].focused_window_id(),
@@ -83,8 +75,9 @@ fn hidden_last_focus_leaves_the_workspace_seat() {
     sm.on_window_created(200, 42);
     handle.set_frontmost(Some(42));
     handle.set_focused_window(42, Some(200));
-    sm.on_window_focused_event(200);
-    drain_settle(&mut sm);
+    let now = Instant::now();
+    sm.on_window_focused_event_at(200, now);
+    sm.commit_settled_focus(now + Duration::from_millis(250));
 
     // 200 moves to a hidden workspace (explicit command): its fallback
     // path must NOT drag it back into view after the settle.
@@ -93,8 +86,8 @@ fn hidden_last_focus_leaves_the_workspace_seat() {
         None,
     );
     handle.set_frontmost(None);
-    sm.on_window_focused_event(100);
-    drain_settle(&mut sm);
+    sm.on_window_focused_event_at(100, now + Duration::from_millis(300));
+    sm.commit_settled_focus(now + Duration::from_millis(550));
 
     // The i3 invariant: a hidden workspace's window never receives
     // focus — and nothing switched workspaces behind the user's back
@@ -116,23 +109,22 @@ fn unsettled_dirty_window_does_not_commit_early() {
     sm.on_window_created(200, 42);
     handle.set_frontmost(Some(42));
     handle.set_focused_window(42, Some(200));
-    sm.on_window_focused_event(200);
-    drain_settle(&mut sm);
+    let now = Instant::now();
+    sm.on_window_focused_event_at(200, now);
+    sm.commit_settled_focus(now + Duration::from_millis(250));
 
     // A fresh storm arrival: immediate path commits it (low-latency),
-    // and with zero settle elapsed the tick must NOT realize the drain
-    // and overwrite it — proving the quiet-gate is real.
-    sm.on_window_focused_event(100);
-    sm.on_tick();
+    // and 249ms later the drain must still leave it alone.
+    sm.on_window_focused_event_at(100, now + Duration::from_millis(300));
+    sm.commit_settled_focus(now + Duration::from_millis(549));
     assert_eq!(
         sm.workspaces[0].focused_window_id(),
         Some(100),
         "no settle yet → the drain stays out of the way"
     );
 
-    // After quiet, the drain re-commits truth (200) over the stale 100.
-    std::thread::sleep(Duration::from_millis(FOCUS_SETTLE_SLEEP));
-    sm.on_tick();
+    // At exactly 250ms of quiet, OS truth replaces the stale observation.
+    sm.commit_settled_focus(now + Duration::from_millis(550));
     assert_eq!(
         sm.workspaces[0].focused_window_id(),
         Some(200),

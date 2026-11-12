@@ -1,7 +1,5 @@
-use pengwm_core::workspace::{PendingKind, PendingWindow};
-
 use super::session::LivePlacement;
-use super::store::{ParkedEntry, RoutingVerdict};
+use super::store::RoutingVerdict;
 use super::StateManager;
 
 impl StateManager {
@@ -79,38 +77,7 @@ impl StateManager {
             self.store.note_routed(id, RoutingVerdict::Tiled);
             self.store.note_identity(id, Some(record.identity.clone()));
             self.store.restore_order(id, record.order);
-            let window = PendingWindow {
-                window_id: id,
-                kind: record.pending.unwrap_or(PendingKind::Returning),
-                order: record.order,
-            };
-            let hidden = self
-                .os
-                .windows_are_hidden(&[id])
-                .get(&id)
-                .copied()
-                .unwrap_or(false);
-            let fullscreen = self.os.window_is_fullscreen(id) && self.fullscreen_parking_enabled();
-            if hidden || fullscreen {
-                self.store.restore_park(
-                    id,
-                    ParkedEntry {
-                        idx,
-                        popup: false,
-                        pending: record.pending.map(|_| window),
-                        reason: if hidden {
-                            super::store::ParkReason::Hide
-                        } else {
-                            super::store::ParkReason::Fullscreen
-                        },
-                    },
-                );
-            } else {
-                self.workspaces[idx].add_pending(window);
-                if record.pending.is_none() {
-                    self.fill_workspace_slots(idx);
-                }
-            }
+            self.restore_verified_member(record, idx);
         }
         for idx in 0..self.workspaces.len() {
             self.fill_workspace_slots(idx);

@@ -160,13 +160,6 @@ impl StateManager {
         self.wake_resync.is_some()
     }
 
-    /// True when the focus-settle drain is armed (dirty, not consumed) —
-    /// proof that a gated settle did not swallow the quiet window.
-    #[cfg(test)]
-    pub(super) fn focus_settle_dirty(&self) -> bool {
-        self.focus_dirty_since.is_some()
-    }
-
     /// The one funnel every judgment sweep asks: "may I judge?" While a
     /// wake resync is pending the answer is no — logged here with the
     /// sweep's own name so each site keeps its voice but not its own

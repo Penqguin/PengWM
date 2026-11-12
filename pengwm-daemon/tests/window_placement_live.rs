@@ -66,6 +66,7 @@ menu.addItem(view)
 app.finishLaunching()
 app.mainMenu = menu
 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+    app.activate(ignoringOtherApps: true)
     print(ProcessInfo.processInfo.processIdentifier)
     fflush(stdout)
 }
@@ -106,6 +107,103 @@ fn query(state: &mut StateManager) -> Vec<WorkspaceInfo> {
     match rx.try_recv().unwrap() {
         DaemonResponse::State { workspaces } => workspaces,
         response => panic!("expected workspace state, got {response:?}"),
+    }
+}
+
+fn assert_native_focus(adapter: &MacOsAdapter, pid: i32, id: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let frontmost = adapter.frontmost_pid();
+        let focused = adapter.focused_window_for_pid(pid);
+        if frontmost == Some(pid) && focused == Some(id) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native focus did not settle: frontmost={frontmost:?}, focused={focused:?}, expected={id}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn read_bar_state(path: &std::path::Path) -> pengwm_core::command::BarState {
+    let stream = std::os::unix::net::UnixStream::connect(path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut latest = None;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if let pengwm_core::command::BarMessage::State(state) =
+                    serde_json::from_str(&line).unwrap()
+                {
+                    latest = Some(state);
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(error) => panic!("read native fixture bar state: {error}"),
+        }
+    }
+    latest.expect("fixture bar must publish its focused workspace")
+}
+
+/// Drive only a dedicated fixture window, then wait for native confirmation.
+fn set_fixture_flag(
+    element: &pengwm_daemon::macos::cf_ref::CFRef<accessibility_sys::AXUIElementRef>,
+    attribute: &'static str,
+    enabled: bool,
+) {
+    use core_foundation::base::{CFEqual, CFRelease, CFTypeRef, TCFType};
+    use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
+    use core_foundation::string::CFString;
+
+    let name = CFString::new(attribute);
+    let result = unsafe {
+        accessibility_sys::AXUIElementSetAttributeValue(
+            element.ptr(),
+            name.as_concrete_TypeRef(),
+            if enabled {
+                kCFBooleanTrue
+            } else {
+                kCFBooleanFalse
+            } as CFTypeRef,
+        )
+    };
+    assert_eq!(
+        result,
+        accessibility_sys::kAXErrorSuccess,
+        "set {attribute}"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut value: CFTypeRef = std::ptr::null();
+        let result = unsafe {
+            accessibility_sys::AXUIElementCopyAttributeValue(
+                element.ptr(),
+                name.as_concrete_TypeRef(),
+                &mut value,
+            )
+        };
+        if result == accessibility_sys::kAXErrorSuccess && !value.is_null() {
+            let actual = unsafe { CFEqual(value, kCFBooleanTrue as CFTypeRef) != 0 };
+            unsafe { CFRelease(value) };
+            if actual == enabled {
+                return;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "wait for {attribute}");
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -318,6 +416,42 @@ name = "Fixture C"
         std::fs::remove_dir_all(root).unwrap();
         return;
     }
+    let physical_displays = pengwm_daemon::macos::cg_display::active_displays();
+    if physical_displays.len() > 1 {
+        use pengwm_core::tree::Direction;
+        let focus_adapter = MacOsAdapter::with_callback(Box::new(|_| {}));
+        let _ = focus_adapter.poll_windows_for_pid(pid);
+        focus_adapter.focus_window(ids[0]);
+        assert_native_focus(&focus_adapter, pid, ids[0]);
+        state.on_window_focused(ids[0]);
+        let mut selected_empty = false;
+        for direction in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            state.on_command(Command::FocusDisplay { direction }, None);
+            let bar = read_bar_state(&root.join("bar.sock"));
+            let active = bar.active_workspace;
+            if active != 0 && query(&mut state)[active].window_count == 0 {
+                assert_native_focus(&focus_adapter, pid, ids[0]);
+                selected_empty = true;
+                break;
+            }
+        }
+        assert!(
+            selected_empty,
+            "physical empty-output selection must publish its focused seat"
+        );
+        state.on_command(Command::Workspace { id: 1 }, None);
+        assert_native_focus(&focus_adapter, pid, ids[0]);
+        focus_adapter.focus_window(ids[2]);
+        assert_native_focus(&focus_adapter, pid, ids[2]);
+        state.on_window_focused(ids[2]);
+    } else {
+        eprintln!("NATIVE_FOCUS_GAP: one physical display; empty-output focus selection requires another output");
+    }
     state.on_command(Command::CycleWindow { backward: false }, None);
     assert_eq!(query(&mut state)[0].focused_window, Some(ids[0]));
     state.on_command(Command::Workspace { id: 2 }, None);
@@ -391,6 +525,104 @@ name = "Fixture C"
         [1, 1, 1],
         "verified homes must survive a real adapter restart"
     );
+    // Exercise the extracted lifecycle against native windows as well as the
+    // TestAdapter: explicit transfer into a full home and minimize/return.
+    state.on_window_focused(ids[0]);
+    state.on_command(Command::MoveWindowToWorkspace { id: 2 }, None);
+    assert_eq!(
+        query(&mut state)
+            .iter()
+            .map(|ws| ws.window_count)
+            .collect::<Vec<_>>(),
+        [0, 2, 1]
+    );
+    state.on_command(Command::Workspace { id: 2 }, None);
+    let pending_rect = read_rect(ids[0]);
+    let settled_rect = read_rect(ids[1]);
+    assert!(
+        pending_rect.width * 1.2 < settled_rect.width,
+        "explicit move into a full workspace must render as an overlay"
+    );
+    // Actuate real AX focus, then inject a stale notification for the other
+    // visible member. This checks native readback correction, not observer
+    // scheduling or an actual click.
+    let focus_adapter = MacOsAdapter::with_callback(Box::new(|_| {}));
+    let _ = focus_adapter.poll_windows_for_pid(pid);
+    std::thread::sleep(Duration::from_millis(200));
+    focus_adapter.focus_window(ids[0]);
+    assert_native_focus(&focus_adapter, pid, ids[0]);
+    state.on_window_focused_event(ids[1]);
+    assert_eq!(query(&mut state)[1].focused_window, Some(ids[1]));
+    assert_native_focus(&focus_adapter, pid, ids[0]);
+    std::thread::sleep(Duration::from_millis(275));
+    state.on_tick();
+    assert_eq!(
+        query(&mut state)[1].focused_window,
+        Some(ids[0]),
+        "quiet drain must correct the stale event from native focus"
+    );
+    assert_native_focus(&focus_adapter, pid, ids[0]);
+    state.on_window_focused(ids[0]);
+    state.on_command(Command::MoveWindowToWorkspace { id: 1 }, None);
+    state.on_command(Command::Workspace { id: 1 }, None);
+    assert_eq!(query(&mut state)[0].window_count, 1);
+    assert_native_focus(&focus_adapter, pid, ids[0]);
+    state.save_session(&session_path).unwrap();
+    let seats_before = pengwm_daemon::state::session::load_from(&session_path)
+        .unwrap()
+        .active;
+    if !seats_before.values().any(|idx| *idx == 1) {
+        let focused_before = query(&mut state)[1].focused_window;
+        std::thread::sleep(Duration::from_millis(200));
+        state.on_window_focused_event(ids[1]);
+        assert_eq!(
+            read_bar_state(&root.join("bar-restart.sock")).active_workspace,
+            0,
+            "hidden notification must not steal the focused output seat"
+        );
+        std::thread::sleep(Duration::from_millis(275));
+        state.on_tick();
+        assert_eq!(
+            read_bar_state(&root.join("bar-restart.sock")).active_workspace,
+            0
+        );
+        state.save_session(&session_path).unwrap();
+        assert_eq!(
+            pengwm_daemon::state::session::load_from(&session_path)
+                .unwrap()
+                .active,
+            seats_before,
+            "hidden-workspace focus must not replace visible seats"
+        );
+        assert_eq!(query(&mut state)[1].focused_window, focused_before);
+        assert_native_focus(&focus_adapter, pid, ids[0]);
+    } else {
+        eprintln!("NATIVE_FOCUS_GAP: workspace 2 remains visible on another physical output; hidden-workspace rejection was not exercised");
+    }
+
+    // Hold the answering element across native transitions: AX listings can
+    // omit a live minimized/fullscreen window while its element still answers.
+    let native_windows = unsafe { ax_element::windows_for_pid(pid) }.expect("fixture listing");
+    let (native_window, _) = native_windows.iter().find(|(_, id)| *id == ids[0]).unwrap();
+    set_fixture_flag(native_window, "AXMinimized", true);
+    state.on_window_hidden(ids[0]);
+    assert_eq!(query(&mut state)[0].window_count, 0);
+    set_fixture_flag(native_window, "AXMinimized", false);
+    state.on_window_shown(ids[0]);
+    assert_eq!(query(&mut state)[0].window_count, 1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let actual = read_rect(ids[0]);
+        if pengwm_core::layout::rects_close(actual, tile, 3.0) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "minimize return did not restore native placement: {actual:?}, target={tile:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
     // Replay the late geometry drift observed after the physical hotplug.
     // Periodic production recovery must repair the OS readback, not just homes.
     let fault_adapter = MacOsAdapter::with_callback(Box::new(|_| {}));

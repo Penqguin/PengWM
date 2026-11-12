@@ -17,11 +17,12 @@ pub mod bootstrap;
 pub mod commands;
 pub mod display;
 pub mod drag;
+mod focus;
 pub mod layout_writer;
 pub mod lifecycle;
 mod live_restore;
+mod membership;
 pub mod monitors_wake;
-mod overflow;
 mod pill;
 pub mod placement;
 pub mod reconcile;
@@ -108,10 +109,6 @@ pub struct StateManager {
     /// Set when `Command::Quit` is handled; the event loop polls this and
     /// returns so the daemon process can exit.
     shutdown_requested: bool,
-    /// Deadline until which `on_window_focused` will not mutate `DisplaySet::active`.
-    /// Set on explicit workspace switches to prevent focus-notification feedback loops
-    /// that drag windows along to the new workspace.
-    switch_debounce_until: Option<Instant>,
     cached_hidden_strategy: Option<crate::config::HiddenStrategy>,
     /// `[windows] fullscreen` strategy, cached from the last config load.
     /// `Park` untitles native-fullscreen windows (the probe + parking
@@ -163,18 +160,8 @@ pub struct StateManager {
     /// cooldown guard so a replug's event burst cannot reset-storm.
     #[allow(dead_code)]
     last_wm_reset: Option<Instant>,
-    /// When the last WindowFocused event arrived: click/bounce storms (the
-    /// observed 126→30556→61 triple in under a second, stale event last)
-    /// must not write focus memory event-by-event — the tick commits the
-    /// OS's *settled* truth after the quiet window, so WM focus follows
-    /// the actually-focused window (click or keybind), never last
-    /// arrival.
-    focus_dirty_since: Option<Instant>,
-    /// The last window focus actually committed as truth. The
-    /// no-window-in-focus fallback scry (Spec 0001's focus ladder): no
-    /// OS focus → last focused *window* → the current workspace seat
-    /// (already the memory) stands.
-    last_focused_window: Option<WindowId>,
+    /// Quiet work, switch protection, and settled observation memory.
+    focus: focus::FocusState,
 }
 
 /// A wake resync waiting for the AX subsystem to come back.
@@ -210,11 +197,6 @@ enum AppLabel {
 /// absorb an AX hiccup spanning many publishes, short enough that a
 /// late-naming app is relabeled within a bar refresh or two.
 const LABEL_NEG_TTL: Duration = Duration::from_secs(30);
-
-/// The quiet window after which a focus storm (click bounces, stale
-/// last-arrival events) is considered settled and the OS's actually-
-/// focused window is re-read as truth. See `state::lifecycle`.
-const FOCUS_SETTLE_MS: u64 = 250;
 
 /// A per-manager harness session path: unique within the process so
 /// parallel test threads never race on one file. Not `#[cfg(test)]`:
@@ -332,7 +314,6 @@ impl StateManager {
             space_snapshot_at: None,
             space_detector_warned: false,
             shutdown_requested: false,
-            switch_debounce_until: None,
             cached_hidden_strategy: Some(settings.windows.hidden_strategy),
             cached_fullscreen_strategy: Some(settings.windows.fullscreen),
             focus_first_on_switch: settings.focus_first_on_switch,
@@ -360,8 +341,7 @@ impl StateManager {
             },
             wake_committed_at: None,
             last_wm_reset: None,
-            focus_dirty_since: None,
-            last_focused_window: None,
+            focus: focus::FocusState::default(),
         };
 
         // Arm the native-space gate before the first hide/layout: starting
@@ -577,24 +557,6 @@ impl StateManager {
         self.layout_cache.seed_hidden(placement.rect(), [window_id]);
     }
 
-    /// THE placement tail of every admit — the one place the invariant
-    /// "a member of a hidden workspace is offscreen" is executed. A
-    /// tracked window entering its workspace (routing birth, switch-back
-    /// reveal, park reveal, move-in, a `reveal_all` rescue) tiles when
-    /// its workspace is visible and takes the workspace's hide
-    /// placement when it is not — exactly what `hide_workspace` does to
-    /// the members it hides wholesale. One interface, one ask: the
-    /// funnels stop re-deriving the rule (and the funnel that forgot —
-    /// the reveal funnel — stopped floating restored windows over the
-    /// active screen until the next switch).
-    pub(super) fn place_admitted(&mut self, window_id: WindowId, workspace_idx: usize) {
-        if self.displays.is_visible(workspace_idx, &self.workspaces) {
-            self.apply_layout(workspace_idx);
-        } else {
-            self.hide_window_in_workspace(window_id, workspace_idx);
-        }
-    }
-
     fn windows_hidden_strategy(&self) -> crate::config::HiddenStrategy {
         self.windows_config_hidden_strategy()
     }
@@ -615,62 +577,10 @@ impl StateManager {
     }
 
     /// Re-tile every window currently tracked as hidden back into its
-    /// remembered (or routed) workspace. The store owns the drain; routing
-    /// needs displays + os, so the loop stays here. A retile publishes bar
-    /// state, mirroring `on_window_shown`.
+    /// remembered (or routed) workspace, then restore stacking and publish.
+    /// Membership and placement execute through the transition module.
     fn reveal_all(&mut self) {
-        let revealed = self.store.reveal_all();
-        if revealed.is_empty() {
-            return;
-        }
-        let mut retiled = false;
-        for (wid, entry) in revealed {
-            // Skip if already re-tiled via earlier iteration.
-            if self.find_workspace_of_any(wid).is_some() {
-                continue;
-            }
-            // Popups re-attach to their remembered workspace: no routing,
-            // no capacity. The admit tail places them — hidden target
-            // takes the hide placement like every other member.
-            if entry.popup {
-                if entry.idx < self.workspaces.len() && self.workspaces[entry.idx].add_popup(wid) {
-                    self.place_admitted(wid, entry.idx);
-                    retiled = true;
-                }
-                continue;
-            }
-            let pid = match self.store.pid_for(wid) {
-                Some(p) => p,
-                None => continue,
-            };
-            let preferred = if entry.idx < self.workspaces.len() {
-                entry.idx
-            } else {
-                let identity = self.app_identity(pid);
-                self.where_should(wid, pid)
-                    .or_else(|| self.routed_workspace_for(&identity))
-                    .unwrap_or_else(|| self.active_workspace_idx())
-            };
-            self.admit_window(
-                wid,
-                preferred,
-                entry
-                    .pending
-                    .map(|p| p.kind)
-                    .unwrap_or(pengwm_core::workspace::PendingKind::Returning),
-            );
-            retiled = true;
-        }
-        // Re-layout visible workspaces to ensure tiling clean.
-        let visible: Vec<usize> = self.displays.active().values().copied().collect();
-        for idx in visible {
-            if idx < self.workspaces.len() {
-                self.apply_layout(idx);
-            }
-        }
-        if retiled {
-            // Reveals re-stacked the monitor(s); the same stacking
-            // restoration as a switch — popups included, not just overlays.
+        if self.return_all_members() {
             self.reveal_stack(None);
             self.publish_bar_state();
         }

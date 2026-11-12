@@ -1,20 +1,20 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::adapter::WindowClass;
 use crate::adapter::WindowListing;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
-use pengwm_core::workspace::{position_of_member, PendingKind};
+use pengwm_core::workspace::PendingKind;
 
-use super::store::{ParkReason, RoutingVerdict};
-use super::{AppIdentity, StateManager, FOCUS_SETTLE_MS};
+use super::store::RoutingVerdict;
+use super::{AppIdentity, StateManager};
 use crate::event_loop::DaemonEvent;
 
 /// Owns the window/app lifecycle: creation, destruction, hide/show, focus,
-/// moves, and app launch/termination/activation. `StateManager` retains the
-/// workspace tree, `DisplaySet`, layout application and `BarSender` — this
-/// module only orchestrates them. Shared helpers are `pub(super)` so
-/// `reconcile.rs` keeps calling the same interface.
+/// moves, and app launch/termination/activation. Routing and event-specific
+/// publication stay here; membership transitions execute in `membership`,
+/// focus acceptance and temporal decisions in `focus`.
+/// Shared helpers are `pub(super)` so reconciliation uses the same funnels.
 impl StateManager {
     pub fn on_window_created(&mut self, window_id: WindowId, pid: i32) {
         let identity = self.app_identity(pid);
@@ -194,11 +194,7 @@ impl StateManager {
             .workspace_for_containing_monitor(rect)
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| self.active_workspace_idx());
-        if self.workspaces[target].add_popup(window_id)
-            && self.displays.is_visible(target, &self.workspaces)
-        {
-            self.apply_layout(target);
-        }
+        self.admit_discovered_popup(window_id, target);
     }
 
     /// Flat index of the workspace active on the monitor whose bounds
@@ -289,39 +285,7 @@ impl StateManager {
     }
 
     fn destroy_window_common(&mut self, window_id: WindowId, confirmed_destroy: bool) {
-        self.session_dirty = true;
-        for i in 0..self.workspaces.len() {
-            if self.workspaces[i].find_window(window_id).is_some()
-                || self.workspaces[i].pending_window(window_id).is_some()
-            {
-                let is_visible = self.displays.is_visible(i, &self.workspaces);
-                let ws = &mut self.workspaces[i];
-                ws.remove_window(window_id);
-                if is_visible {
-                    self.apply_layout(i);
-                }
-                break;
-            }
-            if self.workspaces[i].is_popup(window_id) {
-                let is_visible = self.displays.is_visible(i, &self.workspaces);
-                self.workspaces[i].remove_popup(window_id);
-                if is_visible {
-                    self.apply_layout(i);
-                }
-                break;
-            }
-        }
-        if let Some(pid) = self.store.unregister(window_id) {
-            self.note_placement_closed(window_id, confirmed_destroy);
-            self.prune_stale_placements(pid);
-        }
-        self.layout_cache.forget(window_id);
-        self.deferred_hides.remove(&window_id);
-        // One funnel for OS-side eviction: destroyed notification, missed
-        // notification sweep, gone-grace, and app termination all reach
-        // here, so the cached element and its registrations never outlive
-        // the window on any path.
-        self.os.forget_window(window_id);
+        self.remove_member(window_id, confirmed_destroy);
         #[cfg(test)]
         self.assert_identity_invariant();
         self.publish_bar_state();
@@ -331,116 +295,22 @@ impl StateManager {
     /// (tree member or popup) so it stops being laid out, but keep pid
     /// tracking so it can be retiled when it becomes visible again.
     pub fn on_window_hidden(&mut self, window_id: WindowId) {
-        self.session_dirty = true;
-        if self.store.is_fullscreen_parked(window_id) {
-            // A hide landed while the window sat fullscreen-parked: upgrade
-            // the parking reason and keep the remembered idx. The fullscreen
-            // exit probe will now left it alone — the hidden flow owns the
-            // window from here, exactly as if it had never fullscreened.
-            log::debug!(
-                "WindowHidden: fullscreen-parked window {} upgrades to hidden park",
-                window_id
-            );
-            self.store.upgrade_park_to_hide(window_id);
-            return;
+        if self.park_hidden_member(window_id) {
+            #[cfg(test)]
+            self.assert_identity_invariant();
+            self.publish_bar_state();
         }
-        let Some(idx) = self.find_workspace_of_any(window_id) else {
-            log::debug!("WindowHidden: window {} not tracked, ignoring", window_id);
-            return;
-        };
-        debug_assert!(idx < self.workspaces.len());
-        // Identity is captured while the window is demonstrably alive and
-        // readable: a parked window's seatbelt record is what the session
-        // projection reads, and a later misjudgment rediscovery asks it.
-        self.note_where(window_id);
-        if self.workspaces[idx].is_popup(window_id) {
-            self.store.park_popup(window_id, idx);
-            self.workspaces[idx].remove_popup(window_id);
-        } else {
-            self.store
-                .park(window_id, &self.workspaces, ParkReason::Hide);
-            self.workspaces[idx].remove_window(window_id);
-        }
-        if self.displays.is_visible(idx, &self.workspaces) {
-            self.apply_layout(idx);
-        }
-        #[cfg(test)]
-        self.assert_identity_invariant();
-        self.publish_bar_state();
     }
 
     /// A window was deminiaturized or its app unhidden: re-attach it where
     /// it came from — a popup back into its workspace's popup set, a tree
     /// window back into the remembered (or routed) workspace.
     pub fn on_window_shown(&mut self, window_id: WindowId) {
-        self.reveal_window_shown(window_id);
+        if self.return_hidden_member(window_id) {
+            self.publish_bar_state();
+        }
         #[cfg(test)]
         self.assert_identity_invariant();
-    }
-
-    /// The reveal body of `on_window_shown`.
-    fn reveal_window_shown(&mut self, window_id: WindowId) {
-        if self.store.is_fullscreen_parked(window_id) {
-            // The probe owns this window's reveal; a stray shown event must
-            // not shortcut it.
-            log::debug!(
-                "WindowShown: fullscreen-parked window {}, ignoring",
-                window_id
-            );
-            return;
-        }
-        if self.find_workspace_of_any(window_id).is_some() {
-            return;
-        }
-        let pid = match self.store.pid_for(window_id) {
-            Some(p) => p,
-            None => {
-                log::debug!("WindowShown: unknown window {}, ignoring", window_id);
-                return;
-            }
-        };
-        let remembered = self.store.reveal(window_id);
-        if let Some(entry) = remembered.filter(|e| e.popup && e.idx < self.workspaces.len()) {
-            self.workspaces[entry.idx].add_popup(window_id);
-            // The admit tail: a popup revealed into a workspace that has
-            // since gone hidden takes the hide placement instead of
-            // floating at its macOS rect (same seam as tree reveals).
-            self.place_admitted(window_id, entry.idx);
-            self.publish_bar_state();
-            return;
-        }
-        self.reveal_tree_window(window_id, pid, remembered);
-    }
-
-    /// The shared tree-window tail of the reveal funnel: re-tile at the
-    /// remembered workspace, waiting there as a bound overlay when full.
-    /// The fallback asks the one
-    /// placement ask (`where_should` — the seatbelt, a rediscovery
-    /// answer only per ADR-0005) before config routing and the active
-    /// workspace, so a window the store lost and rediscovered comes
-    /// home here too. Publishes bar state on re-tile.
-    fn reveal_tree_window(
-        &mut self,
-        window_id: WindowId,
-        pid: i32,
-        remembered: Option<super::store::ParkedEntry>,
-    ) {
-        let pending = remembered.and_then(|e| e.pending);
-        let preferred = remembered
-            .map(|e| e.idx)
-            .filter(|&idx| idx < self.workspaces.len())
-            .unwrap_or_else(|| {
-                let identity = self.app_identity(pid);
-                self.where_should(window_id, pid)
-                    .or_else(|| self.routed_workspace_for(&identity))
-                    .unwrap_or_else(|| self.active_workspace_idx())
-            });
-        self.admit_window(
-            window_id,
-            preferred,
-            pending.map(|p| p.kind).unwrap_or(PendingKind::Returning),
-        );
-        self.publish_bar_state();
     }
 
     /// True when the window is native fullscreen but this StateManager is
@@ -452,43 +322,8 @@ impl StateManager {
     /// strategy knob gates the whole mechanism (`[windows] fullscreen =
     /// "tile"` = legacy behavior).
     pub(super) fn try_park_fullscreen(&mut self, window_id: WindowId) -> bool {
-        if !self.fullscreen_parking_enabled() {
+        if !self.park_fullscreen_member(window_id) {
             return false;
-        }
-        if !self.store.contains(window_id) || self.store.is_parked(window_id) {
-            return false;
-        }
-        // Popups never tile anyway; parking would be no-op overhead.
-        if self.is_popup_anywhere(window_id) {
-            return false;
-        }
-        // The fullscreen probe is the gate: a merely pinned (zoomed / busy
-        // app) window answers false here and keeps its tree slot.
-        if !self.os.window_is_fullscreen(window_id) {
-            return false;
-        }
-        // Identity captured while readable, before the window leaves the
-        // tree: the fullscreen-parked window's seatbelt record is what
-        // the session projection and a misjudgment rediscovery read.
-        self.note_where(window_id);
-        let Some(idx) = self
-            .store
-            .park(window_id, &self.workspaces, ParkReason::Fullscreen)
-        else {
-            log::debug!(
-                "FullscreenEnter: window {} not in any tree, ignoring",
-                window_id
-            );
-            return false;
-        };
-        log::info!(
-            "FullscreenEnter: parking window {} (workspace {}), siblings reflow",
-            window_id,
-            idx
-        );
-        self.workspaces[idx].remove_window(window_id);
-        if self.displays.is_visible(idx, &self.workspaces) {
-            self.apply_layout(idx);
         }
         #[cfg(test)]
         self.assert_identity_invariant();
@@ -499,99 +334,12 @@ impl StateManager {
     /// The window left native fullscreen: reveal it through the same funnel
     /// as `on_window_shown` — remembered workspace, waiting there as an overlay when full. Popups never get here (they are exempt from parking).
     pub fn on_fullscreen_exit(&mut self, window_id: WindowId) {
-        let Some(entry) = self.store.reveal(window_id) else {
+        if !self.return_fullscreen_member(window_id) {
             return;
-        };
-        let Some(pid) = self.store.pid_for(window_id) else {
-            log::debug!("FullscreenExit: unknown window {}, ignoring", window_id);
-            return;
-        };
-        log::info!(
-            "FullscreenExit: revealing window {} into workspace {:?}",
-            window_id,
-            entry.idx
-        );
-        debug_assert!(!entry.popup, "popups are exempt from fullscreen parking");
-        self.reveal_tree_window(window_id, pid, Some(entry));
+        }
+        self.publish_bar_state();
         #[cfg(test)]
         self.assert_identity_invariant();
-    }
-
-    pub fn on_window_focused(&mut self, window_id: WindowId) {
-        // Ignore focus from parked windows (hidden parks steal focus via
-        // clamped title bars; fullscreen parks have no tree slot to focus).
-        if self.store.is_parked(window_id) {
-            log::debug!("on_window_focused: ignoring parked window {}", window_id);
-            return;
-        }
-        // Fullscreen enter usually re-fires focused-window-changed — the
-        // cheap fast path into parking, which decides with its own probe.
-        // Cheap even when idle: focused events are rare, and the gate
-        // answers "no" in one AX read.
-        if self.try_park_fullscreen(window_id) {
-            return;
-        }
-        for i in 0..self.workspaces.len() {
-            if self.workspaces[i].owns(window_id) {
-                // i3 rule: a workspace is attached to its output and only an
-                // explicit command moves it — focus can never drag a workspace
-                // back into view. X11 enforces this by construction (hidden
-                // workspaces are unmapped, so no focus can ever be reported for
-                // their windows); macOS has no such wall: app-wide activation
-                // (`ActivateAllWindows`) or macOS itself can report focus for a
-                // parked/hidden window. A window on a hidden workspace is by
-                // definition unfocused-*able* — this event is stale observer
-                // noise, so record nothing and flip nothing. (The old 150ms
-                // switch debounce raced this: an event landing just past
-                // expiry still ran the reverse-switch.)
-                if !self.displays.is_visible(i, &self.workspaces) {
-                    log::debug!(
-                        "on_window_focused: ignoring hidden-workspace window {} (ws {})",
-                        window_id,
-                        i
-                    );
-                    return;
-                }
-                self.workspaces[i].focus_window(window_id);
-                let mon_id = self.workspaces[i].monitor_id;
-                // Debounce: don't mutate DisplaySet::active on focus notifications
-                // that arrive immediately after an explicit workspace switch — they
-                // are stale observer events for the window that was just hidden
-                // and could overwrite the switch's own focus choice.
-                if let Some(until) = self.switch_debounce_until {
-                    if Instant::now() < until {
-                        self.publish_bar_state();
-                        return;
-                    } else {
-                        self.switch_debounce_until = None;
-                    }
-                }
-                // Focus-truth bookkeeping only. The old "focus-driven
-                // switch" (hide prev + reveal_stack) was unreachable by
-                // construction: `is_visible` above pins `active[mon_id] ==
-                // i`, so a workspace switch could never be reached from
-                // here — the i3 rule comment above is the whole story.
-                // What remains live: the focused-output cell the
-                // DisplaySet planners read for multi-monitor moves.
-                self.displays.set_focused_output(mon_id);
-                self.publish_bar_state();
-                return;
-            }
-        }
-    }
-
-    /// Workspace index holding `window_id` as a tree member, pending
-    /// overlay, *or* popup. The membership-aware find: destroy/hide/show
-    /// cleanup needs all three.
-    pub(super) fn find_workspace_of_any(&self, window_id: WindowId) -> Option<usize> {
-        position_of_member(&self.workspaces, window_id)
-    }
-
-    /// True when any workspace tracks `window_id` as a popup. Popups are
-    /// excluded from tree-only funnels by this check: drag hit-testing,
-    /// the displaced note, the misplaced sweep, capacity.
-    pub(super) fn is_popup_anywhere(&self, window_id: WindowId) -> bool {
-        self.workspaces.iter().any(|ws| ws.is_popup(window_id))
     }
 
     /// The verdict-tree invariant, enforced by the test harness after
@@ -958,88 +706,6 @@ impl StateManager {
             self.on_window_focused(window_id);
         } else {
             self.publish_bar_state();
-        }
-    }
-
-    /// The dispatch seam for external `WindowFocused` events: marks the
-    /// focus memory dirty (a click/bounce storm is in play) and runs the
-    /// immediate acceptance, which stays low-latency for the common
-    /// single-event case — the tick's settle drain re-commits truth only
-    /// when the events disagreed.
-    pub fn on_window_focused_event(&mut self, window_id: WindowId) {
-        self.focus_dirty_since = Some(Instant::now());
-        self.on_window_focused(window_id);
-    }
-
-    /// The tick's focus-settle drain (Spec 0001's focus-truth rule):
-    /// once the storms of click-bounce events have been quiet for
-    /// `FOCUS_SETTLE_MS`, ask the OS what is ACTUALLY focused and commit
-    /// that — never trusting last-arrival, which the observed
-    /// `126 → 30556 → 61` triple put worst-last. The fallback ladder:
-    /// OS focused window → the last focused window (if still a visible
-    /// member) → the current workspace seat stands.
-    ///
-    /// Suppressed while a wake resync is pending: the drain's answer is an
-    /// AX read (`frontmost_pid` / the focused-window ask), and through the
-    /// blackout it reads None → ladder (b) would commit `last_focused_window`
-    /// on blackout evidence while the resync is still probing. The settle
-    /// stays armed (not consumed) and commits on the first post-commit
-    /// tick — the resync commit itself re-reads `frontmost_pid`, so the
-    /// settle's inputs are healthy by then.
-    pub(in crate::state) fn commit_settled_focus(&mut self, now: Instant) {
-        let Some(since) = self.focus_dirty_since else {
-            return;
-        };
-        if !self.may_judge("focus settle") {
-            // Armed, not consumed: the settle window resumed after wake.
-            return;
-        }
-        if now.duration_since(since) < Duration::from_millis(FOCUS_SETTLE_MS) {
-            return;
-        }
-        self.focus_dirty_since = None;
-        // An explicit switch owns this stretch of focus truth; the
-        // switch's own bookkeeping is the authority.
-        if let Some(until) = self.switch_debounce_until {
-            if now < until {
-                return;
-            }
-        }
-        let frontmost = self.os.frontmost_pid();
-        // The frontmost cell feeds the active-workspace fallback: fresh
-        // per settle so it never falls so far behind reality that the
-        // fallback answers a process that isn't the one the user is in.
-        self.frontmost_pid = frontmost;
-        let window = frontmost.and_then(|pid| self.os.focused_window_for_pid(pid));
-        match window {
-            Some(window_id) => {
-                self.last_focused_window = Some(window_id);
-                self.on_window_focused(window_id);
-            }
-            None => {
-                // Ladder (b): no OS focus (desktop clicked, keyboardless,
-                // focus claims nothing) → the last focused window, if it
-                // is still a visible tree member.
-                if let Some(wid) = self.last_focused_window {
-                    let member_of = self.find_workspace_of_any(wid);
-                    if let Some(idx) = member_of {
-                        if self.displays.is_visible(idx, &self.workspaces) {
-                            log::debug!(
-                                "focus settle: no OS focus — falling back to last focused window {}",
-                                wid
-                            );
-                            self.on_window_focused(wid);
-                            return;
-                        }
-                    }
-                }
-                // Ladder (c): no windows visible (or the last focus went
-                // hidden) — the focused workspace *seat* is the memory:
-                // nothing to change, nothing to cross-check.
-                log::debug!(
-                    "focus settle: no OS focus and no visible last window — workspace seat stands"
-                );
-            }
         }
     }
 }

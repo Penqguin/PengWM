@@ -8,9 +8,9 @@ use super::StateManager;
 
 /// Owns the `Command` dispatch: the single vocabulary every surface (IPC,
 /// keybinds, config watcher) feeds into `StateManager::on_command`.
-/// Per-monitor switch, overflow carry, cross-display moves and the
-/// switch debounce live here; `StateManager` retains the workspace tree,
-/// `DisplaySet`, layout application and `BarSender` — this module only
+/// Per-monitor switch, overflow carry and cross-display moves live here;
+/// the focus module owns switch protection. `StateManager` retains the
+/// workspace tree, `DisplaySet`, layout application and `BarSender` — this module only
 /// orchestrates them. The three helpers exercised directly by
 /// `state::tests` are `pub(super)`; the rest is private to the module.
 impl StateManager {
@@ -121,8 +121,7 @@ impl StateManager {
                                         self.reveal_stack(Some(self.workspaces[other].monitor_id));
                                     }
                                 }
-                                self.switch_debounce_until =
-                                    Some(Instant::now() + Duration::from_millis(150));
+                                self.protect_workspace_switch(Instant::now());
                                 self.flash_workspace_pills();
                             } else if target == current_idx {
                                 self.flash_workspace_pills();
@@ -287,32 +286,32 @@ impl StateManager {
         }
         let window_id = self.workspaces[current].focused_window_id();
         if let Some(wid) = window_id {
-            self.move_window_between(current, target, wid);
+            self.transfer_window(current, target, wid);
+            self.workspaces[target].focus_window(wid);
         }
         self.publish_bar_state();
     }
 
-    /// Move `wid` from workspace `from` to `to`, re-laying-out visible ends.
-    /// Shared by workspace moves and cross-display moves. The admit tail
-    /// (`StateManager::place_admitted`) owns the destination placement:
-    /// a window thrown at a hidden workspace takes the same hide
-    /// placement a routed one does, or it would float over the source
-    /// screen until the next switch. Full targets host a bound overlay.
-    fn move_window_between(&mut self, from: usize, to: usize, wid: WindowId) {
-        let popup = self.workspaces[from].is_popup(wid);
-        self.workspaces[from].remove_window(wid);
-        self.workspaces[from].remove_popup(wid);
-        if self.displays.is_visible(from, &self.workspaces) {
-            self.apply_layout(from);
+    /// Move a focused pending overlay to the display in `direction`.
+    /// Destination selection and command-specific focus stay with the command.
+    fn move_pending_overlay(&mut self, idx: usize, direction: Direction, id: WindowId) {
+        let displays = self.os.active_displays();
+        let Some(target) =
+            self.displays
+                .direction_target(&self.workspaces, idx, direction, &displays)
+        else {
+            return;
+        };
+        if !self.transfer_pending_window(idx, target, id) {
+            return;
         }
-        if popup {
-            self.workspaces[to].add_popup(wid);
-            self.place_admitted(wid, to);
-        } else {
-            self.admit_window(wid, to, pengwm_core::workspace::PendingKind::Explicit);
+        // The moved window keeps focus across the move, like the tree
+        // swap keeps the (re)focused tile and an explicit move focuses
+        // its target after the transition completes.
+        self.workspaces[target].focus_window(id);
+        if self.displays.is_visible(target, &self.workspaces) && self.workspace_may_act(target) {
+            self.os.focus_window(id);
         }
-        self.workspaces[to].focus_window(wid);
-        self.session_dirty = true;
     }
 
     fn focus_display(&mut self, direction: Direction) {
@@ -409,7 +408,8 @@ impl StateManager {
             current_idx,
             target_idx,
         );
-        self.move_window_between(current_idx, target_idx, wid);
+        self.transfer_window(current_idx, target_idx, wid);
+        self.workspaces[target_idx].focus_window(wid);
         self.publish_bar_state();
     }
 

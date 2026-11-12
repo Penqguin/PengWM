@@ -5,6 +5,22 @@ behind them; code and docs should use these words exactly. Architecture
 vocabulary (module, interface, seam, adapter, depth, leverage, locality)
 comes from the design skill, not this file.
 
+- **Focus observation** — A report of a focused window, received from a
+  notification or an OS read. An observation is evidence to evaluate,
+  not a guarantee that the window is an eligible visible member.
+- **Focus acceptance** — Applying an eligible focus observation to a
+  Workspace's remembered window and, when switch protection permits,
+  DisplaySet's focused output. It does not reveal a hidden workspace.
+- **Settled focus memory** — The most recent window reported by a settled
+  OS focus read. It may name a window that focus acceptance rejects; it
+  supplies a fallback candidate only when a later read reports no focus.
+
+- **Membership transition** — A window entering, leaving, or changing its
+  Workspace membership, including admission, transfer, parking, return,
+  and removal. A transition preserves or deliberately changes placement
+  intent according to its cause; it does not reclassify the window's
+  routing verdict.
+
 - **Native-Space gate / Space limbo** — The per-display boundary between
   the first user desktop, which PengWM manages, and later user desktops,
   where it preserves window membership but pauses management actions.

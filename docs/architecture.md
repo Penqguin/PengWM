@@ -105,7 +105,9 @@ Two implementations:
 
 Thin coordinator split by responsibility (`state/mod.rs` construction +
 layout application, `lifecycle.rs` window/app lifecycle, `commands.rs`
-`Command` dispatch, `monitors_wake.rs` monitor + topology handling,
+`Command` dispatch, private `membership.rs` membership transitions and
+placement execution, private `focus.rs` focus timing and acceptance,
+`monitors_wake.rs` monitor + topology handling,
 `blackout.rs` wake resync + the blackout judgment gate,
 `reconcile.rs` tick path, `layout_writer.rs` write policy,
 `space_gate.rs` native-Space gate):
@@ -121,6 +123,25 @@ It orchestrates at the level of intents: "window created", "focus right",
 `DisplaySet` (workspace ↔ output assignment + routing), `WindowStore`
 (wid↔pid↔hidden), `DragState`
 (drag-to-swap gesture), `LayoutWriteCache` (write policy maps).
+
+The membership module executes admission, transfer, Park/return, and removal
+synchronously. It concentrates capture-before-removal, placement intent,
+seatbelt/cache/deferred-hide bookkeeping, and placement ordering. Workspace
+remains the membership owner; WindowStore retains routing verdict and Park
+authority. Callers select intent/destinations and retain command-specific
+focus and menubar publication. Layout can still promote pending windows or
+trigger removal; no transition queue or second membership record is added.
+
+The focus module owns quiet work, switch protection, and settled focus memory
+in private FocusState. Its intent-based operations execute immediate/settled
+acceptance using one explicit instant per decision. Workspace retains its
+remembered window; DisplaySet retains focused output. A successful workspace
+selection installs 150 ms of output protection; external focus notifications
+arm a 250 ms quiet re-read. Settled memory records the OS observation before
+acceptance, including rejected candidates; only OS None uses the fallback.
+Wake judgment retains pending quiet work, while structural reset clears only
+switch protection. Activation and wake still share frontmost_pid on
+StateManager. See [the focus design](specs/0005-focus-timing.md).
 
 ## Tree
 
@@ -156,7 +177,7 @@ routing policy; the `Vec<Workspace>` itself stays on `StateManager`.
   tiles. Ordinary monitor focus leaves it on its current monitor. Home-bound
   overlays retain their home through switches, minimize, app hide, and fullscreen.
   `Workspace::fill_slots` allocates by kind and opening order. The daemon's
-  `state/overflow.rs` coordinates admission, carry, and promotion through the
+  `state/membership.rs` coordinates admission, carry, and promotion through the
   existing hide/layout seams. `WindowStore` preserves pending intent while parked.
 - **Restart recovery** uses `Session.live_windows`, separately from diagnostic
   bundle/title placements. `state/live_restore.rs` restores homes and opening

@@ -126,7 +126,7 @@ impl StateManager {
         }
         // Timers local to the old world: switch debounce and drag
         // tracking point at geometry that just got replaced.
-        self.switch_debounce_until = None;
+        self.reset_focus_protection();
         self.drag = DragState::new();
         // Immediate background sweep, mirroring the constructor: the
         // reset happened inside an event dispatch; the first tick is
