@@ -46,6 +46,11 @@ pub enum CliCommand {
     },
     Close,
     CycleLayout,
+    /// Cycle through tiles and overlays
+    CycleWindow {
+        #[arg(long)]
+        backward: bool,
+    },
     ToggleMagnify,
     /// Rearrange the active workspace into a named tmux-style preset
     SelectLayout {
@@ -149,6 +154,7 @@ impl From<CliCommand> for Command {
             CliCommand::MoveWindowToWorkspace { id } => Command::MoveWindowToWorkspace { id },
             CliCommand::Close => Command::Close,
             CliCommand::CycleLayout => Command::CycleLayout,
+            CliCommand::CycleWindow { backward } => Command::CycleWindow { backward },
             CliCommand::ToggleMagnify => Command::ToggleMagnify,
             CliCommand::SelectLayout { preset } => Command::SelectLayout {
                 preset: preset.into(),

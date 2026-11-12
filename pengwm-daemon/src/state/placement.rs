@@ -17,9 +17,13 @@ use super::StateManager;
 ///   throttled periodic one — the projection reads no OS state, so a
 ///   save is safe mid-blackout). Deliberately not evicted on window
 ///   destroy: a minimized window untracked by a listing misjudgment is
-///   exactly the rediscovery this exists for, and a stale entry can only
-///   mis-route if macOS recycles the WindowId for the same pid (same
-///   app, benign). Entries die with the pid (`expire_pid`).
+///   exactly the rediscovery this exists for. Tombstones record *how*
+///   the window died (`confirmed_destroyed`): an AX destroyed
+///   notification for this exact WindowId is authoritative — a later
+///   creation with the same id is a new window and routes fresh (spec
+///   0003) — while indirect untracks (the listing sweep, a Gone write
+///   outcome) can misjudge a live window, so their tombstones stay
+///   trusted. Entries die with the pid (`expire_pid`).
 ///
 /// A new window never re-homes to a remembered workspace: routing for
 /// births is seatbelt (same-window rediscovery only) → config routing
@@ -42,17 +46,26 @@ pub(super) struct PlacementRecord {
     pub(super) idx: usize,
     pub(super) bundle: Option<String>,
     pub(super) title: Option<String>,
+    pub(super) pending: Option<pengwm_core::workspace::PendingWindow>,
+    pub(super) order: u64,
     /// When the record was last confirmed as the window's current
     /// placement. The seatbelt is deliberately not evicted on window
     /// destroy, so a churn-heavy app (browsers, Electron) accretes one
     /// record per churned WindowId until the app dies — this timestamp
     /// is what the per-pid cap prunes by (newest K survive).
     pub(super) noted_at: Instant,
+    /// Death evidence for a tombstone (a record whose window the store
+    /// no longer tracks). `true` only when a destroyed notification was
+    /// seen for this exact WindowId — that window is really gone, so a
+    /// same-id birth is a new window and must not inherit this home.
+    /// Indirect untracks (listing sweep, unreadable write) never set it:
+    /// their "death" may be a misjudgment of a live window, which is the
+    /// rediscovery the seatbelt exists for.
+    pub(super) confirmed_destroyed: bool,
 }
 
-/// How many seatbelt records one pid may hold. Generous: a churn-heavy
-/// app's rediscovery ask needs its *recent* records, and every entry
-/// costs pid + idx + two identity strings.
+/// How many stale rediscovery records one pid may hold, in addition to
+/// its live windows. Churn stays bounded while live homes and queues survive.
 const SEATBELT_CAP_PER_PID: usize = 8;
 
 /// How long a dirty session waits before the tick drains it to disk.
@@ -65,23 +78,44 @@ impl StateManager {
     /// The one placement ask: where should this window live? The
     /// **seatbelt** — the most current fact about this window,
     /// admitted only on a pid match (a recycled WindowId owned by a
-    /// different app inherits nothing). This is rediscovery of an
-    /// existing window, never a birth decision: a *new* window gets
-    /// `None` and falls through to config routing and the active
-    /// workspace (ADR-0005).
+    /// different app inherits nothing), and only while the evidence
+    /// says this is the same window: either the store still tracks it
+    /// (it is alive — parked windows included), or the tombstone's
+    /// death was never confirmed by a destroyed notification (a
+    /// misjudged untrack of a live window — the rediscovery the
+    /// seatbelt exists for). A confirmed-destroy tombstone is expired:
+    /// a same-id birth is a *new* window and falls through to config
+    /// routing and the active workspace (ADR-0005, spec 0003).
     pub(super) fn where_should(&mut self, window_id: WindowId, pid: i32) -> Option<usize> {
         if let Some(rec) = self.live_placement.get(&window_id) {
             if rec.pid == pid && rec.idx < self.workspaces.len() {
-                log::info!(
-                    "Placement seatbelt: rediscovered window {} pid {} returns to workspace {}",
-                    window_id,
-                    pid,
-                    rec.idx
+                if self.store.contains(window_id) || !rec.confirmed_destroyed {
+                    log::info!(
+                        "Placement seatbelt: rediscovered window {} pid {} returns to workspace {}",
+                        window_id,
+                        pid,
+                        rec.idx
+                    );
+                    return Some(rec.idx);
+                }
+                log::debug!(
+                    "Placement seatbelt: window {} tombstone is a confirmed destroy — a same-id birth routes fresh",
+                    window_id
                 );
-                return Some(rec.idx);
             }
         }
         None
+    }
+
+    /// Stamp how a tombstoned window died, right after the untrack
+    /// funnel removed it from the store. `confirmed` comes from the
+    /// funnel's evidence class: a destroyed notification (or a tracked
+    /// window re-reported under a different pid) is authoritative;
+    /// listing/readback untracks are not.
+    pub(super) fn note_placement_closed(&mut self, window_id: WindowId, confirmed: bool) {
+        if let Some(rec) = self.live_placement.get_mut(&window_id) {
+            rec.confirmed_destroyed |= confirmed;
+        }
     }
 
     /// Seatbelt write, the one place a placement change is recorded.
@@ -103,10 +137,21 @@ impl StateManager {
         };
         let bundle = self.os.app_bundle_id(pid);
         let title = self.os.window_title(window_id);
+        let pending = self.workspaces[idx].pending_window(window_id);
+        let order = self.store.order(window_id);
         let now = Instant::now();
         if let Some(rec) = self.live_placement.get_mut(&window_id) {
-            if rec.pid == pid && rec.idx == idx && rec.bundle == bundle && rec.title == title {
+            if rec.pid == pid
+                && rec.idx == idx
+                && rec.bundle == bundle
+                && rec.title == title
+                && rec.pending == pending
+                && rec.order == order
+            {
                 rec.noted_at = now;
+                // The window is demonstrably alive and placed again: a
+                // prior untrack judgment is retired either way.
+                rec.confirmed_destroyed = false;
                 return;
             }
         }
@@ -117,31 +162,29 @@ impl StateManager {
                 idx,
                 bundle,
                 title,
+                pending,
+                order,
                 noted_at: now,
+                confirmed_destroyed: false,
             },
         );
-        // Cap per pid — the one boundedness rule the seatbelt map has.
-        // Records die with the pid by design (a minimized window
-        // untracked by a listing misjudgment must survive), so the only
-        // unbounded growth is a never-quitting app that churns
-        // WindowIds; the newest K per pid keep every legitimate
-        // rediscovery ask.
-        let mut same_pid: Vec<(WindowId, Instant)> = self
+        self.prune_stale_placements(pid);
+        self.session_dirty = true;
+    }
+
+    /// Retain every live window's rediscovery state and bound old tombstones.
+    pub(super) fn prune_stale_placements(&mut self, pid: i32) {
+        let mut stale: Vec<_> = self
             .live_placement
             .iter()
-            .filter(|(_, rec)| rec.pid == pid)
+            .filter(|(wid, rec)| rec.pid == pid && !self.store.contains(**wid))
             .map(|(&wid, rec)| (wid, rec.noted_at))
             .collect();
-        if same_pid.len() > SEATBELT_CAP_PER_PID {
-            same_pid.sort_by_key(|&(_, at)| at);
-            let excess = same_pid.len() - SEATBELT_CAP_PER_PID;
-            for &(wid, _) in &same_pid[..excess] {
-                if wid != window_id {
-                    self.live_placement.remove(&wid);
-                }
-            }
+        stale.sort_by_key(|(_, at)| *at);
+        let excess = stale.len().saturating_sub(SEATBELT_CAP_PER_PID);
+        for (wid, _) in stale.into_iter().take(excess) {
+            self.live_placement.remove(&wid);
         }
-        self.session_dirty = true;
     }
 
     /// Seatbelt eviction for one pid: entries are pid-keyed by record
@@ -187,13 +230,14 @@ impl StateManager {
     /// `cfg!(test)` guard: tests pass a tempdir and exercise the real
     /// round trip. Marks the projection clean on success.
     pub fn save_session(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
-        let sess = super::session::snapshot_from(
+        let mut sess = super::session::snapshot_from(
             &self.workspaces,
             self.displays.active(),
             self.capture_placements(),
             self.gap_outer,
             self.gap_inner,
         );
+        sess.live_windows = self.capture_live_windows();
         let res = super::session::save_to(&sess, path);
         if res.is_ok() {
             self.session_dirty = false;

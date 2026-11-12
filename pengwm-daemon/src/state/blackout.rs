@@ -251,7 +251,14 @@ impl StateManager {
         // whose display died in sleep (their stale origin/size re-tiled
         // windows into no-man's land). The final re-tile below covers
         // `relayout`; `hidden`/`repark` run here.
+        let previous: Vec<_> = self.workspaces.iter().map(|ws| ws.monitor_id).collect();
         let tsync = self.displays.sync(&mut self.workspaces, &*self.os);
+        // The relocated overflow target is always the primary display's
+        // visible workspace, so the final re-tile loop below — which
+        // iterates every display in `displays.active()` — re-lays it out;
+        // the relocation target itself is droppable, unlike
+        // `monitors_wake`, which must push it into its own relayout set.
+        let _ = self.relocate_detached_overflow(&previous);
         self.park_topology_changes(tsync.hidden, tsync.repark);
         // Drop the layout-write cache: stale AX refs + moved displays mean
         // every "already applied" entry is a lie after sleep. The gone

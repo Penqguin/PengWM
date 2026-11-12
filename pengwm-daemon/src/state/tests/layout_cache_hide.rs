@@ -347,6 +347,36 @@ fn pinned_window_backs_off_writes_then_retries_after_backoff() {
 }
 
 #[test]
+fn returning_to_workspace_retries_a_previously_pinned_window() {
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.on_window_created(100, 42);
+    let tiled = handle.rect(100).expect("initial tile rect");
+
+    handle.set_fault(100, Fault::Pinned);
+    handle.displace(100, 500.0, 500.0);
+    sm.layout_cache.drop_applied_for_test(100);
+    for _ in 0..3 {
+        sm.apply_layout(0);
+    }
+
+    sm.on_command(Command::Workspace { id: 2 }, None);
+    assert_ne!(
+        handle.rect(100),
+        Some(tiled),
+        "workspace switch must hide the tile"
+    );
+    handle.clear_fault(100);
+
+    sm.on_command(Command::Workspace { id: 1 }, None);
+
+    assert_eq!(
+        handle.rect(100),
+        Some(tiled),
+        "showing a workspace must retry its tile even if the previous target was pinned"
+    );
+}
+
+#[test]
 fn pinned_window_with_changed_target_starts_fresh() {
     // A changed target is a fresh situation: pin strikes for the old target
     // must not silence writes for the new one.

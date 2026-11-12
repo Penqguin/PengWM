@@ -4,6 +4,10 @@ use super::Workspace;
 
 impl Workspace {
     pub fn focus_window(&mut self, window_id: WindowId) {
+        if self.overlay_ids().contains(&window_id) {
+            self.focused_overlay = Some(window_id);
+            return;
+        }
         let node_id = match self.find_window(window_id) {
             Some(id) => id,
             None => return,
@@ -44,6 +48,9 @@ impl Workspace {
     }
 
     pub fn swap_window(&mut self, direction: Direction) {
+        if self.focused_overlay.is_some() {
+            return;
+        }
         let focused = match self.focused_node {
             Some(id) => id,
             None => return,
@@ -67,12 +74,13 @@ impl Workspace {
         self.arena.all_windows()
     }
 
-    /// Every window the workspace owns: tree members plus workspace-bound
-    /// popups. The hide funnel parks all of them. `window_count` stays
-    /// tree-only — popups never consume `max_tiles`.
+    /// Every window the workspace owns: tree members, pending overlays,
+    /// and workspace-bound popups. The hide funnel parks all of them.
+    /// `window_count` stays tree-only — popups and pending windows never
+    /// consume `max_tiles`.
     pub fn all_owned(&self) -> Vec<WindowId> {
         let mut ids = self.arena.all_windows();
-        ids.extend(self.popups.iter().copied());
+        ids.extend(self.overlay_ids());
         ids
     }
 
@@ -83,12 +91,14 @@ impl Workspace {
     }
 
     pub fn focused_window_id(&self) -> Option<WindowId> {
-        self.focused_node.and_then(|nid| {
-            if let NodeData::Window { window_id, .. } = &self.arena.get(nid)?.data {
-                Some(*window_id)
-            } else {
-                None
-            }
+        self.focused_overlay.or_else(|| {
+            self.focused_node.and_then(|nid| {
+                if let NodeData::Window { window_id, .. } = &self.arena.get(nid)?.data {
+                    Some(*window_id)
+                } else {
+                    None
+                }
+            })
         })
     }
 
@@ -113,6 +123,7 @@ impl Workspace {
     }
 
     pub(super) fn set_focused_node(&mut self, node_id: NodeId) {
+        self.focused_overlay = None;
         if let Some(old_id) = self.focused_node {
             if let Some(old) = self.arena.get_mut(old_id) {
                 if let NodeData::Window {

@@ -44,7 +44,7 @@ impl StateManager {
                 .collect(),
         };
         for idx in shown {
-            for wid in self.workspaces[idx].popup_ids() {
+            for wid in self.workspaces[idx].overlay_ids() {
                 log::debug!("reveal_stack: popup {} re-raised", wid);
                 self.os.raise_window(wid);
             }

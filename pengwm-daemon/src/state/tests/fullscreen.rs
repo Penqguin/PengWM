@@ -193,7 +193,7 @@ fn unfullscreen_reveals_within_one_tick() {
 }
 
 #[test]
-fn unfullscreen_overflows_when_remembered_home_is_full() {
+fn unfullscreen_waits_at_full_remembered_home() {
     let (mut sm, handle) = setup_with_handle(1);
     seed_tiles(&mut sm);
     let max = sm.displays.max_tiles();
@@ -216,23 +216,23 @@ fn unfullscreen_overflows_when_remembered_home_is_full() {
     // Give the overflow a target: workspace 2 still has room.
     handle.inject_window(44, 999);
     sm.on_window_created(999, 44);
-    assert!(sm.workspaces[1].find_window(999).is_some());
+    assert!(sm.workspaces[0].pending_window(999).is_some());
 
     handle.clear_fullscreen_window(100);
     sm.store.force_reconcile_for_test();
     sm.on_tick();
 
     assert!(
-        sm.workspaces.iter().any(|ws| ws.find_window(100).is_some()),
-        "an unfullscreened window always becomes tileable"
+        sm.workspaces[0].pending_window(100).is_some(),
+        "an unfullscreened window waits at its home"
     );
     assert!(
         sm.workspaces[0].find_window(100).is_none(),
-        "home was at capacity — overflow applies"
+        "home was at capacity — window waits as overlay"
     );
     assert!(
-        sm.workspaces[1].find_window(100).is_some(),
-        "overflow lands in the next workspace with room"
+        sm.workspaces[1].find_window(100).is_none(),
+        "return never changes the established home"
     );
     assert!(!sm.store.is_parked(100));
 }

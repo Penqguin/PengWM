@@ -58,6 +58,10 @@ pub struct Session {
     /// workspace.
     #[serde(default)]
     pub placements: Vec<WindowPlacement>,
+    #[serde(default)]
+    /// Same-boot, same-process recovery evidence, distinct from diagnostic
+    /// app/title placements. Unverifiable records follow fresh routing.
+    pub live_windows: Vec<LivePlacement>,
     pub gap_outer: f64,
     pub gap_inner: f64,
 }
@@ -77,6 +81,15 @@ pub struct WindowPlacement {
     pub workspace: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LivePlacement {
+    pub identity: crate::adapter::LiveWindowIdentity,
+    pub workspace: String,
+    pub order: u64,
+    pub pending: Option<pengwm_core::workspace::PendingKind>,
+    pub parked: Option<super::store::ParkReason>,
+}
+
 impl Session {
     pub fn new(
         workspaces: Vec<Workspace>,
@@ -90,6 +103,7 @@ impl Session {
             workspaces,
             active,
             placements,
+            live_windows: Vec::new(),
             gap_outer,
             gap_inner,
         }
@@ -239,6 +253,24 @@ mod tests {
     fn corrupt_file_returns_none() {
         let path = tmp_path("corrupt.toml");
         std::fs::write(&path, "not toml [[[ ").unwrap();
+        assert!(load_from(&path).is_none());
+    }
+
+    #[test]
+    fn truncated_session_write_decodes_to_none() {
+        // An interrupted save: the process died between writing the tmp
+        // file and the rename, and a half document reached disk. It must
+        // decode as "no session" — never as a half state to restore.
+        let sess = snapshot_from(
+            &[Workspace::new("Dev".into(), 1, (0, 0), (1920, 1080))],
+            &BTreeMap::from([(1, 0)]),
+            vec![],
+            10.0,
+            5.0,
+        );
+        let full = toml::to_string_pretty(&sess).unwrap();
+        let path = tmp_path("truncated.toml");
+        std::fs::write(&path, &full[..full.len() / 2]).unwrap();
         assert!(load_from(&path).is_none());
     }
 

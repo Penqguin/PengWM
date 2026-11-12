@@ -41,7 +41,7 @@ pub fn key_name_to_keycode(name: &str) -> Option<u16> {
         "5" => Some(0x17),
         "6" => Some(0x16),
         "7" => Some(0x1A),
-        "8" => Some(0x1B),
+        "8" => Some(0x1C),
         "9" => Some(0x19),
         "left" => Some(0x7B),
         "right" => Some(0x7C),

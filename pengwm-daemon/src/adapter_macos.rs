@@ -697,6 +697,69 @@ impl OsAdapter for MacOsAdapter {
         unsafe { ax_element::string_attribute(element.ptr(), kAXTitleAttribute) }
     }
 
+    fn window_identity(&self, window_id: WindowId) -> Option<crate::adapter::LiveWindowIdentity> {
+        let (element, pid) = self.cache_get_element(window_id)?;
+        // AXIdentifier is optional. Refuse generic/repeated identifiers rather
+        // than letting two windows in one app inherit each other's homes.
+        let identifier = unsafe { ax_element::string_attribute(element.ptr(), "AXIdentifier") }?;
+        if identifier.trim().is_empty() {
+            return None;
+        }
+        let windows = unsafe { ax_element::windows_for_pid(pid) }?;
+        let matching: Vec<_> = windows
+            .iter()
+            .filter(|(window, _)| unsafe {
+                ax_element::string_attribute(window.ptr(), "AXIdentifier").as_ref()
+                    == Some(&identifier)
+            })
+            .collect();
+        if matching.len() != 1 || matching[0].1 != window_id {
+            return None;
+        }
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as i32;
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut c_void,
+                size,
+            )
+        };
+        if read != size || info.pbi_pid != pid as u32 {
+            return None;
+        }
+        let mut boot = [0u8; 128];
+        let mut len = boot.len();
+        let result = unsafe {
+            libc::sysctlbyname(
+                c"kern.bootsessionuuid".as_ptr(),
+                boot.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if result != 0 || len == 0 || len > boot.len() {
+            return None;
+        }
+        let boot = std::str::from_utf8(&boot[..len])
+            .ok()?
+            .trim_end_matches('\0')
+            .to_owned();
+        if boot.is_empty() {
+            return None;
+        }
+        Some(crate::adapter::LiveWindowIdentity {
+            boot,
+            process_start: (info.pbi_start_tvsec, info.pbi_start_tvusec),
+            pid,
+            window_id,
+            accessibility_id: identifier,
+        })
+    }
+
     fn raise_window(&self, window_id: WindowId) {
         if let Some((element, _pid)) = self.cache_get_element(window_id) {
             unsafe { ax_element::raise_window(element.ptr()) };

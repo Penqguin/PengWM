@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use pengwm_core::tree::WindowId;
-use pengwm_core::workspace::{position_of_window, Workspace};
+use pengwm_core::workspace::{position_of_member, PendingWindow, Workspace};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -28,7 +28,7 @@ pub enum RoutingVerdict {
 /// minimize/app-hide path (cmd-H, dock) — it reveals through the normal
 /// shown flow; `Fullscreen` is the native-fullscreen probe — it reveals as
 /// a plain tileable window the moment the `AXFullScreen` probe says so.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ParkReason {
     /// Minimized to the Dock or hidden in place (`AXMinimized`/`AXHidden`).
     Hide,
@@ -47,6 +47,7 @@ pub enum ParkReason {
 pub struct ParkedEntry {
     pub idx: usize,
     pub popup: bool,
+    pub pending: Option<PendingWindow>,
     pub reason: ParkReason,
 }
 
@@ -68,6 +69,9 @@ pub struct WindowStore {
     /// this window to me", durable across element-cache eviction.
     routed: HashMap<WindowId, RoutingVerdict>,
     last_reconcile: Instant,
+    orders: HashMap<WindowId, u64>,
+    next_order: u64,
+    identities: HashMap<WindowId, crate::adapter::LiveWindowIdentity>,
 }
 
 impl WindowStore {
@@ -77,6 +81,9 @@ impl WindowStore {
             pid_to_windows: HashMap::new(),
             parked: HashMap::new(),
             routed: HashMap::new(),
+            orders: HashMap::new(),
+            next_order: 0,
+            identities: HashMap::new(),
             last_reconcile: Instant::now(),
         }
     }
@@ -88,6 +95,9 @@ impl WindowStore {
             pid_to_windows: HashMap::new(),
             parked: HashMap::new(),
             routed: HashMap::new(),
+            orders: HashMap::new(),
+            next_order: 0,
+            identities: HashMap::new(),
             last_reconcile: last,
         }
     }
@@ -106,9 +116,8 @@ impl WindowStore {
     }
 
     pub fn unregister(&mut self, window_id: WindowId) -> Option<i32> {
-        let pid = self.window_pids.remove(&window_id)?;
-        self.parked.remove(&window_id);
-        self.routed.remove(&window_id);
+        let pid = *self.window_pids.get(&window_id)?;
+        self.forget_window_state(window_id);
         if let Some(v) = self.pid_to_windows.get_mut(&pid) {
             v.retain(|&w| w != window_id);
             if v.is_empty() {
@@ -121,11 +130,76 @@ impl WindowStore {
     pub fn remove_pid(&mut self, pid: i32) -> Vec<WindowId> {
         let windows = self.pid_to_windows.remove(&pid).unwrap_or_default();
         for &wid in &windows {
-            self.window_pids.remove(&wid);
-            self.parked.remove(&wid);
-            self.routed.remove(&wid);
+            self.forget_window_state(wid);
         }
         windows
+    }
+
+    /// Every per-window map the store keys by WindowId, cleared at once.
+    /// The one eviction shape: `unregister` (single window) and
+    /// `remove_pid` (a dying app's whole set) share it.
+    fn forget_window_state(&mut self, window_id: WindowId) {
+        self.window_pids.remove(&window_id);
+        self.parked.remove(&window_id);
+        self.routed.remove(&window_id);
+        self.orders.remove(&window_id);
+        self.identities.remove(&window_id);
+    }
+
+    pub fn note_identity(
+        &mut self,
+        id: WindowId,
+        identity: Option<crate::adapter::LiveWindowIdentity>,
+    ) {
+        if let Some(identity) = identity {
+            self.identities.insert(id, identity);
+        }
+    }
+
+    pub fn identity(&self, id: WindowId) -> Option<&crate::adapter::LiveWindowIdentity> {
+        self.identities.get(&id)
+    }
+
+    pub fn opening_order(&self, id: WindowId) -> Option<u64> {
+        self.orders.get(&id).copied()
+    }
+
+    pub fn restore_park(&mut self, id: WindowId, entry: ParkedEntry) {
+        self.parked.insert(id, entry);
+    }
+
+    pub fn order(&mut self, id: WindowId) -> u64 {
+        if let Some(order) = self.orders.get(&id) {
+            return *order;
+        }
+        let order = self.next_order;
+        self.next_order = self.next_order.saturating_add(1);
+        self.orders.insert(id, order);
+        order
+    }
+
+    pub fn restore_order(&mut self, id: WindowId, order: u64) {
+        self.orders.insert(id, order);
+        self.next_order = self.next_order.max(order.saturating_add(1));
+    }
+
+    pub fn relocate_parked_overflow(&mut self, from: usize, to: usize) -> bool {
+        let mut moved = false;
+        for entry in self.parked.values_mut() {
+            if entry.idx == from
+                && entry
+                    .pending
+                    .is_some_and(|p| p.kind == pengwm_core::workspace::PendingKind::Traveling)
+            {
+                entry.idx = to;
+                moved = true;
+            }
+        }
+        moved
+    }
+
+    pub fn parked_entry(&self, id: WindowId) -> Option<ParkedEntry> {
+        self.parked.get(&id).copied()
     }
 
     pub fn contains(&self, window_id: WindowId) -> bool {
@@ -217,12 +291,13 @@ impl WindowStore {
         workspaces: &[Workspace],
         reason: ParkReason,
     ) -> Option<usize> {
-        let idx = position_of_window(workspaces, window_id)?;
+        let idx = position_of_member(workspaces, window_id)?;
         self.parked.insert(
             window_id,
             ParkedEntry {
                 idx,
                 popup: false,
+                pending: workspaces[idx].pending_window(window_id),
                 reason,
             },
         );
@@ -238,6 +313,7 @@ impl WindowStore {
             ParkedEntry {
                 idx,
                 popup: true,
+                pending: None,
                 reason: ParkReason::Hide,
             },
         );
@@ -258,8 +334,8 @@ impl WindowStore {
     /// Forget a parked entry and return what it remembered (workspace index,
     /// popup kind, reason), if any. The caller decides the final placement:
     /// popups re-attach to the remembered workspace; tree windows go through
-    /// `add_window_to_workspace` (the remembered idx is the preferred slot —
-    /// overflow beyond it reuses the normal capacity routing).
+    /// `admit_window` (the remembered idx is the preferred slot —
+    /// a full home hosts a waiting overlay).
     pub fn reveal(&mut self, window_id: WindowId) -> Option<ParkedEntry> {
         self.parked.remove(&window_id)
     }
@@ -278,6 +354,7 @@ impl WindowStore {
             ParkedEntry {
                 idx,
                 popup: false,
+                pending: None,
                 reason: ParkReason::Hide,
             },
         );
@@ -298,6 +375,7 @@ impl WindowStore {
             ParkedEntry {
                 idx,
                 popup: true,
+                pending: None,
                 reason: ParkReason::Hide,
             },
         );
@@ -310,6 +388,7 @@ impl WindowStore {
             ParkedEntry {
                 idx,
                 popup: false,
+                pending: None,
                 reason: ParkReason::Fullscreen,
             },
         );
@@ -360,7 +439,7 @@ impl WindowStore {
 
     /// Compute the two reconcile sets without mutating anything. The caller is
     /// responsible for iterating the returned vectors and calling `hide` /
-    /// `add_window_to_workspace` (tree) or `hide_popup` / `add_popup`.
+    /// `admit_window` (tree) or `hide_popup` / `add_popup`.
     ///
     /// Membership counts a window that is tiled *or* a workspace-bound popup,
     /// so missed app-hide events on popups reconcile like tree windows.
@@ -377,10 +456,7 @@ impl WindowStore {
         workspaces: &[Workspace],
         hidden: &HashMap<WindowId, bool>,
     ) -> (Vec<WindowId>, Vec<WindowId>) {
-        let members: HashSet<WindowId> = workspaces
-            .iter()
-            .flat_map(|ws| ws.all_windows().into_iter().chain(ws.popup_ids()))
-            .collect();
+        let members: HashSet<WindowId> = workspaces.iter().flat_map(|ws| ws.all_owned()).collect();
         let mut to_hide = Vec::new();
         let mut to_show = Vec::new();
         for &wid in self.window_pids.keys() {

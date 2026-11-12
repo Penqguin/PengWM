@@ -617,6 +617,11 @@ impl LayoutWriteCache {
         let written_at = Instant::now();
         for wid in window_ids {
             self.applied_rects.insert(wid, (rect, written_at));
+            // Hiding is a new placement episode. A failed tile write may
+            // have armed backoff for that old target; carrying it across
+            // the hide would suppress the first write when the workspace
+            // is shown again at the same tile target.
+            self.pin_state.remove(&wid);
         }
     }
 

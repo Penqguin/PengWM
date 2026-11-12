@@ -243,7 +243,9 @@ impl DisplaySet {
     /// the destination holds no windows, so the caller issues no AX call.
     fn switch_focus(ws: &Workspace, focus_first: bool) -> Option<WindowId> {
         if ws.window_count() == 0 {
-            return None;
+            return ws
+                .focused_window_id()
+                .or_else(|| ws.overlay_ids().last().copied());
         }
         if focus_first {
             ws.first_window_id()
@@ -887,17 +889,17 @@ mod tests {
         let name = ds
             .configured_workspace_name(Some("com.google.Chrome"), None)
             .unwrap();
-        assert_eq!(name, "Browsing");
+        assert_eq!(name, "ws-2");
     }
 
     #[test]
     fn routed_idx_matches_global_name() {
         let ds = DisplaySet::new(crate::config::default_workspaces());
         let wss = vec![
-            Workspace::new("Development".into(), 1, (0, 0), (1920, 1080)),
-            Workspace::new("Browsing".into(), 2, (1920, 0), (1920, 1080)),
+            Workspace::new("ws-1".into(), 1, (0, 0), (1920, 1080)),
+            Workspace::new("ws-2".into(), 2, (1920, 0), (1920, 1080)),
         ];
-        // Global match: Browsing lives on output 2, still routed there.
+        // Global match: ws-2 lives on output 2, still routed there.
         let idx = ds.routed_workspace_idx(&wss, Some("com.apple.Safari"), None);
         assert_eq!(idx, Some(1));
     }

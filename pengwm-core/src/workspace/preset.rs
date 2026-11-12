@@ -140,6 +140,9 @@ impl Workspace {
     /// Clamped so no pane drops below `MIN_PANE_SHARE`. Returns false when
     /// nothing moved.
     pub fn resize_focused(&mut self, direction: Direction) -> bool {
+        if self.focused_overlay.is_some() {
+            return false;
+        }
         self.adjust_ratio(direction, RESIZE_STEP)
     }
 

@@ -51,7 +51,13 @@ impl StateManager {
         // window the store lost comes back to where it lives this session.
         // Reset (wm_reset) is reserved for structural config changes or
         // an explicit command — never an automatic topology reaction.
-        let sync = self.displays.sync(&mut self.workspaces, &*self.os);
+        let previous: Vec<_> = self.workspaces.iter().map(|ws| ws.monitor_id).collect();
+        let mut sync = self.displays.sync(&mut self.workspaces, &*self.os);
+        if let Some(target) = self.relocate_detached_overflow(&previous) {
+            if !sync.relayout.contains(&target) {
+                sync.relayout.push(target);
+            }
+        }
         if sync.is_noop() {
             return;
         }

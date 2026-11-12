@@ -32,9 +32,19 @@ pub enum FullscreenStrategy {
     Tile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum NewWindowPlacement {
+    #[default]
+    CurrentWorkspace,
+    AppRules,
+}
+
 /// Window lifecycle / visibility settings scoped under `[windows]` in TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowsConfig {
+    #[serde(default)]
+    pub new_window_placement: NewWindowPlacement,
     #[serde(default)]
     pub hidden_strategy: HiddenStrategy,
     /// Fullscreen window handling: `park` (default) untitles native
@@ -145,6 +155,7 @@ pub const BUILTIN_GAME_FLOAT_APPS: &[&str] = &[
 impl Default for WindowsConfig {
     fn default() -> Self {
         Self {
+            new_window_placement: NewWindowPlacement::default(),
             hidden_strategy: HiddenStrategy::default(),
             fullscreen: FullscreenStrategy::default(),
             popup_ratio: default_popup_ratio(),
@@ -179,7 +190,7 @@ pub struct Settings {
     pub windows: WindowsConfig,
     /// The named workspaces created on every monitor at startup, in order.
     /// Windows launched by an app listed in an entry's `apps` are routed into
-    /// that workspace. Defaults to five named workspaces.
+    /// that workspace. Defaults to eight numbered workspaces.
     #[serde(default = "default_workspaces")]
     pub workspaces: Vec<WorkspaceEntry>,
     /// When true, restore the last session (layout/focus/monitor affinity)
@@ -237,7 +248,7 @@ pub enum MonitorRef {
 pub fn default_workspaces() -> Vec<WorkspaceEntry> {
     vec![
         WorkspaceEntry {
-            name: "Development".into(),
+            name: "ws-1".into(),
             apps: vec![
                 "com.apple.dt.Xcode".into(),
                 "com.googlecode.iterm2".into(),
@@ -259,7 +270,7 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
             autostart: vec![],
         },
         WorkspaceEntry {
-            name: "Browsing".into(),
+            name: "ws-2".into(),
             apps: vec![
                 "com.apple.Safari".into(),
                 "com.google.Chrome".into(),
@@ -281,7 +292,7 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
             autostart: vec![],
         },
         WorkspaceEntry {
-            name: "Notes".into(),
+            name: "ws-3".into(),
             apps: vec![
                 "com.apple.Notes".into(),
                 "md.obsidian".into(),
@@ -294,7 +305,7 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
             autostart: vec![],
         },
         WorkspaceEntry {
-            name: "Music".into(),
+            name: "ws-4".into(),
             apps: vec![
                 "com.apple.Music".into(),
                 "com.spotify.client".into(),
@@ -305,7 +316,7 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
             autostart: vec![],
         },
         WorkspaceEntry {
-            name: "Messaging".into(),
+            name: "ws-5".into(),
             apps: vec![
                 "com.apple.MobileSMS".into(),
                 "com.apple.iChat".into(),
@@ -320,6 +331,24 @@ pub fn default_workspaces() -> Vec<WorkspaceEntry> {
                 "WeChat".into(),
                 "Telegram".into(),
             ],
+            monitor: None,
+            autostart: vec![],
+        },
+        WorkspaceEntry {
+            name: "ws-6".into(),
+            apps: vec![],
+            monitor: None,
+            autostart: vec![],
+        },
+        WorkspaceEntry {
+            name: "ws-7".into(),
+            apps: vec![],
+            monitor: None,
+            autostart: vec![],
+        },
+        WorkspaceEntry {
+            name: "ws-8".into(),
+            apps: vec![],
             monitor: None,
             autostart: vec![],
         },

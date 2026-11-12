@@ -4,6 +4,16 @@ use std::time::Duration;
 use pengwm_core::layout::{HidePlacement, Rect, WriteOutcome};
 use pengwm_core::tree::WindowId;
 
+/// Evidence scoped to one OS boot, process lifetime, and accessibility window.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveWindowIdentity {
+    pub boot: String,
+    pub process_start: (u64, u64),
+    pub pid: i32,
+    pub window_id: WindowId,
+    pub accessibility_id: String,
+}
+
 /// Typed per-window classification returned across the seam by
 /// `OsAdapter::window_kind`. Replaces the old binary manageable/dropped
 /// gate: discovery classifies instead of dropping, so tree routing, popup
@@ -180,6 +190,11 @@ pub trait OsAdapter: ObserverRegistry {
     /// cached. Part of the identity evidence placement memory matches on
     /// (pid + bundle + title — see `state::placement`).
     fn window_title(&self, window_id: WindowId) -> Option<String>;
+    /// Return evidence only when a nonempty, unique AXIdentifier is readable.
+    /// Unsupported/ambiguous windows use fresh routing after daemon restart.
+    fn window_identity(&self, _window_id: WindowId) -> Option<LiveWindowIdentity> {
+        None
+    }
     /// Bring the window to the front of the stacking order (`AXRaise`).
     /// Popups re-assert it on switch-back reveal so overlays return on top.
     fn raise_window(&self, window_id: WindowId);

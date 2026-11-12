@@ -189,7 +189,7 @@ fn age_helper_mirrors_the_interval() {
 }
 
 #[test]
-fn seatbelt_caps_records_per_pid() {
+fn seatbelt_caps_stale_records_per_pid() {
     // A never-quitting app that churns WindowIds (browsers, Electron) is
     // the one unbounded growth the seatbelt map had: entries die with the
     // pid by design, so the cap is the only bound. The newest records per
@@ -200,6 +200,7 @@ fn seatbelt_caps_records_per_pid() {
     for wid in 300..312u64 {
         handle.inject_title(wid, format!("W{wid}"));
         sm.on_window_created(wid, 42);
+        sm.on_window_destroyed(wid);
     }
     assert!(
         sm.live_placement.len() <= 8,

@@ -72,10 +72,11 @@ fn commands_acting_on_a_gated_display_are_refused() {
         },
         None,
     );
+    sm.on_command(Command::CycleWindow { backward: false }, None);
     assert_eq!(
         sm.workspaces[0].focused_window_id(),
         focused,
-        "the model must not move focus while the display is gated"
+        "focus and window cycling must leave model focus unchanged while gated"
     );
     assert_eq!(handle.last_focused(), None, "no OS focus call either");
 }

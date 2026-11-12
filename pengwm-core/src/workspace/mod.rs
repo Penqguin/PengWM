@@ -1,7 +1,9 @@
 mod add_remove;
 mod focus_swap;
 mod geometry;
+mod overflow;
 mod preset;
+pub use overflow::{PendingKind, PendingWindow};
 mod split;
 #[cfg(test)]
 mod tests;
@@ -30,6 +32,14 @@ pub struct Workspace {
     /// on close/hide; never persisted (sanitize rebuilds empty).
     #[serde(default)]
     pub popups: Vec<WindowId>,
+    /// Waiting tileable windows (the *overflow window* of the glossary —
+    /// traveling/returning/explicit kinds), each rendered as a centered
+    /// overlay until a tile slot opens. "Pending" is the membership
+    /// state; "overlay" is the render form, shared with `popups`.
+    #[serde(default)]
+    pub pending: Vec<PendingWindow>,
+    #[serde(default)]
+    focused_overlay: Option<WindowId>,
     /// Share of the usable area a popup overlay takes (`popup_ratio`
     /// config; clamped at use).
     #[serde(default = "default_popup_ratio")]
@@ -57,6 +67,8 @@ impl Workspace {
             focused_node: None,
             magnified: None,
             popups: Vec::new(),
+            pending: Vec::new(),
+            focused_overlay: None,
             popup_ratio: default_popup_ratio(),
             magnify_ratio: default_magnify_ratio(),
             preset_index: default_preset_index(),
@@ -103,10 +115,9 @@ pub fn position_of_window(workspaces: &[Workspace], window_id: WindowId) -> Opti
         .position(|ws| ws.find_window(window_id).is_some())
 }
 
-/// Flat index of the workspace tracking `window_id` as any member — tree or
-/// popup. Destroy/hide/show cleanup needs both kinds; popups count.
+/// Flat index of the workspace tracking `window_id` as any member —
+/// tree, pending overlay, or popup. Destroy/hide/show cleanup needs all
+/// kinds; popups and pending windows count.
 pub fn position_of_member(workspaces: &[Workspace], window_id: WindowId) -> Option<usize> {
-    workspaces
-        .iter()
-        .position(|ws| ws.find_window(window_id).is_some() || ws.is_popup(window_id))
+    workspaces.iter().position(|ws| ws.owns(window_id))
 }

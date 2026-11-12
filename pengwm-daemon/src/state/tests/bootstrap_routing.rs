@@ -10,14 +10,22 @@ use pengwm_core::workspace::Workspace;
 // Bootstrap
 // -----------------------------------------------------------------------
 
+/// The app-rules harness: the default setup with the opt-in `app-rules`
+/// new-window placement mode, so `apps` entries actively route.
+fn setup_app_rules() -> (super::super::StateManager, crate::adapter_test::TestHandle) {
+    let (mut sm, handle) = setup_with_handle(1);
+    sm.new_window_placement = crate::config::NewWindowPlacement::AppRules;
+    (sm, handle)
+}
+
 #[test]
 fn creates_workspaces_from_displays() {
     let sm = setup(1);
-    // The five default named workspaces, all on the primary monitor.
+    // The eight default numbered workspaces, all on the primary monitor.
     let names: Vec<&str> = sm.workspaces.iter().map(|w| w.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["Development", "Browsing", "Notes", "Music", "Messaging"]
+        vec!["ws-1", "ws-2", "ws-3", "ws-4", "ws-5", "ws-6", "ws-7", "ws-8"]
     );
     assert!(sm.workspaces.iter().all(|w| w.monitor_id == 1));
 }
@@ -26,7 +34,7 @@ fn creates_workspaces_from_displays() {
 fn creates_global_pool_shared_across_displays() {
     let sm = setup(2);
     // One tree per name globally; output 1 shows entry 0, output 2 shows entry 1.
-    assert_eq!(sm.workspaces.len(), 5);
+    assert_eq!(sm.workspaces.len(), 8);
     assert_eq!(sm.displays.active().get(&1), Some(&0));
     assert_eq!(sm.displays.active().get(&2), Some(&1));
 }
@@ -49,8 +57,8 @@ fn tracks_existing_windows_at_init() {
 #[test]
 fn move_focused_to_workspace_moves_window() {
     let mut sm = setup(2);
-    // 5 named workspaces globally.
-    assert_eq!(sm.workspaces.len(), 5);
+    // Eight named workspaces globally.
+    assert_eq!(sm.workspaces.len(), 8);
 
     // Add two windows — they go to whatever workspace active_workspace_idx() picks
     sm.on_window_created(100, 42);
@@ -73,7 +81,7 @@ fn move_focused_to_workspace_moves_window() {
 }
 
 #[test]
-fn created_window_overflows_to_next_workspace() {
+fn created_window_waits_on_full_current_workspace() {
     let mut sm = setup(2);
     sm.displays.set_max_tiles(2);
     sm.workspaces[0].add_window(100, None);
@@ -84,15 +92,15 @@ fn created_window_overflows_to_next_workspace() {
 
     assert!(sm.workspaces[0].find_window(400).is_none());
     assert!(
-        sm.workspaces[1].find_window(400).is_some(),
-        "full ws-0 should overflow into ws-1"
+        sm.workspaces[0].pending_window(400).is_some(),
+        "full current workspace hosts overflow"
     );
     assert_eq!(sm.workspaces[0].window_count(), 2);
-    assert_eq!(sm.workspaces[1].window_count(), 2);
+    assert_eq!(sm.workspaces[1].window_count(), 1);
 }
 
 #[test]
-fn created_window_all_workspaces_full_stays_untracked() {
+fn created_window_all_workspaces_full_stays_owned_as_overlay() {
     let mut sm = setup(1);
     sm.displays.set_max_tiles(2);
     for (i, ws) in sm.workspaces.iter_mut().enumerate() {
@@ -104,8 +112,9 @@ fn created_window_all_workspaces_full_stays_untracked() {
 
     assert!(
         sm.workspaces.iter().all(|ws| ws.find_window(400).is_none()),
-        "no workspace has room, so the window stays untracked"
+        "no workspace has room, so the window stays an overlay"
     );
+    assert!(sm.workspaces[0].pending_window(400).is_some());
     assert_eq!(
         sm.store.all_window_pids().get(&400),
         Some(&42),
@@ -114,7 +123,7 @@ fn created_window_all_workspaces_full_stays_untracked() {
 }
 
 #[test]
-fn created_window_overflow_wraps_to_first_workspace() {
+fn created_window_overflow_stays_on_focused_workspace() {
     let mut sm = setup(1);
     sm.displays.set_max_tiles(2);
     // Fill the active workspace (1) and every one after it, leaving only
@@ -134,13 +143,13 @@ fn created_window_overflow_wraps_to_first_workspace() {
 
     assert_eq!(sm.active_workspace_idx(), 1, "ws-1 should be active");
     assert!(
-        sm.workspaces[0].find_window(400).is_some(),
-        "full ws-1 should wrap around into ws-0"
+        sm.workspaces[1].pending_window(400).is_some(),
+        "overflow belongs to its current workspace"
     );
 }
 
 #[test]
-fn move_to_full_workspace_redirects_to_next_with_room() {
+fn move_to_full_workspace_waits_at_explicit_destination() {
     let mut sm = setup(2);
     sm.displays.set_max_tiles(2);
     sm.workspaces
@@ -157,13 +166,13 @@ fn move_to_full_workspace_redirects_to_next_with_room() {
     assert_eq!(sm.workspaces[0].window_count(), 0);
     assert_eq!(sm.workspaces[1].window_count(), 2);
     assert!(
-        sm.workspaces[2].find_window(100).is_some(),
-        "move to full ws-1 should land in ws-3"
+        sm.workspaces[1].pending_window(100).is_some(),
+        "explicit move keeps its chosen destination"
     );
 }
 
 #[test]
-fn move_to_full_workspace_aborts_when_no_room_anywhere() {
+fn move_to_full_workspace_lands_even_when_all_full() {
     let mut sm = setup(1);
     sm.displays.set_max_tiles(2);
     for (i, ws) in sm.workspaces.iter_mut().enumerate() {
@@ -176,15 +185,16 @@ fn move_to_full_workspace_aborts_when_no_room_anywhere() {
     sm.move_focused_to_workspace(1);
 
     assert!(
-        sm.workspaces[0].find_window(1000).is_some(),
-        "window should stay put when all workspaces are full"
+        sm.workspaces[1].pending_window(1000).is_some(),
+        "window waits at the explicit destination"
     );
-    assert!(sm.workspaces.iter().all(|ws| ws.window_count() == 2));
+    assert_eq!(sm.workspaces[0].window_count(), 1);
+    assert_eq!(sm.workspaces[1].window_count(), 2);
 }
 
 #[test]
 fn on_window_created_routes_configured_app_to_its_workspace() {
-    let (mut sm, handle) = setup_with_handle(1);
+    let (mut sm, handle) = setup_app_rules();
     handle.inject_bundle_id(77, "com.google.Chrome".into());
     handle.inject_app_name(77, "Chrome".into());
 
@@ -195,15 +205,15 @@ fn on_window_created_routes_configured_app_to_its_workspace() {
         .iter()
         .position(|ws| ws.find_window(777).is_some())
         .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Browsing");
+    assert_eq!(sm.workspaces[idx].name, "ws-2");
 }
 
 #[test]
 fn on_window_created_routes_firefox_developer_edition_to_browsing() {
     // Firefox Developer Edition is a separate app (separate bundle id and
-    // display name) — it must route to Browsing by default, not fall
+    // display name) — it must route to ws-2 by default, not fall
     // through to the active workspace.
-    let (mut sm, handle) = setup_with_handle(1);
+    let (mut sm, handle) = setup_app_rules();
     handle.inject_bundle_id(78, "org.mozilla.firefoxdeveloperedition".into());
     handle.inject_app_name(78, "Firefox Developer Edition".into());
 
@@ -214,9 +224,9 @@ fn on_window_created_routes_firefox_developer_edition_to_browsing() {
         .iter()
         .position(|ws| ws.find_window(778).is_some())
         .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Browsing");
+    assert_eq!(sm.workspaces[idx].name, "ws-2");
     // Either identifier alone is enough (bundle id match or name match).
-    let (mut sm, handle) = setup_with_handle(1);
+    let (mut sm, handle) = setup_app_rules();
     handle.inject_bundle_id(78, "org.mozilla.other".into());
     handle.inject_app_name(78, "firefox developer edition".into());
     sm.on_window_created(779, 78);
@@ -225,12 +235,12 @@ fn on_window_created_routes_firefox_developer_edition_to_browsing() {
         .iter()
         .position(|ws| ws.find_window(779).is_some())
         .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Browsing");
+    assert_eq!(sm.workspaces[idx].name, "ws-2");
 }
 
 #[test]
 fn on_window_created_routing_matches_app_name_case_insensitively() {
-    let (mut sm, handle) = setup_with_handle(1);
+    let (mut sm, handle) = setup_app_rules();
     handle.inject_app_name(88, "spotify".into());
     sm.on_window_created(888, 88);
 
@@ -239,19 +249,19 @@ fn on_window_created_routing_matches_app_name_case_insensitively() {
         .iter()
         .position(|ws| ws.find_window(888).is_some())
         .expect("routed window should be tracked");
-    assert_eq!(sm.workspaces[idx].name, "Music");
+    assert_eq!(sm.workspaces[idx].name, "ws-4");
 }
 
 #[test]
 fn workspace_switch_hides_all_other_workspaces_on_monitor() {
-    let (mut sm, handle) = setup_with_handle(1);
-    // Route Firefox to Browsing (ws-1) then switch back to Development (ws-0).
+    let (mut sm, handle) = setup_app_rules();
+    // Route Firefox to ws-2 then switch back to ws-1.
     handle.inject_bundle_id(77, "org.mozilla.firefox".into());
     sm.on_window_created(777, 77);
     let browsing_idx = sm
         .workspaces
         .iter()
-        .position(|ws| ws.name == "Browsing")
+        .position(|ws| ws.name == "ws-2")
         .unwrap();
     assert!(sm.workspaces[browsing_idx].find_window(777).is_some());
 
@@ -260,10 +270,10 @@ fn workspace_switch_hides_all_other_workspaces_on_monitor() {
     let dev_idx = sm
         .workspaces
         .iter()
-        .position(|ws| ws.name == "Development")
+        .position(|ws| ws.name == "ws-1")
         .unwrap();
     assert_eq!(sm.displays.active().get(&1), Some(&dev_idx));
-    // Browsing windows should still be only in Browsing, not dragged to Dev.
+    // Browsing windows should stay in ws-2, not move to ws-1.
     assert!(sm.workspaces[dev_idx].find_window(777).is_none());
     assert!(sm.workspaces[browsing_idx].find_window(777).is_some());
     assert_eq!(sm.workspaces[dev_idx].window_count(), 0);
@@ -277,12 +287,12 @@ fn workspace_switch_debounces_stale_focus() {
     let browsing_idx = sm
         .workspaces
         .iter()
-        .position(|ws| ws.name == "Browsing")
+        .position(|ws| ws.name == "ws-2")
         .unwrap();
     let dev_idx = sm
         .workspaces
         .iter()
-        .position(|ws| ws.name == "Development")
+        .position(|ws| ws.name == "ws-1")
         .unwrap();
     // Start on browsing, then switch to dev — sets debounce.
     sm.on_command(Command::Workspace { id: 2 }, None);
@@ -300,18 +310,18 @@ fn workspace_switch_debounces_stale_focus() {
 
 #[test]
 fn hidden_workspace_focus_cannot_flip_active_even_past_the_debounce() {
-    let (mut sm, handle) = setup_with_handle(1);
+    let (mut sm, handle) = setup_app_rules();
     handle.inject_bundle_id(77, "org.mozilla.firefox".into());
     sm.on_window_created(777, 77);
     let browsing_idx = sm
         .workspaces
         .iter()
-        .position(|ws| ws.name == "Browsing")
+        .position(|ws| ws.name == "ws-2")
         .unwrap();
     let dev_idx = sm
         .workspaces
         .iter()
-        .position(|ws| ws.name == "Development")
+        .position(|ws| ws.name == "ws-1")
         .unwrap();
     // Start on browsing, then switch to dev.
     sm.on_command(Command::Workspace { id: 2 }, None);
@@ -411,14 +421,14 @@ fn a_new_window_never_rehomes_to_a_previous_window_home() {
 
 #[test]
 fn placement_capture_records_tileable_windows_with_evidence() {
-    let (mut sm, handle) = setup_with_handle(1);
+    let (mut sm, handle) = setup_app_rules();
     handle.inject_bundle_id(77, "org.mozilla.firefox".into());
     handle.inject_title(777, "New Tab".to_string());
-    sm.on_window_created(777, 77); // → Browsing
+    sm.on_window_created(777, 77); // → ws-2
 
     let records = sm.capture_placements();
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].workspace, "Browsing");
+    assert_eq!(records[0].workspace, "ws-2");
     assert_eq!(records[0].bundle.as_deref(), Some("org.mozilla.firefox"));
     assert_eq!(records[0].title.as_deref(), Some("New Tab"));
 }
@@ -430,10 +440,10 @@ fn placement_capture_records_tileable_windows_with_evidence() {
 #[test]
 fn window_routed_into_hidden_workspace_takes_the_hide_placement() {
     // The initial hide pass ran inside `new()` while the trees were empty;
-    // Firefox routes to Browsing (hidden — display 1 shows Development).
+    // Firefox routes to ws-2 (hidden — display 1 shows ws-1).
     // Without the routing tail it would float visibly over Development
     // until the next switch.
-    let (mut sm, handle) = setup_with_handle(1);
+    let (mut sm, handle) = setup_app_rules();
     handle.inject_bundle_id(77, "org.mozilla.firefox".into());
     handle.inject_title(777, "New Tab".to_string());
 
@@ -456,7 +466,7 @@ fn window_routed_into_hidden_workspace_takes_the_hide_placement() {
 #[test]
 fn window_routed_into_visible_workspace_is_not_hidden_offscreen() {
     let (mut sm, handle) = setup_with_handle(1);
-    // Unassigned app: routes to the active workspace (Development, visible).
+    // Unassigned app: routes to the active workspace (ws-1, visible).
     handle.inject_bundle_id(99, "com.example.unassigned".into());
     handle.inject_title(999, "Local note".to_string());
     handle.inject_rect(

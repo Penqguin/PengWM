@@ -144,16 +144,27 @@ routing policy; the `Vec<Workspace>` itself stays on `StateManager`.
   or wipe the visible arrangement (ADR-0006). Manual moves survive.
 - **Focus/move across monitors** (`focus-display-*`,
   `move-window-to-display-*`): focus always lands (bookkeeping-only when
-  empty); moves always land (bypassing `max_tiles`); focus stays on move.
+  empty); moves always land, waiting as overlays when full. Focus stays on move.
 - **Monitor add/remove**: the new output shows the first hidden workspace
   (else pulls the first, swapping); removed outputs' workspaces move to
   primary. Both flow through one answer/execute funnel (`TopologySync`),
   so hide + layout + bar publish stay with `StateManager`.
-- **New windows** route into their app's global workspace (no auto-pull);
-  unlisted apps land on the focused workspace; overflow spills to the next
-  global workspace with room (`max_tiles`, default 4).
+- **New windows** use the workspace focused at discovery by default. Optional
+  app routing establishes an explicit home. Capacity (`max_tiles`, default 4)
+  limits tiles. Pending windows remain owned overlays in `Workspace.pending`.
+- **Traveling overflow** carries on explicit workspace selections until it
+  tiles. Ordinary monitor focus leaves it on its current monitor. Home-bound
+  overlays retain their home through switches, minimize, app hide, and fullscreen.
+  `Workspace::fill_slots` allocates by kind and opening order. The daemon's
+  `state/overflow.rs` coordinates admission, carry, and promotion through the
+  existing hide/layout seams. `WindowStore` preserves pending intent while parked.
+- **Restart recovery** uses `Session.live_windows`, separately from diagnostic
+  bundle/title placements. `state/live_restore.rs` restores homes and opening
+  order when current boot, process lifetime, WindowId/PID, and a unique readable
+  AXIdentifier match. Unverifiable records use fresh routing. Snapshot capture
+  uses cached identity and covers all members, independently of the seatbelt cap.
 
-Hidden workspaces are emulated — `StateManager` sends their `all_windows()`
+Hidden workspaces are emulated — `StateManager` sends their `all_owned()`
 to `OsAdapter::hide_windows`, which parks them position-only (bottom-edge
 strip of their own monitor by default, far offscreen if configured).
 

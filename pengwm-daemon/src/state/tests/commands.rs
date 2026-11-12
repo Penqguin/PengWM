@@ -418,7 +418,7 @@ fn focus_display_to_empty_updates_focused_output() {
 }
 
 #[test]
-fn move_window_to_display_bypasses_cap_and_keeps_focus() {
+fn move_window_to_full_display_waits_and_keeps_focus() {
     let mut sm = setup(2);
     sm.displays.set_max_tiles(1);
     // Target output's visible workspace is full (other app's window, so the
@@ -441,9 +441,9 @@ fn move_window_to_display_bypasses_cap_and_keeps_focus() {
         None,
     );
     assert_eq!(
-        sm.workspaces[1].window_count(),
+        sm.workspaces[1].all_owned().len(),
         2,
-        "output moves always land, cap is bypassed"
+        "output moves land as an overlay when full"
     );
     assert!(
         sm.workspaces[0].find_window(300).is_none(),

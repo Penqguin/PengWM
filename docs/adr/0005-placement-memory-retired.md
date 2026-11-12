@@ -1,7 +1,7 @@
 # ADR-0005: Placement memory is recorded but never consumed at routing
 
 Date: 2026-10-27
-Status: Accepted
+Status: Extended by ADR-0008 for verified surviving-window recovery and opt-in app routing.
 
 ## Context
 

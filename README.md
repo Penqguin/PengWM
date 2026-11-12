@@ -115,21 +115,22 @@ cmd-shift-r = "reload-config"
 **Actions:** `focus-{left,right,up,down}`, `move-window-{left,right,up,down}`,
 `workspace-{id}`, `move-window-to-workspace-{id}`, `focus-display-{left,right,up,down}`,
 `move-window-to-display-{left,right,up,down}`, `split-horizontal`, `split-vertical`,
-`close`, `cycle-layout`, `toggle-magnify`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
+`close`, `cycle-window`, `cycle-window-backward`, `cycle-layout`, `toggle-magnify`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
 `resize-pane-{left,right,up,down}`, `set-gap-outer-{pixels}`,
 `set-gap-inner-{pixels}`, `reload-config`, `query-state`,
 `reveal-all`, `quit`.
 
 ## Workspaces
 
-On startup PengWM creates one global set of five named workspaces —
-**Development**, **Browsing**, **Notes**, **Music**, **Messaging** — shared
-across all monitors, i3-style. Each workspace lives on exactly one monitor at
-a time and each monitor shows exactly one workspace; switching to a workspace
-shown on another monitor swaps it onto the focused monitor. Each routes the
-windows of its configured apps into it (match by bundle id or app name,
-case-insensitive), so apps land in the workspace you use them in. Override or
-replace them with `[[workspaces]]` tables in config.toml; see
+On startup PengWM creates one global set of eight named workspaces —
+**ws-1** through **ws-8** — shared across all monitors, i3-style. Each
+workspace lives on exactly one monitor at a time and each monitor shows
+exactly one workspace; switching to a workspace
+shown on another monitor focuses that monitor. New windows open on the current
+workspace. When full, new windows overlay it and travel on explicit workspace
+switches until they tile, establishing their home. App routing is available
+through `[windows] new_window_placement = "app-rules"`. Set custom names and
+app assignments with `[[workspaces]]` tables in config.toml; see
 [docs/configuration.md](docs/configuration.md).
 
 ## Menubar
@@ -150,6 +151,7 @@ pengwm move-window <left|right|up|down>
 pengwm split <horizontal|vertical>
 pengwm workspace <id>
 pengwm move-window-to-workspace <id>
+pengwm cycle-window [--backward]
 pengwm focus-display <left|right|up|down>
 pengwm move-window-to-display <left|right|up|down>
 pengwm close

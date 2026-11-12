@@ -19,6 +19,63 @@ pub struct Assembled {
     pub use_session: bool,
 }
 
+/// Upgrade the shipped five-name default session to the current numbered
+/// defaults. User-defined workspace names remain stable and untouched.
+pub fn migrate_legacy_default_session(session: &mut Session, settings: &Settings) {
+    const OLD_NAMES: [&str; 5] = ["Development", "Browsing", "Notes", "Music", "Messaging"];
+    let entries = if settings.workspaces.is_empty() {
+        default_workspaces()
+    } else {
+        settings.workspaces.clone()
+    };
+    if entries.len() != 8
+        || entries
+            .iter()
+            .enumerate()
+            .any(|(i, entry)| entry.name != format!("ws-{}", i + 1))
+        || session.workspaces.len() != OLD_NAMES.len()
+        || session
+            .workspaces
+            .iter()
+            .zip(OLD_NAMES)
+            .any(|(workspace, old_name)| workspace.name != old_name)
+    {
+        return;
+    }
+
+    for (workspace, entry) in session.workspaces.iter_mut().zip(&entries) {
+        workspace.name.clone_from(&entry.name);
+    }
+    let Some(template) = session.workspaces.first() else {
+        return;
+    };
+    let (monitor_id, origin, size) = (
+        template.monitor_id,
+        template.monitor_origin(),
+        template.monitor_size(),
+    );
+    for entry in entries.iter().skip(session.workspaces.len()) {
+        session
+            .workspaces
+            .push(Workspace::new(entry.name.clone(), monitor_id, origin, size));
+    }
+
+    let remap_name = |name: &mut String| {
+        if let Some(index) = OLD_NAMES
+            .iter()
+            .position(|old_name| name.as_str() == *old_name)
+        {
+            *name = entries[index].name.clone();
+        }
+    };
+    for placement in &mut session.placements {
+        remap_name(&mut placement.workspace);
+    }
+    for placement in &mut session.live_windows {
+        remap_name(&mut placement.workspace);
+    }
+}
+
 /// Pure assembly: from display infos + settings + optional session, produce
 /// the workspace vec, display set, and gaps. No `OsAdapter` needed beyond
 /// the display infos slice (already queried by caller). Entries always

@@ -8,7 +8,7 @@ use super::StateManager;
 
 /// Owns the `Command` dispatch: the single vocabulary every surface (IPC,
 /// keybinds, config watcher) feeds into `StateManager::on_command`.
-/// Per-monitor switch, overflow redirect, cross-display moves and the
+/// Per-monitor switch, overflow carry, cross-display moves and the
 /// switch debounce live here; `StateManager` retains the workspace tree,
 /// `DisplaySet`, layout application and `BarSender` — this module only
 /// orchestrates them. The three helpers exercised directly by
@@ -33,6 +33,12 @@ impl StateManager {
         }
         match cmd {
             Command::Focus { direction } => self.focus_command(direction),
+            Command::CycleWindow { backward } => {
+                let idx = self.active_workspace_idx();
+                if let Some(id) = self.workspaces[idx].cycle_window(backward) {
+                    self.os.focus_window(id);
+                }
+            }
             Command::MoveWindow { direction } => self.swap_command(direction),
             Command::Split { direction } => {
                 let idx = self.active_workspace_idx();
@@ -70,19 +76,34 @@ impl StateManager {
                                 &display_snapshot,
                                 focus_first,
                             ) {
+                                let carried_focus = self.workspaces[current_idx]
+                                    .focused_window_id()
+                                    .filter(|id| {
+                                        self.workspaces[current_idx]
+                                            .pending_window(*id)
+                                            .is_some_and(|p| p.kind == pengwm_core::workspace::PendingKind::Traveling)
+                                    });
+                                self.carry_overflow(current_idx, dec.show);
+                                let focus = carried_focus
+                                    .or(dec.focus)
+                                    .or_else(|| self.workspaces[dec.show].focused_window_id());
                                 for &idx in &dec.hide {
                                     self.hide_workspace(idx);
                                 }
                                 // Record the answered focus in the tree, then
                                 // re-layout, then raise — DisplaySet answers,
                                 // commands execute.
-                                if let Some(wid) = dec.focus {
+                                if let Some(wid) = focus {
                                     self.workspaces[dec.show].focus_window(wid);
                                 }
                                 for &idx in &dec.relayout {
                                     self.apply_layout(idx);
                                 }
-                                if let Some(wid) = dec.focus {
+                                if dec.focus_only {
+                                    self.apply_layout(dec.show);
+                                    self.apply_layout(current_idx);
+                                }
+                                if let Some(wid) = focus {
                                     self.os.focus_window(wid);
                                 }
                                 // Stacking for every monitor whose visible
@@ -177,7 +198,7 @@ impl StateManager {
                     .map(|ws| pengwm_core::command::WorkspaceInfo {
                         name: ws.name.clone(),
                         monitor_id: ws.monitor_id,
-                        window_count: ws.window_count(),
+                        window_count: ws.all_owned().len(),
                         focused_window: ws.focused_window_id(),
                     })
                     .collect();
@@ -235,6 +256,16 @@ impl StateManager {
 
     pub(super) fn swap_command(&mut self, direction: Direction) {
         let idx = self.active_workspace_idx();
+        // A focused overlay is not a tree member — the tree swap has no
+        // neighbor for it. The directional move carries it to the
+        // neighboring workspace instead (spec 0003: every overlay is
+        // usable through the move commands), never a silent no-op.
+        if let Some(wid) = self.workspaces[idx].focused_window_id() {
+            if self.workspaces[idx].pending_window(wid).is_some() {
+                self.move_pending_overlay(idx, direction, wid);
+                return;
+            }
+        }
         let ws = &mut self.workspaces[idx];
         ws.swap_window(direction);
         self.apply_layout(idx);
@@ -256,19 +287,7 @@ impl StateManager {
         }
         let window_id = self.workspaces[current].focused_window_id();
         if let Some(wid) = window_id {
-            let dest = match self.displays.plan_move(&self.workspaces, current, target) {
-                Some(dec) => dec.to,
-                None => {
-                    log::warn!(
-                        "No workspace has room for {} (cap {}), move aborted",
-                        wid,
-                        self.displays.max_tiles()
-                    );
-                    self.publish_bar_state();
-                    return;
-                }
-            };
-            self.move_window_between(current, dest, wid);
+            self.move_window_between(current, target, wid);
         }
         self.publish_bar_state();
     }
@@ -278,16 +297,22 @@ impl StateManager {
     /// (`StateManager::place_admitted`) owns the destination placement:
     /// a window thrown at a hidden workspace takes the same hide
     /// placement a routed one does, or it would float over the source
-    /// screen until the next switch. (The direct `add_window` — not the
-    /// capacity-routing funnel — is deliberate: moves always land.)
+    /// screen until the next switch. Full targets host a bound overlay.
     fn move_window_between(&mut self, from: usize, to: usize, wid: WindowId) {
+        let popup = self.workspaces[from].is_popup(wid);
         self.workspaces[from].remove_window(wid);
+        self.workspaces[from].remove_popup(wid);
         if self.displays.is_visible(from, &self.workspaces) {
             self.apply_layout(from);
         }
-        self.workspaces[to].add_window(wid, None);
-        self.note_where(wid);
-        self.place_admitted(wid, to);
+        if popup {
+            self.workspaces[to].add_popup(wid);
+            self.place_admitted(wid, to);
+        } else {
+            self.admit_window(wid, to, pengwm_core::workspace::PendingKind::Explicit);
+        }
+        self.workspaces[to].focus_window(wid);
+        self.session_dirty = true;
     }
 
     fn focus_display(&mut self, direction: Direction) {
@@ -344,7 +369,7 @@ impl StateManager {
     }
 
     /// Throw the focused window onto the visible workspace of the display in
-    /// `direction`. Moves bypass `max_tiles` and always land (#2/Q10); focus
+    /// `direction`. Full targets receive a bound overlay; focus
     /// stays on the source output (#2/Q11).
     fn move_window_to_display(&mut self, direction: Direction) {
         let current_idx = self.active_workspace_idx();
@@ -399,6 +424,7 @@ impl StateManager {
         let acts_on_active = matches!(
             cmd,
             Command::Focus { .. }
+                | Command::CycleWindow { .. }
                 | Command::MoveWindow { .. }
                 | Command::Split { .. }
                 | Command::MoveWindowToWorkspace { .. }

@@ -4,7 +4,7 @@ use crate::adapter::WindowClass;
 use crate::adapter::WindowListing;
 use pengwm_core::layout::Rect;
 use pengwm_core::tree::WindowId;
-use pengwm_core::workspace::position_of_member;
+use pengwm_core::workspace::{position_of_member, PendingKind};
 
 use super::store::{ParkReason, RoutingVerdict};
 use super::{AppIdentity, StateManager, FOCUS_SETTLE_MS};
@@ -32,6 +32,15 @@ impl StateManager {
             log::debug!("Ignoring window {} from excluded pid {}", window_id, pid);
             return;
         }
+        if self.store.is_parked(window_id) {
+            return;
+        }
+        if self.store.pid_for(window_id).is_some_and(|old| old != pid) {
+            self.on_window_destroyed(window_id);
+        }
+        if self.find_workspace_of_any(window_id).is_some() {
+            return;
+        }
         self.store.register(window_id, pid);
         if self.find_workspace_of_any(window_id).is_some() {
             return;
@@ -57,49 +66,43 @@ impl StateManager {
             );
             return;
         }
-        let restricted = self.app_is_restricted(identity.bundle.as_deref());
-        // Untracked floats when (a) discovery's CG-level gate said so and
-        // the gate isn't disabled, or (b) the bundle is in `float_apps`.
-        // Popups are decided before the float list: the subrole answer is
-        // the more specific signal.
-        let float_app = self.app_is_float_app(identity);
-        if class == WindowClass::Untracked && self.float_level_overlays && !restricted {
-            log::info!(
-                "WindowCreated untracked overlay: {} pid={} — left out of the tree",
+        if !self.window_is_tileable(Some(class), identity) {
+            let restricted = self.app_is_restricted(identity.bundle.as_deref());
+            if class.is_popup() || restricted {
+                log::info!(
+                    "WindowCreated popup: {} pid={} class={:?} restricted={}",
+                    window_id,
+                    pid,
+                    class,
+                    restricted
+                );
+                self.store.note_routed(window_id, RoutingVerdict::Popup);
+                self.add_popup_to_workspace(window_id);
+                self.publish_bar_state();
+                return;
+            }
+            // An Untracked class with the level gate enabled, or an app in
+            // `float_apps`, remains outside workspace membership.
+            if class == WindowClass::Untracked && self.float_level_overlays
+                || self.app_is_float_app(identity)
+            {
+                log::info!(
+                    "WindowCreated untracked overlay: {} pid={} — left out of the tree",
+                    window_id,
+                    pid
+                );
+                // The verdict is the store's now: the class rode the
+                // evictable element cache, and fallback re-classification
+                // can lose the original CG-level evidence.
+                self.store.note_routed(window_id, RoutingVerdict::Untracked);
+                self.publish_bar_state();
+                return;
+            }
+            log::debug!(
+                "WindowCreated {} class {:?} rejected by placement policy",
                 window_id,
-                pid
+                class
             );
-            // The verdict is the store's now: the class rode the evictable
-            // element cache, and the fallback re-classification reads a
-            // bare `Standard` for float-listed bundles on cache misses.
-            self.store.note_routed(window_id, RoutingVerdict::Untracked);
-            self.publish_bar_state();
-            return;
-        }
-        if class.is_popup() || restricted {
-            log::info!(
-                "WindowCreated popup: {} pid={} class={:?} restricted={}",
-                window_id,
-                pid,
-                class,
-                restricted
-            );
-            self.store.note_routed(window_id, RoutingVerdict::Popup);
-            self.add_popup_to_workspace(window_id);
-            self.publish_bar_state();
-            return;
-        }
-        // Precedence (ADR-0002): popup subroles — and restricted's
-        // force-popup role — decide *before* the float list; the float
-        // list is the tile-boundary fallback below.
-        if float_app {
-            log::info!(
-                "WindowCreated untracked (float_apps): {} pid={} — left out of the tree",
-                window_id,
-                pid
-            );
-            self.store.note_routed(window_id, RoutingVerdict::Untracked);
-            self.publish_bar_state();
             return;
         }
 
@@ -109,10 +112,34 @@ impl StateManager {
         // remembered workspace). Then the config entry match (what the
         // app *is*). Then the active workspace — unassigned windows
         // open where the user is.
-        let preferred = self
-            .where_should(window_id, pid)
-            .or_else(|| self.routed_workspace_for(identity))
+        let remembered = self.where_should(window_id, pid);
+        // The stale record's pending intent and opening order ride the
+        // seatbelt answer only: an expired tombstone (confirmed destroy)
+        // means this is a new window, which opens with a fresh order and
+        // the placement policy's kind, not the dead window's.
+        let previous = remembered.and_then(|_| {
+            self.live_placement
+                .get(&window_id)
+                .filter(|rec| rec.pid == pid)
+                .map(|rec| (rec.pending, rec.order))
+        });
+        if let Some((_, order)) = previous {
+            self.store.restore_order(window_id, order);
+        }
+        let routed = self.routed_workspace_for(identity);
+        let preferred = remembered
+            .or(routed)
             .unwrap_or_else(|| self.active_workspace_idx());
+        let kind = if remembered.is_some() {
+            previous
+                .and_then(|(pending, _)| pending)
+                .map(|p| p.kind)
+                .unwrap_or(PendingKind::Returning)
+        } else if routed.is_some() {
+            PendingKind::Explicit
+        } else {
+            PendingKind::Traveling
+        };
         log::debug!(
             "WindowCreated tiled: {} pid={} app={:?} bundle={:?} workspace={} display={} origin={:?} size={:?}",
             window_id,
@@ -125,14 +152,29 @@ impl StateManager {
             self.workspaces[preferred].monitor_size()
         );
         self.store.note_routed(window_id, RoutingVerdict::Tiled);
+        self.store
+            .note_identity(window_id, self.os.window_identity(window_id));
         // The shared admit funnel executes the routing tail now: a member
         // of a hidden workspace takes the hide placement inside
-        // `add_window_to_workspace` (→ `place_admitted`). The initial
+        // `admit_window` (→ `place_admitted`). The initial
         // hide pass ran inside `new()` while every tree was still empty —
         // everything discovered after it (bootstrap poll, sweep, new
         // windows) needs the same treatment, and gets it from the same
         // seam.
-        self.add_window_to_workspace(window_id, preferred);
+        self.admit_window(window_id, preferred, kind);
+        // One in-memory focus for both shapes: `add_window` focused the
+        // window if admission tiled it, and this sets `focused_overlay`
+        // if it is still waiting — including on a hidden workspace, so
+        // the overlay is focused when the user switches there.
+        self.workspaces[preferred].focus_window(window_id);
+        if self.workspaces[preferred]
+            .pending_window(window_id)
+            .is_some()
+            && self.displays.is_visible(preferred, &self.workspaces)
+            && self.workspace_may_act(preferred)
+        {
+            self.os.focus_window(window_id);
+        }
         // Discovery-time fast path: a window discovered already fullscreen
         // (daemon restart, or created straight into fullscreen) tiles for
         // one instant, then its refused first write would catch it anyway —
@@ -187,6 +229,21 @@ impl StateManager {
             .any(|app| bundle.is_some_and(|b| b.eq_ignore_ascii_case(app)))
     }
 
+    /// Shared admission policy for fresh discoveries and verified restart
+    /// recovery. Popup and untracked handling still belongs to discovery;
+    /// this predicate answers only whether a window may enter the tile tree.
+    pub(super) fn window_is_tileable(
+        &self,
+        class: Option<WindowClass>,
+        identity: &AppIdentity,
+    ) -> bool {
+        let class_allows_tiles = class == Some(WindowClass::Standard)
+            || (class == Some(WindowClass::Untracked) && !self.float_level_overlays);
+        class_allows_tiles
+            && !self.app_is_float_app(identity)
+            && !self.app_is_restricted(identity.bundle.as_deref())
+    }
+
     /// `float_apps` semantics (ADR-0002): every window of these apps is
     /// untracked — never tiled, on top across workspace switches until
     /// closed. Matched case-insensitively against the bundle id OR the
@@ -217,57 +274,26 @@ impl StateManager {
             .collect()
     }
 
-    /// Route `window_id` into a workspace and retile. Prefers `preferred`,
-    /// overflowing to the next workspace with capacity. Returns the target
-    /// workspace index, or `None` when every workspace is full.
-    pub(super) fn add_window_to_workspace(
-        &mut self,
-        window_id: WindowId,
-        preferred: usize,
-    ) -> Option<usize> {
-        if self.workspaces[preferred].find_window(window_id).is_some() {
-            self.note_where(window_id);
-            return Some(preferred);
-        }
-        let target = match self.displays.target_with_room(&self.workspaces, preferred) {
-            Some(idx) => {
-                if idx != preferred {
-                    log::info!(
-                        "Workspace {} full ({} >= {}), routing new window to workspace {}",
-                        preferred,
-                        self.workspaces[preferred].window_count(),
-                        self.displays.max_tiles(),
-                        idx
-                    );
-                }
-                idx
-            }
-            None => {
-                log::warn!(
-                    "All workspaces at capacity ({}), leaving window {} untracked",
-                    self.displays.max_tiles(),
-                    window_id
-                );
-                return None;
-            }
-        };
-
-        let ws = &mut self.workspaces[target];
-        // Restricted apps tile like everything else (monocle is gone).
-
-        ws.add_window(window_id, None);
-        self.note_where(window_id);
-        // THE admit tail (`StateManager::place_admitted`): visible target
-        // tiles; hidden target seeds the offscreen placement. Routing
-        // births, reveals and `reveal_all` all own the "member of a
-        // hidden workspace is offscreen" invariant through this one ask.
-        self.place_admitted(window_id, target);
-        Some(target)
+    pub fn on_window_destroyed(&mut self, window_id: WindowId) {
+        self.destroy_window_common(window_id, true);
     }
 
-    pub fn on_window_destroyed(&mut self, window_id: WindowId) {
+    /// An untrack driven by indirect evidence only — the listing sweep
+    /// ("its app no longer lists it"), a Gone write outcome, the
+    /// unknown-destroyed probe. No destroyed notification was seen for
+    /// this id, so the seatbelt tombstone stays trusted: an app that
+    /// temporarily stops listing a live window is exactly the
+    /// misjudgment the seatbelt's rediscovery exists for.
+    pub(super) fn on_window_unlisted(&mut self, window_id: WindowId) {
+        self.destroy_window_common(window_id, false);
+    }
+
+    fn destroy_window_common(&mut self, window_id: WindowId, confirmed_destroy: bool) {
+        self.session_dirty = true;
         for i in 0..self.workspaces.len() {
-            if self.workspaces[i].find_window(window_id).is_some() {
+            if self.workspaces[i].find_window(window_id).is_some()
+                || self.workspaces[i].pending_window(window_id).is_some()
+            {
                 let is_visible = self.displays.is_visible(i, &self.workspaces);
                 let ws = &mut self.workspaces[i];
                 ws.remove_window(window_id);
@@ -285,7 +311,10 @@ impl StateManager {
                 break;
             }
         }
-        self.store.unregister(window_id);
+        if let Some(pid) = self.store.unregister(window_id) {
+            self.note_placement_closed(window_id, confirmed_destroy);
+            self.prune_stale_placements(pid);
+        }
         self.layout_cache.forget(window_id);
         self.deferred_hides.remove(&window_id);
         // One funnel for OS-side eviction: destroyed notification, missed
@@ -302,6 +331,7 @@ impl StateManager {
     /// (tree member or popup) so it stops being laid out, but keep pid
     /// tracking so it can be retiled when it becomes visible again.
     pub fn on_window_hidden(&mut self, window_id: WindowId) {
+        self.session_dirty = true;
         if self.store.is_fullscreen_parked(window_id) {
             // A hide landed while the window sat fullscreen-parked: upgrade
             // the parking reason and keep the remembered idx. The fullscreen
@@ -379,19 +409,25 @@ impl StateManager {
             self.publish_bar_state();
             return;
         }
-        self.reveal_tree_window(window_id, pid, remembered.map(|e| e.idx));
+        self.reveal_tree_window(window_id, pid, remembered);
     }
 
     /// The shared tree-window tail of the reveal funnel: re-tile at the
-    /// remembered workspace, overflowing through the normal capacity
-    /// routing (`add_window_to_workspace` → `target_with_room`) when the
-    /// remembered slot no longer has room. The fallback asks the one
+    /// remembered workspace, waiting there as a bound overlay when full.
+    /// The fallback asks the one
     /// placement ask (`where_should` — the seatbelt, a rediscovery
     /// answer only per ADR-0005) before config routing and the active
     /// workspace, so a window the store lost and rediscovered comes
     /// home here too. Publishes bar state on re-tile.
-    fn reveal_tree_window(&mut self, window_id: WindowId, pid: i32, remembered: Option<usize>) {
+    fn reveal_tree_window(
+        &mut self,
+        window_id: WindowId,
+        pid: i32,
+        remembered: Option<super::store::ParkedEntry>,
+    ) {
+        let pending = remembered.and_then(|e| e.pending);
         let preferred = remembered
+            .map(|e| e.idx)
             .filter(|&idx| idx < self.workspaces.len())
             .unwrap_or_else(|| {
                 let identity = self.app_identity(pid);
@@ -399,9 +435,12 @@ impl StateManager {
                     .or_else(|| self.routed_workspace_for(&identity))
                     .unwrap_or_else(|| self.active_workspace_idx())
             });
-        if self.add_window_to_workspace(window_id, preferred).is_some() {
-            self.publish_bar_state();
-        }
+        self.admit_window(
+            window_id,
+            preferred,
+            pending.map(|p| p.kind).unwrap_or(PendingKind::Returning),
+        );
+        self.publish_bar_state();
     }
 
     /// True when the window is native fullscreen but this StateManager is
@@ -458,8 +497,7 @@ impl StateManager {
     }
 
     /// The window left native fullscreen: reveal it through the same funnel
-    /// as `on_window_shown` — remembered workspace first, capacity overflow
-    /// beyond it. Popups never get here (they are exempt from parking).
+    /// as `on_window_shown` — remembered workspace, waiting there as an overlay when full. Popups never get here (they are exempt from parking).
     pub fn on_fullscreen_exit(&mut self, window_id: WindowId) {
         let Some(entry) = self.store.reveal(window_id) else {
             return;
@@ -474,7 +512,7 @@ impl StateManager {
             entry.idx
         );
         debug_assert!(!entry.popup, "popups are exempt from fullscreen parking");
-        self.reveal_tree_window(window_id, pid, Some(entry.idx));
+        self.reveal_tree_window(window_id, pid, Some(entry));
         #[cfg(test)]
         self.assert_identity_invariant();
     }
@@ -494,7 +532,7 @@ impl StateManager {
             return;
         }
         for i in 0..self.workspaces.len() {
-            if self.workspaces[i].find_window(window_id).is_some() {
+            if self.workspaces[i].owns(window_id) {
                 // i3 rule: a workspace is attached to its output and only an
                 // explicit command moves it — focus can never drag a workspace
                 // back into view. X11 enforces this by construction (hidden
@@ -542,8 +580,9 @@ impl StateManager {
         }
     }
 
-    /// Workspace index holding `window_id` as a tree member *or* a popup.
-    /// The membership-aware find: destroy/hide/show cleanup needs both.
+    /// Workspace index holding `window_id` as a tree member, pending
+    /// overlay, *or* popup. The membership-aware find: destroy/hide/show
+    /// cleanup needs all three.
     pub(super) fn find_workspace_of_any(&self, window_id: WindowId) -> Option<usize> {
         position_of_member(&self.workspaces, window_id)
     }
@@ -838,7 +877,7 @@ impl StateManager {
                         window_id,
                         pid
                     );
-                    self.on_window_destroyed(window_id);
+                    self.on_window_unlisted(window_id);
                 }
             }
         }

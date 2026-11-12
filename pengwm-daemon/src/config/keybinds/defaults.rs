@@ -108,7 +108,7 @@ impl Default for KeybindConfig {
                 action: Command::Workspace { id: 7 },
             },
             Keybind {
-                keycode: 0x1B,
+                keycode: 0x1C,
                 modifiers: MODIFIER_ALT,
                 action: Command::Workspace { id: 8 },
             },
@@ -154,7 +154,7 @@ impl Default for KeybindConfig {
                 action: Command::MoveWindowToWorkspace { id: 7 },
             },
             Keybind {
-                keycode: 0x1B,
+                keycode: 0x1C,
                 modifiers: MODIFIER_ALT | MODIFIER_SHIFT,
                 action: Command::MoveWindowToWorkspace { id: 8 },
             },

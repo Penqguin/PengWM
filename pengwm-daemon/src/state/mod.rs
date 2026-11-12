@@ -19,7 +19,9 @@ pub mod display;
 pub mod drag;
 pub mod layout_writer;
 pub mod lifecycle;
+mod live_restore;
 pub mod monitors_wake;
+mod overflow;
 mod pill;
 pub mod placement;
 pub mod reconcile;
@@ -76,6 +78,7 @@ pub struct StateManager {
     /// level tile again. Cached classes persist (first-classification-
     /// wins), so this affects windows discovered after the change.
     float_level_overlays: bool,
+    new_window_placement: crate::config::NewWindowPlacement,
     last_layout_rects: HashMap<WindowId, Rect>,
     /// pid → menubar app label, cached. Labels resolve over synchronous
     /// AX reads (each one drawing against the 250 ms message budget), so
@@ -246,11 +249,14 @@ impl StateManager {
         // Try session restore (topology + active + gaps) when enabled.
         // Skipped in `cargo test` so unit tests start from a deterministic
         // fresh state; session restore is exercised via `session::tests`.
-        let maybe_session = if settings.restore_last_session && !cfg!(test) {
+        let mut maybe_session = if settings.restore_last_session && !cfg!(test) {
             session::load_default()
         } else {
             None
         };
+        if let Some(session) = maybe_session.as_mut() {
+            crate::state::bootstrap::migrate_legacy_default_session(session, &settings);
+        }
 
         let primary_id = os.primary_display_id();
         let assembled = crate::state::bootstrap::assemble(
@@ -274,10 +280,21 @@ impl StateManager {
 
         let frontmost_pid = os.frontmost_pid();
 
-        let mut boot_pids = Vec::new();
-        for pid in os.running_app_pids() {
+        let mut boot_pids = os.running_app_pids();
+        if let Some(session) = maybe_session.as_ref() {
+            let running: HashSet<_> = os.running_pids_any_policy().into_iter().collect();
+            boot_pids.extend(
+                session
+                    .live_windows
+                    .iter()
+                    .map(|record| record.identity.pid)
+                    .filter(|pid| running.contains(pid)),
+            );
+        }
+        boot_pids.sort_unstable();
+        boot_pids.dedup();
+        for &pid in &boot_pids {
             os.attach_observer(pid);
-            boot_pids.push(pid);
         }
         for (pid, listing) in os.poll_windows_for_pids(&boot_pids) {
             if let crate::adapter::WindowListing::Answered(windows) = listing {
@@ -305,6 +322,7 @@ impl StateManager {
             excluded_pids,
             float_apps: settings.windows.float_apps.clone(),
             float_level_overlays: settings.windows.float_level_overlays,
+            new_window_placement: settings.windows.new_window_placement,
             last_layout_rects: HashMap::new(),
             app_labels: HashMap::new(), // pid → AppLabel (positive or timestamped negative)
             layout_cache: LayoutWriteCache::new(),
@@ -351,6 +369,10 @@ impl StateManager {
         // anything there.
         state.refresh_space_gate(Instant::now(), true);
 
+        if let Some(session) = maybe_session.as_ref().filter(|_| use_session) {
+            state.restore_live_windows(&session.live_windows);
+        }
+
         // Hide every workspace that isn't the active one for its monitor.
         // On fresh init that's all i != 0; on session restore it's the saved active set.
         let active_set: std::collections::HashSet<usize> =
@@ -385,6 +407,9 @@ impl StateManager {
     /// The options come from the caller's `AppIdentity` so a pass pays
     /// the NSWorkspace scans once per pid, not once per window.
     pub(super) fn routed_workspace_for(&self, identity: &AppIdentity) -> Option<usize> {
+        if self.new_window_placement != crate::config::NewWindowPlacement::AppRules {
+            return None;
+        }
         self.displays.routed_workspace_idx(
             &self.workspaces,
             identity.bundle.as_deref(),
@@ -431,6 +456,7 @@ impl StateManager {
         self.cached_fullscreen_strategy = Some(updated_settings.windows.fullscreen);
         self.float_apps = updated_settings.windows.float_apps.clone();
         self.float_level_overlays = updated_settings.windows.float_level_overlays;
+        self.new_window_placement = updated_settings.windows.new_window_placement;
         set_popup_ratio(&mut self.workspaces, updated_settings.windows.popup_ratio);
         set_magnify_ratio(&mut self.workspaces, updated_settings.windows.magnify_ratio);
         self.focus_first_on_switch = updated_settings.focus_first_on_switch;
@@ -440,7 +466,12 @@ impl StateManager {
             } else {
                 updated_settings.workspaces.clone()
             });
-        self.apply_layout(self.active_workspace_idx());
+        for idx in 0..self.workspaces.len() {
+            self.fill_workspace_slots(idx);
+            if self.displays.is_visible(idx, &self.workspaces) {
+                self.apply_layout(idx);
+            }
+        }
         self.publish_bar_state();
         log::info!(
             "Config reloaded (gaps: {}/{})",
@@ -620,9 +651,15 @@ impl StateManager {
                     .or_else(|| self.routed_workspace_for(&identity))
                     .unwrap_or_else(|| self.active_workspace_idx())
             };
-            if self.add_window_to_workspace(wid, preferred).is_some() {
-                retiled = true;
-            }
+            self.admit_window(
+                wid,
+                preferred,
+                entry
+                    .pending
+                    .map(|p| p.kind)
+                    .unwrap_or(pengwm_core::workspace::PendingKind::Returning),
+            );
+            retiled = true;
         }
         // Re-layout visible workspaces to ensure tiling clean.
         let visible: Vec<usize> = self.displays.active().values().copied().collect();
@@ -680,6 +717,7 @@ impl StateManager {
     /// writer's plan, and untrack windows proven gone via the normal destroyed
     /// path (removes from tree + store, re-layouts to fill the gap).
     pub(super) fn apply_layout(&mut self, workspace_idx: usize) {
+        self.fill_workspace_slots(workspace_idx);
         let rects = self.workspaces[workspace_idx].layout(self.gap_inner, self.gap_outer);
         let ws = &self.workspaces[workspace_idx];
         let tiled_windows = ws.all_windows();
@@ -705,7 +743,7 @@ impl StateManager {
         // Drag hit-testing must never target a popup: popups are not tree
         // members, and swapping a tile with an overlay is meaningless. The
         // write plan below still sees the full map (popups ride it).
-        let popup_ids = self.workspaces[workspace_idx].popup_ids();
+        let popup_ids = self.workspaces[workspace_idx].overlay_ids();
         self.last_layout_rects = rects
             .iter()
             .filter(|(wid, _)| !popup_ids.contains(wid))
@@ -772,7 +810,7 @@ impl StateManager {
             self.try_park_fullscreen(window_id);
         }
         for window_id in dead {
-            self.on_window_destroyed(window_id);
+            self.on_window_unlisted(window_id);
         }
     }
 
@@ -792,7 +830,7 @@ impl StateManager {
         let mut pids: Vec<i32> = self
             .workspaces
             .iter()
-            .flat_map(|ws| ws.all_windows())
+            .flat_map(|ws| ws.all_owned())
             .filter_map(|wid| self.store.pid_for(wid))
             .collect();
         pids.sort_unstable();
@@ -821,7 +859,7 @@ impl StateManager {
             .map(|(i, ws)| {
                 let is_active = self.displays.is_visible(i, &self.workspaces);
                 let windows = ws
-                    .all_windows()
+                    .all_owned()
                     .into_iter()
                     .filter_map(|wid| self.store.pid_for(wid))
                     .map(|pid| match self.app_labels.get(&pid) {
@@ -834,7 +872,7 @@ impl StateManager {
                 BarWorkspace {
                     name: ws.name.clone(),
                     monitor_id: ws.monitor_id,
-                    window_count: ws.window_count(),
+                    window_count: ws.all_owned().len(),
                     active: is_active,
                     windows,
                 }

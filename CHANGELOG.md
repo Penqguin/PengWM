@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.17 — Workspace placement and recovery (2026-11-12)
+
+- **New: local overflow overlays.** Windows opened on a full workspace wait
+  there and travel with explicit workspace switches until a tile slot opens.
+  Returning and explicitly placed windows keep their selected home.
+- **New: verified live-window restore.** Surviving windows with unique,
+  verifiable identities recover their workspace and pending order after a
+  daemon restart. Unverifiable windows follow fresh-window routing.
+- **Changed: eight numbered defaults.** Workspaces now default to `ws-1`
+  through `ws-8`; custom names remain configurable through `[[workspaces]]`.
+  Existing default sessions migrate while preserving their saved topology.
+- **Fixed: hide/show could leave windows untiled.** Hiding a workspace now
+  clears stale layout-write backoff so showing it retries the tile write.
+- **Fixed: Alt-8 workspace bindings.** Corrected the ANSI 8 keycode for
+  switching and moving windows, including configured keybind parsing.
+
 ## v0.6.14 — Native Space gating and geometry fixes (2026-11-03)
 
 - **New: native Space gating per display.** PengWM manages each display's

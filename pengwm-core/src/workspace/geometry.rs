@@ -37,7 +37,7 @@ impl Workspace {
             }
         }
         let ratio = self.popup_ratio.clamp(POPUP_RATIO_MIN, 1.0);
-        for &wid in &self.popups {
+        for wid in self.overlay_ids() {
             output.insert(wid, crate::layout::centered_overlay_rect(inset, ratio));
         }
         for rect in output.values_mut() {

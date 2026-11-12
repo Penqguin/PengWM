@@ -29,6 +29,9 @@ pub enum Command {
     /// Advance the active workspace to the next preset in
     /// `LayoutPreset::all()` order (wrapping, per-workspace).
     CycleLayout,
+    CycleWindow {
+        backward: bool,
+    },
     /// Toggle tmux-popup style magnify on the focused window.
     ToggleMagnify,
     /// Rearrange the active workspace into a named tmux-style preset.
@@ -136,6 +139,7 @@ impl Command {
                 | Command::ResizePane { .. }
                 | Command::SelectLayout { .. }
                 | Command::CycleLayout
+                | Command::CycleWindow { .. }
                 | Command::FocusDisplay { .. }
                 | Command::MoveWindowToDisplay { .. }
         )
@@ -149,6 +153,11 @@ impl Command {
 /// The single table of action names → [`Command`]. Keybind configs parse
 /// through this so their vocabulary is exactly the wire type's.
 const ACTION_TABLE: &[(&str, Command)] = &[
+    ("cycle-window", Command::CycleWindow { backward: false }),
+    (
+        "cycle-window-backward",
+        Command::CycleWindow { backward: true },
+    ),
     (
         "focus-left",
         Command::Focus {

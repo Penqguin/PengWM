@@ -195,7 +195,7 @@ impl StateManager {
         let members: HashSet<WindowId> = self
             .workspaces
             .iter()
-            .flat_map(|ws| ws.all_windows().into_iter().chain(ws.popup_ids()))
+            .flat_map(|ws| ws.all_owned())
             .collect();
         let mut read_set: Vec<WindowId> = members.iter().copied().collect();
         for wid in self.store.hide_parked() {

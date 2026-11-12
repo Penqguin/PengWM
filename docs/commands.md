@@ -9,6 +9,17 @@ pengwm focus <left|right|up|down>
 ```
 
 Move keyboard focus to the nearest window in the given direction.
+
+## Cycle Window
+
+```bash
+pengwm cycle-window
+pengwm cycle-window --backward
+```
+
+Cycle focus through every tile and overlay on the current workspace. Keybind
+actions are `cycle-window` and `cycle-window-backward`. Bind these in your
+configuration to access windows covered by stacked overlays.
 Wraps around at workspace boundaries.
 
 ## Move Window
@@ -17,7 +28,10 @@ Wraps around at workspace boundaries.
 pengwm move-window <left|right|up|down>
 ```
 
-Swap the focused window with its neighbor in the given direction.
+Swap the focused window with its neighbor in the given direction. When the
+focused window is an overflow overlay, the move carries it to the workspace
+of the neighboring display instead — it tiles there if a slot is open and
+waits as a bound overlay when the destination is full.
 
 ## Split
 
@@ -51,9 +65,9 @@ pengwm move-window-to-workspace <id>
 ```
 
 Move the focused window to a different workspace. The window is removed
-from the current workspace and inserted into the target. Same-monitor
-moves respect `max_tiles` (overflow redirects to the next workspace with
-room); moves across monitors always land.
+from the current workspace and inserted into the target. A full target receives
+the window as a workspace-bound overlay until a tile slot opens. Explicit
+placement establishes its home and ends traveling overflow behavior.
 
 ## Focus Display
 
@@ -74,7 +88,8 @@ pengwm move-window-to-display <left|right|up|down>
 
 Throw the focused window onto the monitor in the given direction (default
 (default binds: `alt-cmd-h/j/k/l`). Always lands on that monitor's visible
-workspace, bypassing `max_tiles`; focus stays on the source monitor.
+workspace, waiting there as an overlay when `max_tiles` is reached. Focus stays
+on the source monitor.
 
 ## Cycle Layout
 

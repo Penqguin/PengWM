@@ -10,7 +10,7 @@ apply on save (or via `pengwm reload-config`).
 | ---------------------- | ------ | ------- | ----------------------------------------- |
 | `gap_outer`            | int    | `10`    | Pixels between windows and screen edge    |
 | `gap_inner`            | int    | `5`     | Pixels between adjacent windows           |
-| `max_tiles`            | int    | `4`     | Max windows per workspace; overflow goes to the next workspace with room |
+| `max_tiles`            | int    | `4`     | Maximum tiled windows per workspace, with excess windows displayed as overlays |
 | `restricted_apps`      | list   | `[]`    | Bundle ids of apps whose windows always pop out as centered overlays — never tiled (see [Popups](#popups)) |
 | `restore_last_session` | bool   | `true`  | Restore last session (workspace layout/focus) from `~/.local/share/pengwm/state.toml` on startup — new windows still route by config, then the active workspace |
 | `main_ratio`           | float  | `0.6`   | Share of the split the first window takes in the `main-horizontal` / `main-vertical` presets (clamped to 0.2–0.8) |
@@ -33,14 +33,33 @@ pill_duration_ms = 500
 
 ## Workspaces
 
-On startup the daemon creates one global set of named workspaces — five by
-default (**Development**, **Browsing**, **Notes**, **Music**, **Messaging**) —
-shared across all monitors, i3-style. Each workspace lives on exactly one
-monitor at a time and each monitor shows exactly one workspace. Each entry
-routes the windows of its listed apps into it, so your editor opens on the
-Development workspace, Safari on Browsing, and so on.
-`apps` entries match an app's bundle id or display name (case-insensitively);
-windows from unlisted apps go to the currently focused workspace.
+On startup the daemon creates one global set of eight named workspaces by
+default (**ws-1** through **ws-8**) shared across all monitors, i3-style.
+Each workspace lives on exactly one monitor at a time and each monitor shows
+exactly one workspace. New tileable
+windows open on the focused workspace when PengWM discovers them. To enable
+app associations, set `[windows] new_window_placement = "app-rules"`.
+In that mode, `apps` entries match bundle ids or display names
+case-insensitively, and unlisted apps use the focused workspace.
+
+**ATTENTION:** Existing `apps` entries become active only when app routing is
+enabled. The default placement mode is `"current-workspace"`.
+
+When the workspace is full, new windows appear as centered overflow overlays.
+An explicit workspace selection carries them to that workspace, including one
+shown on another monitor. Full destinations keep them as overlays. Available
+slots admit windows in opening order, and each window stays on its home
+workspace once tiled. A slot opening before a switch also admits waiting
+windows immediately. Clicking or focusing another monitor leaves overflow
+on its current monitor.
+
+Explicit moves and enabled app rules establish a home immediately. Windows
+waiting at an established home stay there as overlays when full. Free slots
+serve returning settled windows first, explicitly placed windows second, and
+traveling overflow third, using opening order within each group. Minimizing
+traveling overflow pauses carrying, and restoring it resumes placement on its
+previous workspace. `pengwm cycle-window` and `pengwm cycle-window --backward`
+reach tiles and overlays.
 
 | Key         | Type   | Description                                                  |
 | ----------- | ------ | ------------------------------------------------------------ |
@@ -49,9 +68,11 @@ windows from unlisted apps go to the currently focused workspace.
 | `monitor`   | int/string | Optional display affinity (`1` or `"Display Name"`); `None` clones to every monitor |
 | `autostart` | list   | Shell commands to run once when this workspace is created (not on session restore) |
 
-The list replaces the defaults entirely — define your own five (or three, or
-twelve). Workspaces are created at startup, so changing the list requires a
-daemon restart. Switching (`workspace-N`, global 1-based config order) to a
+The list replaces the defaults entirely — define your own names and count.
+Set each entry's `name` to customize workspace naming while keeping app,
+monitor, and autostart settings alongside it. Workspaces are created at
+startup, so changing the list requires a daemon restart. Switching
+(`workspace-N`, global 1-based config order) to a
 workspace shown on another monitor focuses that monitor.
 `focus-display` / `move-window-to-display` move focus and windows between
 monitors; moves always land, even on full workspaces.
@@ -91,12 +112,16 @@ are never dropped. `autostart` runs once per workspace regardless of the hint.
 On `pengwm quit` (or SIGTERM/SIGINT) the daemon atomically saves the session to
 `~/.local/share/pengwm/state.toml` (`$XDG_STATE_HOME/pengwm/state.toml` if set):
 active workspace per monitor, workspace names/monitors, gaps, and the split
-skeleton (windows themselves are ephemeral and re-routed on next launch).
+skeleton metadata, plus verified live-window homes and pending overflow order.
 
-- `restore_last_session = true` (default) restores that file on next launch
-  (workspace topology, active workspaces, gaps). Window placements are recorded
-  in the file but new windows no longer re-home from them: a new window opens on
-  its config-routed workspace, else the currently active one (ADR-0005).
+- `restore_last_session = true` (default) restores topology, active workspaces,
+  gaps, and homes/order for surviving windows whose identity can be verified.
+  Recovery requires matching OS boot, process start, PID, window id, and a
+  readable unique accessibility identifier. Apps without that evidence use
+  fresh-window placement. App/title diagnostic records alone cannot establish
+  identity. An app relaunch or OS reboot also uses fresh placement.
+- Placement changes are also saved periodically. An abrupt failure can lose
+  changes since the last successful save, normally up to ten seconds.
 - `restore_last_session = false` always starts from `config.toml`.
 - A corrupt/missing session falls back to defaults with a warning.
 - `pengwm clear-session` deletes the saved state so the next launch is fresh.
@@ -128,8 +153,9 @@ Visibility and lifecycle settings scoped under `[windows]`.
 
 | Key               | Type   | Default        | Description                                                                                   |
 | ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------------- |
+| `new_window_placement` | string | `"current-workspace"` | New-window routing, either `"current-workspace"` or `"app-rules"` |
 | `hidden_strategy` | string | `"bottom_edge"` | Where inactive-workspace windows are parked: `"bottom_edge"` (1×1 at bottom-right, dark clamped strip visible in Mission Control as daemon-down escape hatch) or `"far_offscreen"` (legacy `-100k`, fully invisible) |
-| `fullscreen`      | string | `"park"`       | Native-fullscreen handling: `"park"` removes the window from the tree while fullscreened (siblings reflow; on unfullscreen it re-enters its remembered workspace, overflowing when full) or `"tile"` (legacy: the tree keeps the slot and writes are refused — the pin backoff absorbs the storm) |
+| `fullscreen`      | string | `"park"`       | `"park"` frees the tile while fullscreened and returns the window to its home, waiting as a bound overlay when full. `"tile"` keeps the tree slot. |
 | `popup_ratio`     | float  | `0.75`         | Share of the usable area a popup overlay takes (clamped to 0.1–1.0). See [Popups](#popups).    |
 | `magnify_ratio`   | float  | `0.75`         | Share of the usable area used by `toggle-magnify` (clamped to 0.1–1.0).                         |
 
@@ -156,8 +182,8 @@ display.
 With `fullscreen = "park"` (default), pressing the macOS native-fullscreen
 shortcut untitles the window: PengWM removes it from its tree slot (the
 remaining windows reflow to fill the space) and remembers which workspace it
-came from. Leaving fullscreen re-tiles it there — or in the next workspace
-with capacity if the remembered one filled up while the window was away.
+came from. Leaving fullscreen returns it there, waiting as a workspace-bound
+overlay if the workspace filled up while the window was away.
 While fullscreened macOS owns the window's geometry; PengWM makes no writes
 to it. Hiding or minimizing a fullscreened window hands it to the normal
 hide flow (it returns through un-hide, not through un-fullscreen). Popups
