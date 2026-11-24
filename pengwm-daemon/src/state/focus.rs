@@ -22,6 +22,12 @@ pub(super) struct FocusState {
 }
 
 impl StateManager {
+    pub(super) fn os_focused_window(&self) -> Option<WindowId> {
+        self.os
+            .frontmost_pid()
+            .and_then(|pid| self.os.focused_window_for_pid(pid))
+    }
+
     /// Direct observations (including activation) do not arm the quiet drain.
     pub fn on_window_focused(&mut self, window_id: WindowId) {
         self.accept_focus_at(window_id, Instant::now());

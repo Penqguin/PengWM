@@ -68,6 +68,8 @@ pub struct WindowStore {
     /// The routing verdict per tracked window — the answer to "what is
     /// this window to me", durable across element-cache eviction.
     routed: HashMap<WindowId, RoutingVerdict>,
+    /// A session-local decision, independent of the window's birth verdict.
+    popped_out: HashSet<WindowId>,
     last_reconcile: Instant,
     orders: HashMap<WindowId, u64>,
     next_order: u64,
@@ -81,6 +83,7 @@ impl WindowStore {
             pid_to_windows: HashMap::new(),
             parked: HashMap::new(),
             routed: HashMap::new(),
+            popped_out: HashSet::new(),
             orders: HashMap::new(),
             next_order: 0,
             identities: HashMap::new(),
@@ -95,6 +98,7 @@ impl WindowStore {
             pid_to_windows: HashMap::new(),
             parked: HashMap::new(),
             routed: HashMap::new(),
+            popped_out: HashSet::new(),
             orders: HashMap::new(),
             next_order: 0,
             identities: HashMap::new(),
@@ -113,6 +117,7 @@ impl WindowStore {
         // A re-created window id re-classifies at its next routing —
         // subtree state must never outlive the window that earned it.
         self.routed.remove(&window_id);
+        self.popped_out.remove(&window_id);
     }
 
     pub fn unregister(&mut self, window_id: WindowId) -> Option<i32> {
@@ -142,6 +147,7 @@ impl WindowStore {
         self.window_pids.remove(&window_id);
         self.parked.remove(&window_id);
         self.routed.remove(&window_id);
+        self.popped_out.remove(&window_id);
         self.orders.remove(&window_id);
         self.identities.remove(&window_id);
     }
@@ -253,6 +259,31 @@ impl WindowStore {
     /// ask: survives element-cache eviction and fallback re-classification.
     pub fn is_untracked(&self, window_id: WindowId) -> bool {
         self.routing_verdict(window_id) == Some(RoutingVerdict::Untracked)
+    }
+
+    pub(super) fn is_popped_out(&self, id: WindowId) -> bool {
+        self.popped_out.contains(&id)
+    }
+
+    pub(super) fn set_popped_out(&mut self, id: WindowId, popped_out: bool) {
+        if popped_out {
+            debug_assert_eq!(self.routing_verdict(id), Some(RoutingVerdict::Tiled));
+            self.popped_out.insert(id);
+        } else {
+            self.popped_out.remove(&id);
+        }
+    }
+
+    pub(super) fn is_cross_workspace_overlay(&self, id: WindowId) -> bool {
+        self.is_popped_out(id) || self.is_untracked(id)
+    }
+
+    pub(super) fn has_cross_workspace_overlays(&self) -> bool {
+        !self.popped_out.is_empty()
+            || self
+                .routed
+                .values()
+                .any(|v| *v == RoutingVerdict::Untracked)
     }
 
     // -- parked state ----------------------------------------------------------

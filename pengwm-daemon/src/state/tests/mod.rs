@@ -11,6 +11,7 @@ mod membership;
 mod memory;
 mod overflow;
 mod persistence;
+mod popout;
 mod popup;
 mod reset;
 mod space_gate;

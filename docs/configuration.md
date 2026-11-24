@@ -199,7 +199,7 @@ renders each as a centered overlay (same tmux-popup geometry as
 `toggle-magnify`, sized by `popup_ratio`). A window becomes a popup when:
 
 - its app is listed in `restricted_apps` (every newly discovered window of
-  those apps pops out, never tiled — overlay-app bundles like launchers;
+  those apps opens as a popup and never tiles — for example, app launchers;
   a config reload doesn't re-route windows that are already tiled), or
 - its macOS subrole is `AXDialog`, `AXSystemDialog`, or `AXFloatingWindow`
   (app dialogs, system dialogs, PiP / launcher / Chromium popups).
@@ -256,6 +256,10 @@ Two things make a window untracked:
 Untracked windows are deliberately different from popups: a popup belongs to
 the workspace it appeared on (hides with it, comes back on switch-back); an
 untracked window belongs to no workspace and never hides.
+
+To temporarily take a tileable window out of the layout, use
+[**Option+P**](commands.md#toggle-pop-out) rather than `float_apps`. If you
+define your own keybindings, add `alt-p = "toggle-popout"` to use the shortcut.
 
 ### Corner radius
 
@@ -320,6 +324,7 @@ Join modifiers with `-`, e.g. `cmd-shift`, `cmd-alt-ctrl`.
 | `close`                                                      | Close the focused window                      |
 | `cycle-layout`                                               | Advance to the next layout preset             |
 | `toggle-magnify`                                             | Toggle magnify popup on the focused window    |
+| `toggle-popout`                                              | Pop out or re-tile the window with macOS focus (default: `alt-p`) |
 | `select-layout-even-horizontal` / `select-layout-even-vertical` / `select-layout-main-horizontal` / `select-layout-main-vertical` / `select-layout-tiled` | Rearrange into a tmux-style preset |
 | `resize-pane-left` / `resize-pane-right` / `resize-pane-up` / `resize-pane-down` | Push the divider one step in the direction |
 | `set-gap-outer-{pixels}` / `set-gap-inner-{pixels}`          | Set gaps                                     |
@@ -355,6 +360,7 @@ alt-shift-2 = "move-window-to-workspace-2"
 # Layout
 alt-t = "cycle-layout"
 alt-m = "toggle-magnify"
+alt-p = "toggle-popout"
 cmd-shift-r = "reload-config"
 
 # tmux-style presets and resizing

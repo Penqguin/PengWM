@@ -38,7 +38,7 @@ impl StateManager {
         if self.store.pid_for(window_id).is_some_and(|old| old != pid) {
             self.on_window_destroyed(window_id);
         }
-        if self.find_workspace_of_any(window_id).is_some() {
+        if self.store.is_popped_out(window_id) || self.find_workspace_of_any(window_id).is_some() {
             return;
         }
         self.store.register(window_id, pid);
@@ -353,6 +353,11 @@ impl StateManager {
     #[cfg(test)]
     pub(super) fn assert_identity_invariant(&self) {
         for &wid in self.store.all_window_pids().keys() {
+            if self.store.is_popped_out(wid) {
+                assert_eq!(self.store.routing_verdict(wid), Some(RoutingVerdict::Tiled));
+                assert!(!self.store.is_parked(wid));
+                assert!(self.find_workspace_of_any(wid).is_none());
+            }
             match self.store.routing_verdict(wid) {
                 None => {} // never routed: lives as it did pre-refactor
                 Some(RoutingVerdict::Popup) => {
@@ -414,9 +419,10 @@ impl StateManager {
         // placement at all. Both: never displaced-noted (nothing re-centers
         // them) and never a drag-swap participant. The verdict is the
         // durable ask — one lookup, no per-workspace scan.
-        match self.store.routing_verdict(window_id) {
-            Some(RoutingVerdict::Popup) | Some(RoutingVerdict::Untracked) => return,
-            _ => {}
+        if self.store.is_cross_workspace_overlay(window_id)
+            || self.store.routing_verdict(window_id) == Some(RoutingVerdict::Popup)
+        {
+            return;
         }
         let now = Instant::now();
         // The event's rect IS the OS read — the notification callback read
@@ -657,7 +663,15 @@ impl StateManager {
         self.os.attach_observer(pid);
         if let WindowListing::Answered(windows) = self.os.poll_windows_for_pid(pid) {
             for window_id in windows {
-                self.store.register(window_id, pid);
+                if self.store.is_popped_out(window_id) {
+                    if self.store.pid_for(window_id) == Some(pid) {
+                        continue;
+                    }
+                    // The normal create path must retire the old owner
+                    // before registering a recycled ID.
+                } else {
+                    self.store.register(window_id, pid);
+                }
                 let _ = self
                     .event_tx
                     .try_send(DaemonEvent::WindowCreated(window_id, pid));

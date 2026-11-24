@@ -5,7 +5,8 @@
 use pengwm_core::tree::WindowId;
 use pengwm_core::workspace::{position_of_member, PendingKind, PendingWindow};
 
-use super::store::{ParkReason, ParkedEntry};
+use super::store::{ParkReason, ParkedEntry, RoutingVerdict};
+use super::untracked::display_containing_point;
 
 use super::StateManager;
 
@@ -18,6 +19,67 @@ enum PendingTransfer {
 }
 
 impl StateManager {
+    pub(super) fn toggle_popout(&mut self) {
+        if !self.may_judge("toggle pop-out") {
+            return;
+        }
+        let Some(id) = self.os_focused_window() else {
+            return;
+        };
+        if self.store.routing_verdict(id) != Some(RoutingVerdict::Tiled) {
+            return;
+        }
+        let Some(monitor) = self
+            .os
+            .window_rect(id)
+            .and_then(|rect| display_containing_point(&self.os.active_displays(), rect))
+        else {
+            return;
+        };
+        if !self.display_may_act(monitor)
+            || self.os.window_is_fullscreen(id)
+            || self.os.windows_are_hidden(&[id]).get(&id) == Some(&true)
+        {
+            return;
+        }
+        if self.store.is_popped_out(id) {
+            let Some(target) = self.displays.visible_on(monitor) else {
+                return;
+            };
+            self.store.set_popped_out(id, false);
+            self.admit_window(id, target, PendingKind::Traveling);
+            if self.find_workspace_of_any(id) == Some(target) {
+                self.displays.set_focused_output(monitor);
+                self.workspaces[target].focus_window(id);
+                self.os.focus_window(id);
+            }
+        } else {
+            let Some(source) = self.find_workspace_of_any(id) else {
+                return;
+            };
+            if !self.displays.is_visible(source, &self.workspaces)
+                || !self.workspace_may_act(source)
+            {
+                return;
+            }
+            self.detach_member(source, id);
+            self.store.set_popped_out(id, true);
+            self.layout_cache.forget(id);
+            self.deferred_hides.remove(&id);
+            // No home while popped out, including in restart/rediscovery data.
+            self.live_placement.remove(&id);
+            if self.drag.drag_window() == Some(id) || self.drag.overlap_target() == Some(id) {
+                self.drag.clear();
+            }
+            self.session_dirty = true;
+            self.apply_layout(source);
+            self.os.raise_window(id);
+        }
+        #[cfg(test)]
+        self.assert_identity_invariant();
+        self.publish_bar_state();
+    }
+
     /// Move `wid` from workspace `from` to `to`, re-laying-out visible ends.
     /// Shared by workspace moves and cross-display moves. The admit tail
     /// (`StateManager::place_admitted`) owns the destination placement:
@@ -231,6 +293,9 @@ impl StateManager {
     /// Returns whether the event caller should publish a membership change.
     /// Upgrading an existing fullscreen Park retains the old no-publish path.
     pub(super) fn park_hidden_member(&mut self, window_id: WindowId) -> bool {
+        if self.store.is_cross_workspace_overlay(window_id) {
+            return false;
+        }
         self.session_dirty = true;
         if self.store.is_fullscreen_parked(window_id) {
             // A hide landed while the window sat fullscreen-parked: upgrade
@@ -257,6 +322,9 @@ impl StateManager {
     }
 
     pub(super) fn return_hidden_member(&mut self, window_id: WindowId) -> bool {
+        if self.store.is_cross_workspace_overlay(window_id) {
+            return false;
+        }
         if self.store.is_fullscreen_parked(window_id) {
             // The probe owns this window's reveal; a stray shown event must
             // not shortcut it.
@@ -312,7 +380,10 @@ impl StateManager {
         if !self.fullscreen_parking_enabled() {
             return false;
         }
-        if !self.store.contains(window_id) || self.store.is_parked(window_id) {
+        if !self.store.contains(window_id)
+            || self.store.is_parked(window_id)
+            || self.store.is_cross_workspace_overlay(window_id)
+        {
             return false;
         }
         // Popups never tile anyway; parking would be no-op overhead.

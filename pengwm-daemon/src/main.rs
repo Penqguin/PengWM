@@ -132,16 +132,17 @@ fn daemon_main() {
         event_loop::EventLoop::new(Arc::clone(&keybinds), Arc::clone(&prefix));
 
     #[cfg(target_os = "macos")]
-    {
+    let _event_tap = {
         eprintln!("[4/6] Starting global keybind tap…");
-        macos::event_tap::start(tx.clone(), Arc::clone(&keybinds), Arc::clone(&prefix));
+        let tap = macos::event_tap::start(tx.clone(), Arc::clone(&keybinds), Arc::clone(&prefix));
 
         eprintln!("[5/6] Attaching app lifecycle observers…");
         macos::ns_workspace::observe(tx.clone());
 
         eprintln!("[6/6] Registering display hotplug callback…");
         macos::cg_display::register_hotplug_callback(tx.clone());
-    }
+        tap
+    };
 
     eprintln!("[7/7] Starting IPC server and config watcher…");
     config::watcher::watch(tx.clone());

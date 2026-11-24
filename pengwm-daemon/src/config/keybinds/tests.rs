@@ -122,6 +122,20 @@ fn find_keybind_layout_cycle_and_magnify() {
 }
 
 #[test]
+fn default_and_custom_option_p_toggle_popout() {
+    let custom: toml::Value = r#"alt-p = "toggle-popout""#.parse().unwrap();
+    for config in [
+        KeybindConfig::default(),
+        try_from_toml_value(&custom).unwrap(),
+    ] {
+        assert_eq!(
+            find_keybind(0x23, MODIFIER_ALT, &config),
+            Some(Command::TogglePopout)
+        );
+    }
+}
+
+#[test]
 fn key_name_to_keycode_arrows() {
     assert_eq!(key_name_to_keycode("left"), Some(0x7B));
     assert_eq!(key_name_to_keycode("right"), Some(0x7C));

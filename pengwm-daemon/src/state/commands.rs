@@ -76,6 +76,14 @@ impl StateManager {
                                 &display_snapshot,
                                 focus_first,
                             ) {
+                                let retained_overlay = (!dec.focus_only)
+                                    .then(|| {
+                                        self.focused_cross_workspace_overlay_on(
+                                            self.workspaces[dec.show].monitor_id,
+                                            &display_snapshot,
+                                        )
+                                    })
+                                    .flatten();
                                 let carried_focus = self.workspaces[current_idx]
                                     .focused_window_id()
                                     .filter(|id| {
@@ -103,7 +111,7 @@ impl StateManager {
                                     self.apply_layout(dec.show);
                                     self.apply_layout(current_idx);
                                 }
-                                if let Some(wid) = focus {
+                                if let Some(wid) = focus.filter(|_| retained_overlay.is_none()) {
                                     self.os.focus_window(wid);
                                 }
                                 // Stacking for every monitor whose visible
@@ -120,6 +128,11 @@ impl StateManager {
                                     {
                                         self.reveal_stack(Some(self.workspaces[other].monitor_id));
                                     }
+                                }
+                                if let Some(wid) = retained_overlay {
+                                    // AXRaise restores stacking but doesn't guarantee
+                                    // keyboard focus, especially with several overlays.
+                                    self.os.focus_window(wid);
                                 }
                                 self.protect_workspace_switch(Instant::now());
                                 self.flash_workspace_pills();
@@ -162,6 +175,7 @@ impl StateManager {
                 self.workspaces[idx].cycle_preset(ratio);
                 self.apply_layout(idx);
             }
+            Command::TogglePopout => self.toggle_popout(),
             Command::ToggleMagnify => {
                 let idx = self.active_workspace_idx();
                 let ws = &mut self.workspaces[idx];
@@ -416,7 +430,7 @@ impl StateManager {
     /// Commands that act on the focused workspace are refused wholesale
     /// while its display shows a non-first native desktop (Q7). Commands
     /// with their own target resolution (`Workspace`, `FocusDisplay`,
-    /// `MoveWindowToDisplay`, `MoveWindowToWorkspace`) gate at the
+    /// `MoveWindowToDisplay`, `MoveWindowToWorkspace`, `TogglePopout`) gate at the
     /// resolved ends; global, model-only commands (`SetGap*`,
     /// `RevealAll`, `ReloadConfig`, `QueryState`, `Quit`)
     /// stay available — their OS writes are gated by the write paths.

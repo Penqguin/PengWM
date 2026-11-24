@@ -107,15 +107,19 @@ alt-ctrl-left  = "focus-display-left"
 alt-ctrl-shift-right = "move-window-to-display-right"
 alt-t = "cycle-layout"
 alt-m = "toggle-magnify"
+alt-p = "toggle-popout"
 cmd-shift-r = "reload-config"
 ```
 
 **Modifiers:** `cmd`, `alt`/`option`, `ctrl`/`control`, `shift` (join with `-`).
 
+**Option+P** [pops the focused tileable window out of the layout](docs/commands.md#toggle-pop-out).
+Press it again with that window focused to put it back.
+
 **Actions:** `focus-{left,right,up,down}`, `move-window-{left,right,up,down}`,
 `workspace-{id}`, `move-window-to-workspace-{id}`, `focus-display-{left,right,up,down}`,
 `move-window-to-display-{left,right,up,down}`, `split-horizontal`, `split-vertical`,
-`close`, `cycle-window`, `cycle-window-backward`, `cycle-layout`, `toggle-magnify`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
+`close`, `cycle-window`, `cycle-window-backward`, `cycle-layout`, `toggle-magnify`, `toggle-popout`, `select-layout-{even-horizontal,even-vertical,main-horizontal,main-vertical,tiled}`,
 `resize-pane-{left,right,up,down}`, `set-gap-outer-{pixels}`,
 `set-gap-inner-{pixels}`, `reload-config`, `query-state`,
 `reveal-all`, `quit`.
@@ -157,6 +161,7 @@ pengwm move-window-to-display <left|right|up|down>
 pengwm close
 pengwm cycle-layout
 pengwm toggle-magnify
+pengwm toggle-popout
 pengwm select-layout <even-horizontal|even-vertical|main-horizontal|main-vertical|tiled>
 pengwm resize-pane <left|right|up|down>
 pengwm set-gap-outer <pixels>

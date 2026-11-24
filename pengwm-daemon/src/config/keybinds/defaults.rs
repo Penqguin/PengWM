@@ -174,6 +174,11 @@ impl Default for KeybindConfig {
                 modifiers: MODIFIER_ALT,
                 action: Command::ToggleMagnify,
             },
+            Keybind {
+                keycode: 0x23, // P
+                modifiers: MODIFIER_ALT,
+                action: Command::TogglePopout,
+            },
             // Not prefix+h: prefix follow-ups inherit the prefix modifiers,
             // so `prefix, h` is focus-left.
             // Reload config: cmd-shift-r

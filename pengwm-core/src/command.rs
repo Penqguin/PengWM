@@ -34,6 +34,8 @@ pub enum Command {
     },
     /// Toggle tmux-popup style magnify on the focused window.
     ToggleMagnify,
+    /// Pop the macOS-focused tileable window out of tiling, or put it back.
+    TogglePopout,
     /// Rearrange the active workspace into a named tmux-style preset.
     SelectLayout {
         preset: LayoutPreset,
@@ -221,6 +223,7 @@ const ACTION_TABLE: &[(&str, Command)] = &[
     ("close", Command::Close),
     ("cycle-layout", Command::CycleLayout),
     ("toggle-magnify", Command::ToggleMagnify),
+    ("toggle-popout", Command::TogglePopout),
     (
         "select-layout-even-horizontal",
         Command::SelectLayout {
@@ -439,6 +442,10 @@ mod tests {
         assert_eq!(
             Command::parse_action("toggle-magnify"),
             Some(Command::ToggleMagnify)
+        );
+        assert_eq!(
+            Command::parse_action("toggle-popout"),
+            Some(Command::TogglePopout)
         );
         for preset in LayoutPreset::all() {
             let name = format!("select-layout-{}", preset.name());

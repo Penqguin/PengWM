@@ -26,6 +26,9 @@ _Avoid_: pane (tmux word for window)
 **UntrackedWindow** — A window the window manager never tiles, never parks, and never hides: it stays where macOS puts it, on top of whatever workspace is visible on the monitor holding it, until the user closes or app-hides it. Sources: an overlay window whose CG window level is non-zero at creation, or a `[windows] float_apps` bundle. Store-tracked but tree-less, excluded from capacity, parking, drag-swap, the misplaced sweep, and `BarState`; re-raised above the newly shown tree whenever its monitor's visible workspace changes. Never workspace-bound — distinct from *Popup*, which hides with its workspace.
 _Avoid_: floating window (ambiguous — every app can float its own window at the OS level), unmanaged (implies the yabai drop, which was rejected)
 
+**Popped-out window** — A tileable window the user has temporarily taken out of tiling and can put back with the same command. It stays visible across workspace switches like an untracked window, but remains eligible for tiling.
+_Avoid_: popup (workspace-bound), ignored window (not re-raised)
+
 **Workspace** — An independent window tree on a single monitor. The deepened interface exposes:
 - `layout(gap_inner, gap_outer) -> HashMap<WindowId, Rect>` — single method that computes global-coordinate rects for every window. Uses stored monitor geometry internally. Tiling is always computed; when `magnified` is set the pinned window is overwritten with a centered 75% overlay; popup members are emitted into the same map without joining the tree.
 - `apply_split_direction(direction)` — the split intent: re-orients the focused Split container, or — when a Window is focused — pends the direction for the next window added. The "only a Split container re-orients" invariant lives here with the tree.

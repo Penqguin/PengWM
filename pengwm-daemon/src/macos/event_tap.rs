@@ -2,7 +2,14 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent};
+use core_foundation::mach_port::{
+    CFMachPortCreateRunLoopSource, CFMachPortInvalidate, CFMachPortRef,
+};
+use core_foundation::runloop::{
+    kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRef,
+    CFRunLoopRemoveSource, CFRunLoopSourceRef,
+};
+use pengwm_core::command::Command;
 use tokio::sync::mpsc;
 
 use crate::config::keybinds::{find_keybind, KeybindConfig, ModifierFlags, MODIFIER_NONE};
@@ -11,8 +18,8 @@ use crate::macos::cf_ref::CFRef;
 use crate::prefix::{PrefixKey, PrefixOutcome};
 
 type CGEventRef = *mut c_void;
+type CGEventTapProxy = *mut c_void;
 type CGEventMask = u64;
-type CFIndex = isize;
 
 #[allow(non_upper_case_globals)]
 const kCGEventKeyDown: u32 = 10;
@@ -29,6 +36,8 @@ const kCGEventTapDisabledByUserInput: u32 = 0xFFFF_FFFF;
 
 #[allow(non_upper_case_globals)]
 const kCGKeyboardEventKeycode: u32 = 9;
+#[allow(non_upper_case_globals)]
+const kCGKeyboardEventAutorepeat: u32 = 8;
 
 /// System shortcuts that must never be intercepted, even if user binds them.
 const SYSTEM_SAFE_SHORTCUTS: &[(u16, ModifierFlags)] = &[
@@ -40,16 +49,38 @@ const SYSTEM_SAFE_SHORTCUTS: &[(u16, ModifierFlags)] = &[
     (0x31, MODIFIER_CMD | MODIFIER_ALT),   // Cmd+Alt+Space — Finder Spotlight
 ];
 
+/// Keeps the callback context alive until the source is detached. The raw
+/// pointers keep this guard on the thread that owns the run loop.
+pub struct EventTap {
+    tap: CFRef<CFMachPortRef>,
+    source: CFRef<CFRunLoopSourceRef>,
+    run_loop: CFRunLoopRef,
+    ctx: *mut Context,
+}
+
+impl Drop for EventTap {
+    fn drop(&mut self) {
+        // The callback runs only on this thread via this source. Detach and
+        // invalidate it before reclaiming the box passed to Core Graphics.
+        unsafe {
+            CFRunLoopRemoveSource(self.run_loop, self.source.ptr(), kCFRunLoopDefaultMode);
+            CFMachPortInvalidate(self.tap.ptr());
+            drop(Box::from_raw(self.ctx));
+        }
+    }
+}
+
 pub fn start(
     event_tx: mpsc::Sender<DaemonEvent>,
     keybinds: Arc<Mutex<KeybindConfig>>,
     prefix: Arc<Mutex<PrefixKey>>,
-) {
+) -> Option<EventTap> {
     let ctx = Box::into_raw(Box::new(Context {
         event_tx,
         keybinds: Arc::clone(&keybinds),
         prefix: Arc::clone(&prefix),
-    })) as *mut c_void;
+        tap: std::ptr::null_mut(),
+    }));
 
     let event_mask = CGEventMaskBit(kCGEventKeyDown);
 
@@ -60,8 +91,9 @@ pub fn start(
             kCGEventTapOptionDefault, // active filter: returning NULL swallows the event
             event_mask,
             Some(event_tap_callback),
-            ctx,
-        ) as core_foundation::mach_port::CFMachPortRef) else {
+            ctx.cast(),
+        )) else {
+            drop(Box::from_raw(ctx));
             log::error!("Failed to create CGEventTap — check Accessibility permissions.");
             eprintln!("✗ Failed to create global keybind tap (CGEventTap).");
             eprintln!(
@@ -75,38 +107,33 @@ pub fn start(
             // Show the system permission prompt so the user can add the daemon.
             super::ax_element::request_trusted_access();
 
-            let _ = Box::from_raw(ctx as *mut Context);
-            return;
+            return None;
         };
 
         let Some(run_loop_source) = CFRef::from_create(CFMachPortCreateRunLoopSource(
-            std::ptr::null_mut(),
-            tap.ptr() as *mut c_void,
+            std::ptr::null(),
+            tap.ptr(),
             0,
-        )
-            as core_foundation::runloop::CFRunLoopSourceRef)
-        else {
+        )) else {
+            CFMachPortInvalidate(tap.ptr());
+            drop(Box::from_raw(ctx));
             log::error!("Failed to create CFRunLoopSource from event tap");
-            // `tap` drops here — owned and released, unlike the old
-            // hand-rolled `CFRelease` that this path performed by hand.
-            let _ = Box::from_raw(ctx as *mut Context);
-            return;
+            return None;
         };
 
+        (*ctx).tap = tap.ptr();
         let run_loop = CFRunLoopGetCurrent();
         CFRunLoopAddSource(run_loop, run_loop_source.ptr(), kCFRunLoopDefaultMode);
 
-        // Program-lifetime ownership, made explicit: the tap and its
-        // runloop source must outlive this function for the daemon's whole
-        // run (the callback fires from the run loop). The +1s are handed
-        // over by one visible `Box::leak` of their CFRefs — released
-        // exactly never, by intent — instead of the old "forgotten by
-        // omission" comment that wrongly claimed the run loop's retain
-        // consumed the creator's reference.
-        Box::leak(Box::new((tap, run_loop_source)));
-
+        let guard = EventTap {
+            tap,
+            source: run_loop_source,
+            run_loop,
+            ctx,
+        };
         eprintln!("✓ Global keybind tap active (Alt+h/j/k/l, arrows, etc.)");
         log::info!("CGEventTap started successfully");
+        Some(guard)
     }
 }
 
@@ -114,22 +141,22 @@ struct Context {
     event_tx: mpsc::Sender<DaemonEvent>,
     keybinds: Arc<Mutex<KeybindConfig>>,
     prefix: Arc<Mutex<PrefixKey>>,
+    tap: CFMachPortRef,
 }
 
 unsafe extern "C" fn event_tap_callback(
-    proxy: CGEventRef,
+    _proxy: CGEventTapProxy,
     etype: u32,
     event: CGEventRef,
     refcon: *mut c_void,
 ) -> CGEventRef {
+    let ctx = &*refcon.cast::<Context>();
     // Active taps are auto-disabled by the OS on timeout or user input changes.
     // Re-enable fail-open so keybinds keep working.
     if etype == kCGEventTapDisabledByTimeout || etype == kCGEventTapDisabledByUserInput {
-        CGEventTapEnable(proxy, true);
+        CGEventTapEnable(ctx.tap, true);
         return event;
     }
-
-    let ctx = &*(refcon as *const Context);
 
     let keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) as u16;
     let flags = CGEventGetFlags(event);
@@ -181,11 +208,8 @@ unsafe extern "C" fn event_tap_callback(
                 keycode,
                 command
             );
-            if ctx
-                .event_tx
-                .try_send(DaemonEvent::Command(command, None))
-                .is_ok()
-            {
+            let repeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0;
+            if consume_command(&ctx.event_tx, command, repeat) {
                 return std::ptr::null_mut();
             }
             return event;
@@ -198,19 +222,26 @@ unsafe extern "C" fn event_tap_callback(
             keycode,
             command
         );
-        // Fail-open: only swallow when the command was actually queued.
-        // If the channel is full/disconnected, pass through so no keystroke is lost.
-        if ctx
-            .event_tx
-            .try_send(DaemonEvent::Command(command, None))
-            .is_ok()
-        {
+        let repeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0;
+        if consume_command(&ctx.event_tx, command, repeat) {
             return std::ptr::null_mut(); // swallow: app never sees this keydown
         }
         return event;
     }
 
     event
+}
+
+fn consume_command(event_tx: &mpsc::Sender<DaemonEvent>, command: Command, repeat: bool) -> bool {
+    // A held pop-out chord must not bounce between membership states, or
+    // type its repeated keystrokes into the focused app.
+    if repeat && command == Command::TogglePopout {
+        return true;
+    }
+    // Otherwise fail open if the daemon can't receive the command.
+    event_tx
+        .try_send(DaemonEvent::Command(command, None))
+        .is_ok()
 }
 
 const MODIFIER_CMD: ModifierFlags = 0x0010_0000;
@@ -231,20 +262,73 @@ extern "C" {
         options: u32,
         events_of_interest: CGEventMask,
         callback: Option<
-            unsafe extern "C" fn(CGEventRef, u32, CGEventRef, *mut c_void) -> CGEventRef,
+            unsafe extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef,
         >,
         refcon: *mut c_void,
-    ) -> CGEventRef;
-
-    fn CFMachPortCreateRunLoopSource(
-        allocator: *mut c_void,
-        port: CGEventRef,
-        order: CFIndex,
-    ) -> *mut c_void;
+    ) -> CFMachPortRef;
 
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
     fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
-    fn CGEventTapEnable(tap: CGEventRef, enable: bool);
+    fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
 }
 
 type CGEventFlags = u64;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
+    }
+
+    #[test]
+    #[ignore = "requires Accessibility permission and a GUI session"]
+    fn native_tap_recovers_and_releases_callback_context() {
+        assert!(crate::macos::ax_element::is_process_trusted());
+        let (tx, rx) = mpsc::channel(1);
+        let tap = start(
+            tx,
+            Arc::new(Mutex::new(KeybindConfig::new())),
+            Arc::new(Mutex::new(PrefixKey::new(
+                crate::prefix::PrefixConfig::default(),
+            ))),
+        )
+        .expect("create native event tap");
+        let port = tap.tap.clone();
+        unsafe {
+            CGEventTapEnable(port.ptr(), false);
+            assert!(!CGEventTapIsEnabled(port.ptr()));
+            // No proxy or event is available on this synthetic notification.
+            event_tap_callback(
+                std::ptr::null_mut(),
+                kCGEventTapDisabledByTimeout,
+                std::ptr::null_mut(),
+                tap.ctx.cast(),
+            );
+            assert!(CGEventTapIsEnabled(port.ptr()));
+        }
+        drop(tap);
+        assert_eq!(
+            unsafe { core_foundation::mach_port::CFMachPortIsValid(port.ptr()) },
+            0
+        );
+        assert!(rx.is_closed(), "the tap context's sender was dropped");
+    }
+
+    #[test]
+    fn consume_popout_repeats_without_dispatching_them() {
+        let (tx, mut rx) = mpsc::channel(4);
+        assert!(consume_command(&tx, Command::TogglePopout, false));
+        assert!(consume_command(&tx, Command::TogglePopout, true));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DaemonEvent::Command(Command::TogglePopout, None))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+}

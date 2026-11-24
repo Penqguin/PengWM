@@ -52,6 +52,8 @@ pub enum CliCommand {
         backward: bool,
     },
     ToggleMagnify,
+    /// Pop the focused tileable window out of tiling, or put it back
+    TogglePopout,
     /// Rearrange the active workspace into a named tmux-style preset
     SelectLayout {
         preset: PresetArg,
@@ -156,6 +158,7 @@ impl From<CliCommand> for Command {
             CliCommand::CycleLayout => Command::CycleLayout,
             CliCommand::CycleWindow { backward } => Command::CycleWindow { backward },
             CliCommand::ToggleMagnify => Command::ToggleMagnify,
+            CliCommand::TogglePopout => Command::TogglePopout,
             CliCommand::SelectLayout { preset } => Command::SelectLayout {
                 preset: preset.into(),
             },
@@ -325,6 +328,12 @@ fn request_temp_dir() -> Result<std::path::PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_popout_uses_the_shared_command() {
+        let cli = Cli::try_parse_from(["pengwm", "toggle-popout"]).unwrap();
+        assert_eq!(Command::from(cli.command.unwrap()), Command::TogglePopout);
+    }
 
     #[test]
     fn consent_rule() {

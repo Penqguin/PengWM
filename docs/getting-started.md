@@ -90,6 +90,7 @@ or pass a subcommand to control a running daemon (see below).
 | `Alt-Cmd-h/j/k/l` | Move window to another monitor |
 | `Alt-t` | Cycle layout presets |
 | `Alt-m` | Toggle magnify |
+| `Alt-p` (Option+P) | [Pop out or re-tile the focused window](commands.md#toggle-pop-out) |
 | `Alt-Space` then keys | Prefix: `prefix, h` acts like `Alt-h`, repeatable without re-arming |
 | `Cmd-Shift-r` | Reload config |
 

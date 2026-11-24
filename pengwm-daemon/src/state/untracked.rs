@@ -14,6 +14,24 @@ use super::StateManager;
 /// (the switch-back raise, Q9) and the untracked overlays follow, because
 /// macOS stacking after un-hide is unspecified.
 impl StateManager {
+    /// Capture before the switch's AX writes; logical workspace focus
+    /// deliberately has no entry for these overlays.
+    pub(super) fn focused_cross_workspace_overlay_on(
+        &self,
+        monitor: u32,
+        displays: &[DisplayInfo],
+    ) -> Option<WindowId> {
+        if !self.store.has_cross_workspace_overlays() {
+            return None;
+        }
+        let id = self.os_focused_window()?;
+        if !self.store.is_cross_workspace_overlay(id) {
+            return None;
+        }
+        let rect = self.os.window_rect(id)?;
+        (display_containing_point(displays, rect) == Some(monitor)).then_some(id)
+    }
+
     /// Restore stacking after a visibility change. `monitor` scopes the
     /// pass to the monitor whose visible workspace changed (the
     /// containing-rect resolution is the helper popups share); `None`
@@ -57,9 +75,8 @@ impl StateManager {
     /// containing-rect resolution is the helper popups share); `None`
     /// raises on every monitor (wake resync: stacking is globally unset).
     ///
-    /// Asks the store's routing verdict, not the element cache: the cache
-    /// evicts on stale elements and the fallback re-classifies — an
-    /// ADR-0002 untracked overlay must stay untracked regardless.
+    /// Asks the store's routing verdict or session-local pop-out state,
+    /// not the evictable element cache.
     pub(super) fn raise_untracked_windows(&mut self, monitor: Option<u32>) {
         if let Some(monitor) = monitor {
             if !self.display_may_act(monitor) {
@@ -71,13 +88,17 @@ impl StateManager {
             .all_window_pids()
             .keys()
             .copied()
-            .filter(|&wid| self.store.is_untracked(wid))
+            .filter(|&wid| self.store.is_cross_workspace_overlay(wid))
             .collect();
         if untracked.is_empty() {
             return;
         }
         let displays = self.os.active_displays();
+        let hidden = self.os.windows_are_hidden(&untracked);
         for wid in untracked {
+            if hidden.get(&wid) == Some(&true) {
+                continue;
+            }
             let skip = match monitor {
                 Some(monitor) => {
                     let Some(rect) = self.os.window_rect(wid) else {

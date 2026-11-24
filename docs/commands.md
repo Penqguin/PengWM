@@ -110,6 +110,29 @@ pengwm toggle-magnify
 Toggle a tmux-popup style magnify overlay (centered 75%x75%) on the focused
 window. Pinned across focus changes; cleared on close. Default bind: `alt-m`.
 
+## Toggle Pop-out
+
+```bash
+pengwm toggle-popout
+```
+
+Take the window that has macOS keyboard focus out of tiling without moving or
+resizing it. This works on tiles and tileable overflow overlays, not on popups
+or windows that were already untracked. Default bind: Option+P (`alt-p`).
+
+A popped-out window stays on its display when you switch workspaces. Like
+untracked windows, it is raised when the visible workspace changes there.
+Both kinds of window keep keyboard focus if they already had it and the
+switch stays on their display; a background window does not take focus.
+
+Focus the popped-out window and press Option+P again to put it back into the
+workspace visible on its display. It tiles if there is room. If not, it stays
+focused as a traveling overflow overlay and can follow explicit workspace
+switches until a tile slot opens. After it tiles, it stays in that workspace.
+
+Minimizing the window, hiding its app, or reloading config does not cancel
+pop-out. Closing the window or restarting PengWM ends it.
+
 ## Close
 
 ```bash
