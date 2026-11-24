@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.19 — Window pop-out (2026-11-24)
+
+- **New: Option+P toggles pop-out.** Take the focused tileable window out of
+  the layout without moving it, then press Option+P again to rejoin. On a
+  full workspace it travels as overflow until a tile slot opens.
+- **Focus:** popped-out and untracked windows keep keyboard focus on
+  same-display workspace switches if they were already focused.
+- **Fixed:** the global keyboard tap uses the correct handle to recover
+  after macOS disables it and releases its resources on daemon shutdown.
+
 ## v0.6.18 — Membership and focus internals (2026-11-12)
 
 - **Refactored: membership transitions.** Admission, transfers, parking,
